@@ -1,0 +1,21 @@
+# Log files (user data, not for repo)
+*.log
+ten.err.log
+ten.err
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Thumbnails
+Thumbs.db
+ehthumbs.db
