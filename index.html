@@ -874,7 +874,7 @@
           stopTs: null,
           stopStatus: null,
           stopMessage: null,
-          llmModule: null,
+          llmModule: null, llmUrl: null,
           ttsModule: null,
           sttModule: null,
           eventStartInfo: null,
@@ -938,7 +938,10 @@
               const llmNode = j.nodes.find(n => n.name === 'llm');
               const ttsNode = j.nodes.find(n => n.name === 'tts');
               const asrNode = j.nodes.find(n => n.name === 'asr');
-              if (llmNode) summary.llmModule = llmNode.addon || llmNode.name || null;
+              if (llmNode) {
+                summary.llmModule = llmNode.addon || llmNode.name || null;
+                if (llmNode.property && llmNode.property.url) summary.llmUrl = llmNode.property.url;
+              }
               if (ttsNode) summary.ttsModule = ttsNode.addon || ttsNode.name || null;
               if (asrNode) summary.sttModule = asrNode.addon || asrNode.name || null;
             }
@@ -1011,12 +1014,19 @@
               const p = j.properties;
               if (!summary.llmModule && p.llm) {
                 if (typeof p.llm === 'string') summary.llmModule = p.llm;
-                else if (p.llm.url) summary.llmModule = p.llm.url.replace(/^https?:\/\//, '').split('/')[0];
+                else if (p.llm.url) { summary.llmModule = p.llm.url.replace(/^https?:\/\//, '').split('/')[0]; summary.llmUrl = p.llm.url; }
                 else if (p.llm.vendor) summary.llmModule = p.llm.vendor;
               }
               if (!summary.ttsModule && p.tts && (p.tts.vendor || p.tts.vendor_name)) summary.ttsModule = p.tts.vendor || p.tts.vendor_name;
               if (!summary.sttModule && p.asr && (p.asr.vendor || p.asr.vendor_name)) summary.sttModule = p.asr.vendor || p.asr.vendor_name;
               if (!summary.channel && p.channel) summary.channel = p.channel;
+            }
+          }
+          if ((!summary.llmUrl || !summary.llmModule) && e.msg && e.msg.includes('[llm]') && e.msg.includes('GlueConfig') && e.msg.includes('url=')) {
+            const urlMatch = e.msg.match(/url='([^']+)'/);
+            if (urlMatch) {
+              summary.llmUrl = summary.llmUrl || urlMatch[1];
+              if (!summary.llmModule) summary.llmModule = urlMatch[1].replace(/^https?:\/\//, '').split('/')[0];
             }
           }
         }
@@ -1184,6 +1194,16 @@
           }
         }
         if (lastRequest) requests.push(lastRequest);
+        if (requests.length === 0) {
+          for (let i = 0; i < entries.length; i++) {
+            const e = entries[i];
+            if (!e.msg || !e.msg.includes('[llm]') || !e.msg.includes('GlueConfig') || !e.msg.includes('chat/completions')) continue;
+            const urlMatch = e.msg.match(/url='([^']+)'/);
+            const modelMatch = e.msg.match(/params=\{[^}]*'model':\s*'([^']+)'/) || e.msg.match(/params=\{[^}]*"model":\s*"([^"]+)"/);
+            requests.push({ ts: e.ts, url: urlMatch ? urlMatch[1] : null, status: null, error: null, model: modelMatch ? modelMatch[1] : null, finish_reason: null, duration_ms: null, entryIndex: i });
+            break;
+          }
+        }
         return requests;
       }
 
@@ -1224,6 +1244,12 @@
               }
               if (j.metric_name === 'vad' && j.latency_ms != null) {
                 byTurn[turnId].vad = parseInt(j.latency_ms, 10);
+                setTs(turnId);
+              }
+              if (j.module === 'llm' && j.latency_ms != null) {
+                if (j.metric_name === 'connect_delay' || j.metric_name === 'connect') byTurn[turnId].llm_connect = parseInt(j.latency_ms, 10);
+                else if (j.metric_name === 'ttfb') byTurn[turnId].llm_ttfb = parseInt(j.latency_ms, 10);
+                else if (j.metric_name === 'ttfs') byTurn[turnId].llm_ttfs = parseInt(j.latency_ms, 10);
                 setTs(turnId);
               }
             }
@@ -2073,7 +2099,7 @@
             argusLink.href = '#';
           }
           document.getElementById('sumGraphId').textContent = summary.graphId || '—';
-          document.getElementById('sumLlm').textContent = summary.llmModule || '—';
+          document.getElementById('sumLlm').textContent = summary.llmUrl || summary.llmModule || '—';
           document.getElementById('sumTts').textContent = summary.ttsModule || '—';
           document.getElementById('sumStt').textContent = summary.sttModule || '—';
           const stopCard = document.getElementById('summaryStopCard');
