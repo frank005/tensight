@@ -49,7 +49,8 @@
       display: flex;
       align-items: center;
       gap: 16px;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
+      min-width: 0;
     }
 
     .logo {
@@ -57,10 +58,12 @@
       font-size: 1.1rem;
       color: var(--accent);
       letter-spacing: -0.02em;
+      flex-shrink: 0;
     }
 
     .file-input-wrap {
       position: relative;
+      flex-shrink: 0;
     }
     .file-input-wrap input[type="file"] {
       position: absolute;
@@ -84,9 +87,17 @@
     }
     .file-input-wrap label:hover { filter: brightness(1.1); }
 
+    .app.drag-over {
+      outline: 2px dashed var(--accent);
+      outline-offset: -4px;
+      background: color-mix(in srgb, var(--accent) 8%, transparent);
+    }
+
     .file-name {
       color: var(--text-muted);
       font-size: 13px;
+      min-width: 0;
+      flex: 1;
       max-width: 280px;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -106,6 +117,7 @@
       display: flex;
       flex-direction: column;
       min-height: 0;
+      min-width: 0;
       overflow: hidden;
     }
 
@@ -182,14 +194,43 @@
       background: var(--surface);
       border-bottom: 1px solid var(--border);
       display: flex;
-      flex-wrap: wrap;
+      flex-direction: column;
       gap: 10px;
-      align-items: center;
       flex-shrink: 0;
       position: sticky;
       top: 0;
       z-index: 2;
+      min-width: 0;
     }
+
+    .filters-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: nowrap;
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .filters-row .search-wrap {
+      flex: 1;
+      min-width: 120px;
+      overflow: hidden;
+    }
+
+    .filters-row #extFilter {
+      max-width: 160px;
+      min-width: 90px;
+    }
+
+    .filters-row label,
+    .filters-row select,
+    .filters-row .time-range-wrap,
+    .filters-row .time-input,
+    .filters-row button {
+      flex-shrink: 0;
+    }
+    .filters-row label { white-space: nowrap; }
 
     .filters label {
       display: flex;
@@ -207,8 +248,7 @@
     }
 
     .filters .search-wrap {
-      flex: 1;
-      min-width: 180px;
+      min-width: 0;
     }
 
     .filters input[type="text"] {
@@ -232,6 +272,7 @@
       color: var(--text);
       font-size: 13px;
       cursor: pointer;
+      box-sizing: border-box;
     }
     .time-range-wrap { display: flex; align-items: center; gap: 4px; flex-wrap: nowrap; }
     .time-label { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
@@ -435,9 +476,12 @@
     #insightPanels { flex: 1; min-height: 0; overflow: hidden; }
     .insight-tab-panel { display: none; padding: 16px; overflow-y: auto; height: 100%; }
     .insight-tab-panel.active { display: block; }
+    .turns-toolbar { margin-bottom: 10px; }
+    .turns-toolbar label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted); cursor: pointer; }
+    .turns-toolbar input[type="checkbox"] { cursor: pointer; }
     .insight-filter { margin-bottom: 12px; }
     .insight-filter input { width: 100%; max-width: 320px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 13px; }
-    .log-view { min-height: 0; display: none; flex-direction: column; overflow: hidden; flex: 1; }
+    .log-view { min-height: 0; min-width: 0; display: none; flex-direction: column; overflow: hidden; flex: 1; }
     .log-view.active { display: flex; }
 
     .insight-section {
@@ -499,13 +543,14 @@
     .perf-legend-item.dimmed { opacity: 0.4; }
     .perf-series-off { visibility: hidden; }
     .insight-table .perf-median-row { font-weight: 600; background: var(--accent-dim); }
+    .perf-table-footnote { font-size: 12px; color: var(--text-muted); margin: 12px 0 0; max-width: 720px; line-height: 1.5; }
     .insight-table .perf-median-row td { border-top: 2px solid var(--border); }
     .turn-row.turn-user td:nth-child(2) { color: var(--accent); font-weight: 500; }
     .turn-row.turn-agent td:nth-child(2) { color: var(--success); font-weight: 500; }
   </style>
 </head>
 <body>
-  <div class="app">
+  <div class="app" id="app">
     <header>
       <span class="logo">TEN Log Reader</span>
       <div class="file-input-wrap">
@@ -594,23 +639,25 @@
         </div>
         <div class="log-view active" id="logView">
           <div class="filters">
-            <label><input type="checkbox" id="filterI" checked /> Info</label>
-            <label><input type="checkbox" id="filterD" /> Debug</label>
-            <label><input type="checkbox" id="filterW" checked /> Warn</label>
-            <label><input type="checkbox" id="filterE" checked /> Error</label>
-            <div class="search-wrap">
-              <input type="text" id="searchInput" placeholder="Search in message..." />
+            <div class="filters-row">
+              <label><input type="checkbox" id="filterI" checked /> Info</label>
+              <label><input type="checkbox" id="filterD" /> Debug</label>
+              <label><input type="checkbox" id="filterW" checked /> Warn</label>
+              <label><input type="checkbox" id="filterE" checked /> Error</label>
+              <div class="search-wrap">
+                <input type="text" id="searchInput" placeholder="Search in message..." />
+              </div>
+              <select id="extFilter">
+                <option value="">All extensions</option>
+              </select>
+              <div class="time-range-wrap">
+                <label class="time-label">From</label>
+                <input type="datetime-local" id="timeFrom" class="time-input" title="Filter entries from this time" />
+                <label class="time-label">To</label>
+                <input type="datetime-local" id="timeTo" class="time-input" title="Filter entries until this time" />
+              </div>
+              <button type="button" id="goToFirstMatch" class="secondary" style="display:none; padding:6px 10px; font-size:12px; background:var(--border); color:var(--text); border:none; border-radius:var(--radius); cursor:pointer; font-weight:500;">Go to first match</button>
             </div>
-            <select id="extFilter">
-              <option value="">All extensions</option>
-            </select>
-            <div class="time-range-wrap">
-              <label class="time-label">From</label>
-              <input type="datetime-local" id="timeFrom" class="time-input" title="Filter entries from this time" />
-              <label class="time-label">To</label>
-              <input type="datetime-local" id="timeTo" class="time-input" title="Filter entries until this time" />
-            </div>
-            <button type="button" id="goToFirstMatch" class="secondary" style="display:none; padding:6px 10px; font-size:12px; background:var(--border); color:var(--text); border:none; border-radius:var(--radius); cursor:pointer; font-weight:500;">Go to first match</button>
             <div class="filter-events-wrap">
               <span class="filter-events-label">Filter events:</span>
               <button type="button" class="filter-event-btn" data-search="start_of_turn">Start/End</button>
@@ -1113,7 +1160,7 @@
           }
           if (e.msg.includes('assistant.transcription') && e.msg.includes('"source":"tts"')) {
             const j = tryParseJSON(e.msg);
-            if (j && j.text != null && !out.some(o => o.ts === e.ts && o.text === j.text))
+            if (j && j.text != null)
               out.push({ ts: e.ts, text: j.text, duration_ms: j.duration_ms || 0, start_ms: j.start_ms || null, turn_id: j.turn_id != null ? j.turn_id : null, final: null, language: j.language || null, entryIndex: i });
           }
         }
@@ -1219,96 +1266,158 @@
         return out;
       }
 
-      /** Performance metrics per turn. Matches report_controller/metric_message and azure_tts tts_ttfb. */
+      /** Performance metrics per turn. Aligns with report_controller + llm key_point lines (glue ttfb, connect times, _log_and_report_latency). */
       function extractPerformanceMetrics(entries) {
         const byTurn = {};
+        let pendingLlmConnectMs = null;
+        function ensure(turnId) {
+          if (!byTurn[turnId]) byTurn[turnId] = { turn_id: turnId };
+          return byTurn[turnId];
+        }
         for (const e of entries) {
           if (!e.msg) continue;
           const tsSec = e.ts != null ? parseLogTs(e.ts) / 1000 : null;
           function setTs(turnId) {
             if (tsSec != null && byTurn[turnId]) byTurn[turnId].ts = Math.max(byTurn[turnId].ts || 0, tsSec);
           }
+          /* HTTP time to response headers (s) — next glue [turn_id:N] [ttfb:…] pairs with this turn */
+          const connectM = e.msg.match(/\[llm\]\s*connect times:\s*([\d.]+)\s/);
+          if (connectM) {
+            const sec = parseFloat(connectM[1]);
+            if (!isNaN(sec)) pendingLlmConnectMs = Math.round(sec * 1000);
+          }
+          const glueTtfb = e.msg.match(/\[llm\]\s*glue\s*\[turn_id:(\d+)\]\s*\[ttfb:(\d+)ms\]/);
+          if (glueTtfb) {
+            const turnId = parseInt(glueTtfb[1], 10);
+            const row = ensure(turnId);
+            row.llm_ttfb = parseInt(glueTtfb[2], 10);
+            if (pendingLlmConnectMs != null) {
+              row.llm_connect = pendingLlmConnectMs;
+              pendingLlmConnectMs = null;
+            }
+            setTs(turnId);
+          }
+          const ttfsM = e.msg.match(/\[turn_id:(\d+)\]\s*\[ttfs:(\d+)ms\]/);
+          if (ttfsM && e.msg.includes('_track_first_sentence')) {
+            const turnId = parseInt(ttfsM[1], 10);
+            ensure(turnId).llm_ttfs = parseInt(ttfsM[2], 10);
+            setTs(turnId);
+          }
+          const llmLat = e.msg.match(/Sending llm_latency metric:\s*turn_id=(\d+),\s*ttfb=(\d+)ms,\s*ttfs=(\d+)ms/);
+          if (llmLat) {
+            const turnId = parseInt(llmLat[1], 10);
+            const row = ensure(turnId);
+            if (row.llm_ttfb == null) row.llm_ttfb = parseInt(llmLat[2], 10);
+            if (row.llm_ttfs == null) row.llm_ttfs = parseInt(llmLat[3], 10);
+            setTs(turnId);
+          }
+          if (e.msg.indexOf('[report_controller]') >= 0 && e.msg.indexOf('end_to_end_latency_ms') >= 0) {
+            const start = e.msg.indexOf('{', e.msg.indexOf('[report_controller]'));
+            if (start >= 0) {
+              let d = 0, end = start;
+              for (; end < e.msg.length; end++) {
+                if (e.msg.charAt(end) === '{') d++;
+                else if (e.msg.charAt(end) === '}') { d--; if (d === 0) { end++; break; } }
+              }
+              const j = tryParseJSON(e.msg.slice(start, end));
+              if (j && j.turn_id != null && j.end_to_end_latency_ms != null) {
+                const turnId = parseInt(j.turn_id, 10);
+                const row = ensure(turnId);
+                if (j.bhvs_duration_ms != null) row.bhvs_delay = parseInt(j.bhvs_duration_ms, 10);
+                /* VAD only when log gives it: silence_duration_ms (EOS) + fixed padding — same as upstream report */
+                if (j.silence_duration_ms != null) row.vad = parseInt(j.silence_duration_ms, 10) + 160;
+                row.end_to_end_reported_ms = parseInt(j.end_to_end_latency_ms, 10);
+                setTs(turnId);
+              }
+            }
+          }
           const metricMsg = e.msg.match(/\[metric_message:\s*(\{[^]]+\})\]/);
           if (metricMsg) {
             const j = tryParseJSON(metricMsg[1]);
             if (j && j.turn_id != null) {
               const turnId = parseInt(j.turn_id, 10);
-              if (!byTurn[turnId]) byTurn[turnId] = { turn_id: turnId };
-              if (j.metric_name === 'aivad_delay' && j.latency_ms != null) {
-                byTurn[turnId].aivad_delay = parseInt(j.latency_ms, 10);
-                setTs(turnId);
-              }
-              if (j.metric_name === 'ttlw' && j.module === 'asr' && j.latency_ms != null) {
-                byTurn[turnId].asr_ttlw = parseInt(j.latency_ms, 10);
-                setTs(turnId);
-              }
-              if (j.metric_name === 'vad' && j.latency_ms != null) {
-                byTurn[turnId].vad = parseInt(j.latency_ms, 10);
-                setTs(turnId);
-              }
+              const row = ensure(turnId);
+              if (j.metric_name === 'aivad_delay' && j.latency_ms != null) row.aivad_delay = parseInt(j.latency_ms, 10);
+              if (j.metric_name === 'ttlw' && j.module === 'asr' && j.latency_ms != null) row.asr_ttlw = parseInt(j.latency_ms, 10);
+              if (j.metric_name === 'vad' && j.latency_ms != null) row.vad = parseInt(j.latency_ms, 10);
               if (j.module === 'llm' && j.latency_ms != null) {
-                if (j.metric_name === 'connect_delay' || j.metric_name === 'connect') byTurn[turnId].llm_connect = parseInt(j.latency_ms, 10);
-                else if (j.metric_name === 'ttfb') byTurn[turnId].llm_ttfb = parseInt(j.latency_ms, 10);
-                else if (j.metric_name === 'ttfs') byTurn[turnId].llm_ttfs = parseInt(j.latency_ms, 10);
-                setTs(turnId);
+                if (j.metric_name === 'connect_delay' || j.metric_name === 'connect') row.llm_connect = parseInt(j.latency_ms, 10);
+                else if (j.metric_name === 'ttfb' && row.llm_ttfb == null) row.llm_ttfb = parseInt(j.latency_ms, 10);
+                else if (j.metric_name === 'ttfs' && row.llm_ttfs == null) row.llm_ttfs = parseInt(j.latency_ms, 10);
               }
+              setTs(turnId);
             }
           }
           const ttlw = e.msg.match(/Turn TTLW recorded:\s*turn_id=(\d+),\s*ttlw=(\d+)ms/);
           if (ttlw) {
             const turnId = parseInt(ttlw[1], 10);
-            if (!byTurn[turnId]) byTurn[turnId] = { turn_id: turnId };
-            if (byTurn[turnId].asr_ttlw == null) byTurn[turnId].asr_ttlw = parseInt(ttlw[2], 10);
+            const row = ensure(turnId);
+            if (row.asr_ttlw == null) row.asr_ttlw = parseInt(ttlw[2], 10);
             setTs(turnId);
           }
           const ttsTtfb = e.msg.match(/tts_ttfb:\s*(\d+)\s+of request_id:\s*(\d+)/);
           if (ttsTtfb) {
             const turnId = parseInt(ttsTtfb[2], 10);
-            if (!byTurn[turnId]) byTurn[turnId] = { turn_id: turnId };
-            byTurn[turnId].tts_ttfb = parseInt(ttsTtfb[1], 10);
+            ensure(turnId).tts_ttfb = parseInt(ttsTtfb[1], 10);
             setTs(turnId);
           }
-          if ((e.msg.includes('tts') && e.msg.includes('ttfb')) && !e.msg.includes('request_id')) {
+          if ((e.msg.includes('tts') && e.msg.includes('ttfb')) && e.msg.includes('report_controller') && e.msg.includes("'turn_id'")) {
             const turnM = e.msg.match(/'turn_id':\s*(\d+)/);
-            const ttfbM = e.msg.match(/'ttfb':\s*(\d+)/) || e.msg.match(/ttfb[:\s]+(\d+)/);
+            const ttfbM = e.msg.match(/'ttfb':\s*(\d+)/);
             if (turnM && ttfbM) {
               const turnId = parseInt(turnM[1], 10);
-              if (!byTurn[turnId]) byTurn[turnId] = { turn_id: turnId };
-              if (byTurn[turnId].tts_ttfb == null) byTurn[turnId].tts_ttfb = parseInt(ttfbM[1], 10);
+              const row = ensure(turnId);
+              if (row.tts_ttfb == null) row.tts_ttfb = parseInt(ttfbM[1], 10);
               setTs(turnId);
             }
           }
           const aivadEnd = e.msg.match(/aivad_eval eval_id:\s*turn_(\d+)_[^\s]+\s+end in (\d+)ms/);
           if (aivadEnd) {
             const turnId = parseInt(aivadEnd[1], 10);
-            if (!byTurn[turnId]) byTurn[turnId] = { turn_id: turnId };
-            if (byTurn[turnId].aivad_delay == null) byTurn[turnId].aivad_delay = parseInt(aivadEnd[2], 10);
+            const row = ensure(turnId);
+            if (row.aivad_delay == null) row.aivad_delay = parseInt(aivadEnd[2], 10);
             setTs(turnId);
           }
           if (e.msg.includes('bhvs_delay') && e.msg.match(/latency_ms["']?\s*:\s*(\d+)/)) {
             const m = e.msg.match(/"turn_id"\s*:\s*(\d+)/);
-            if (m) {
-              const turnId = parseInt(m[1], 10);
-              if (!byTurn[turnId]) byTurn[turnId] = { turn_id: turnId };
-              byTurn[turnId].bhvs_delay = parseInt(e.msg.match(/latency_ms["']?\s*:\s*(\d+)/)[1], 10);
-              setTs(turnId);
-            }
+            if (m) ensure(parseInt(m[1], 10)).bhvs_delay = parseInt(e.msg.match(/latency_ms["']?\s*:\s*(\d+)/)[1], 10);
           }
         }
         const list = Object.values(byTurn).sort((a, b) => a.turn_id - b.turn_id);
         for (const row of list) {
-          if (row.bhvs_delay == null) row.bhvs_delay = 0;
-          if (row.vad == null) row.vad = row.turn_id % 2 === 1 ? 640 : 360;
+          if (row.bhvs_delay == null && row.asr_ttlw != null) row.bhvs_delay = 120;
         }
         return list;
       }
 
-      /** User speech from ASR: send_asr_result and vendor_result with SonioxTranscriptToken list */
+      /** User speech from ASR: send_asr_result, vendor_result, and ten:runtime Publish Message content user.transcription (has final) */
       function extractUserAsrTranscripts(entries) {
         const out = [];
         for (let i = 0; i < entries.length; i++) {
           const e = entries[i];
           if (!e.msg) continue;
+          if (e.msg.includes('Message content:') && e.msg.includes('user.transcription')) {
+            let j = e.json;
+            if (!j || j.object !== 'user.transcription') {
+              const idx = e.msg.indexOf('Message content:');
+              if (idx >= 0) {
+                const jsonStr = e.msg.slice(e.msg.indexOf('{', idx));
+                j = tryParseJSON(jsonStr);
+              }
+            }
+            if (j && j.object === 'user.transcription' && j.text != null) {
+              out.push({
+                ts: e.ts,
+                text: typeof j.text === 'string' ? j.text : '',
+                final: j.final === true,
+                start_ms: j.start_ms != null ? j.start_ms : null,
+                duration_ms: j.duration_ms != null ? j.duration_ms : null,
+                language: (j.language != null && j.language !== '') ? j.language : null,
+                turn_id: j.turn_id != null ? j.turn_id : null,
+                entryIndex: i
+              });
+            }
+          }
           if (e.msg.includes('send_asr_result:')) {
             const textMatch = e.msg.match(/'text':\s*'((?:[^'\\]|\\.)*)'/);
             const finalMatch = e.msg.match(/'final':\s*(True|False)/);
@@ -1402,13 +1511,18 @@
         return out;
       }
 
-      /** User + agent turns from LLM glue payload: "glue [turn_id:N]: {messages:[...]}" */
+      /** User + agent turns from LLM glue payload: "glue [turn_id:N]: {messages:[...]}". Emit all user/assistant messages; buildTurnsList dedupes by (turn, speaker). */
       function extractLlmGlueMessages(entries) {
-        const byKey = {};
+        const out = [];
         for (let i = 0; i < entries.length; i++) {
           const e = entries[i];
           if (!e.msg || !e.msg.includes('glue [turn_id:') || !e.msg.includes('"messages"')) continue;
-          const j = tryParseJSON(e.msg) || e.json;
+          let j = e.json;
+          if (!j || !Array.isArray(j.messages)) {
+            const colonIdx = e.msg.indexOf(']: ', e.msg.indexOf('glue [turn_id:'));
+            const jsonStr = colonIdx >= 0 ? e.msg.slice(colonIdx + 3) : e.msg;
+            j = tryParseJSON(jsonStr);
+          }
           if (!j || !Array.isArray(j.messages)) continue;
           for (const msg of j.messages) {
             if (!msg || (msg.role !== 'user' && msg.role !== 'assistant')) continue;
@@ -1416,11 +1530,10 @@
             if (!content) continue;
             const turnId = msg.turn_id != null ? msg.turn_id : null;
             const speaker = msg.role === 'user' ? 'user' : 'agent';
-            const key = (turnId != null ? turnId : '') + '|' + speaker + '|' + content.slice(0, 80);
-            byKey[key] = { speaker, turn: turnId, ts: e.ts, text: content, final: null, start_ms: msg.start_ms != null ? msg.start_ms : null, duration_ms: msg.duration_ms != null ? msg.duration_ms : null, language: msg.language || null, entryIndex: i };
+            out.push({ speaker, turn: turnId, ts: e.ts, text: content, final: null, start_ms: msg.start_ms != null ? msg.start_ms : null, duration_ms: msg.duration_ms != null ? msg.duration_ms : null, language: msg.language || null, entryIndex: i });
           }
         }
-        return Object.values(byKey);
+        return out;
       }
 
       /** All individual text messages (user ASR + agent TTS + STT transcripts), no deduplication, for filtering */
@@ -1447,6 +1560,14 @@
       }
 
       /** Combined turns: user (ASR + eval_id + glue) + agent (TTS + glue), same shape, sorted by turn then time */
+      function buildTurnRowHtml(row) {
+        const text = (row.text || '').slice(0, 200) + (row.text && row.text.length > 200 ? '…' : '');
+        const finalStr = row.final === true ? 'yes' : row.final === false ? 'no' : '—';
+        const tsAttr = escapeHtml(row.ts || '');
+        const idxAttr = row.entryIndex != null ? ' data-index="' + row.entryIndex + '"' : '';
+        return `<tr class="turn-row turn-${row.speaker}" data-ts="${tsAttr}"${idxAttr}><td>${row.turn != null ? row.turn : '—'}</td><td>${escapeHtml(row.speaker)}</td><td>${escapeHtml(row.ts)}</td><td>${escapeHtml(text)}</td><td>${finalStr}</td><td>${row.start_ms != null ? row.start_ms : '—'}</td><td>${row.duration_ms != null ? row.duration_ms : '—'}</td><td>${escapeHtml(row.language || '—')}</td></tr>`;
+      }
+
       function buildTurnsList(insights) {
         const agentFromTts = (insights.tts || []).map(o => ({
           speaker: 'agent',
@@ -1456,7 +1577,8 @@
           final: o.final,
           start_ms: o.start_ms,
           duration_ms: o.duration_ms,
-          language: o.language
+          language: o.language,
+          entryIndex: o.entryIndex
         }));
         const userFromAsr = (insights.userAsr || []).map(o => ({
           speaker: 'user',
@@ -1466,14 +1588,19 @@
           final: o.final,
           start_ms: o.start_ms,
           duration_ms: o.duration_ms != null ? o.duration_ms : o.final_audio_proc_ms,
-          language: o.language
+          language: o.language,
+          entryIndex: o.entryIndex
         }));
         const evalTurns = (insights.evalIdTurns || []);
         const glueTurns = (insights.llmGlueTurns || []);
         const byKey = {};
         function addOne(row) {
           const k = (row.turn != null ? row.turn : '') + '|' + row.speaker;
-          if (!byKey[k] || (row.text && row.text.trim().length > (byKey[k].text || '').trim().length)) byKey[k] = row;
+          const existing = byKey[k];
+          if (!existing) { byKey[k] = row; return; }
+          if (row.final === true && existing.final !== true) { byKey[k] = row; return; }
+          if (row.final !== true && existing.final === true) return;
+          if ((row.text || '').trim().length > (existing.text || '').trim().length) byKey[k] = row;
         }
         evalTurns.forEach(addOne);
         glueTurns.forEach(addOne);
@@ -1580,13 +1707,10 @@
         const turnsList = buildTurnsList(insights);
         html += '<div class="insight-tab-panel" data-panel="turns">';
         if (turnsList.length) {
-          html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Turn','Speaker','Time','Text','Final','Start (ms)','Duration (ms)','Language']) + '</tr></thead><tbody>';
+          html += '<div class="turns-toolbar"><label><input type="checkbox" id="turnsFinalOnly" /> Show only final</label></div>';
+          html += '<table id="turnsTable" class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Turn','Speaker','Time','Text','Final','Start (ms)','Duration (ms)','Language']) + '</tr></thead><tbody>';
           for (const row of turnsList) {
-            const text = (row.text || '').slice(0, 200) + (row.text && row.text.length > 200 ? '…' : '');
-            const finalStr = row.final === true ? 'yes' : row.final === false ? 'no' : '—';
-            const tsAttr = escapeHtml(row.ts || '');
-            const idxAttr = row.entryIndex != null ? ' data-index="' + row.entryIndex + '"' : '';
-            html += `<tr class="turn-row turn-${row.speaker}" data-ts="${tsAttr}"${idxAttr}><td>${row.turn != null ? row.turn : '—'}</td><td>${escapeHtml(row.speaker)}</td><td>${escapeHtml(row.ts)}</td><td>${escapeHtml(text)}</td><td>${finalStr}</td><td>${row.start_ms != null ? row.start_ms : '—'}</td><td>${row.duration_ms != null ? row.duration_ms : '—'}</td><td>${escapeHtml(row.language || '—')}</td></tr>`;
+            html += buildTurnRowHtml(row);
           }
           html += '</tbody></table>';
         } else html += '<p class="insight-empty">No turns (user or agent speech) found.</p>';
@@ -1619,7 +1743,7 @@
         html += '<div class="insight-tab-panel" data-panel="performance">';
         const perf = insights.performanceMetrics || [];
         if (perf.length) {
-          html += '<p class="insight-formula">Total_Time_Exclude_RTC ≈ VAD + AIVAD_Delay + BHVS_Delay + ASR_TTLW + LLM_TTFS + TTS_TTFB</p>';
+          html += '<p class="insight-formula">TTeRTC = backend E2E when logged; else sum(VAD+AIVAD+BHVS+ASR+LLM_TTFS+TTS). <strong>~</strong> + <strong>†</strong> = partial total (VAD not in log for that turn): same number as summing the row’s ms columns that aren’t —/N/A—<em>not</em> a negative value. <strong>†</strong> flags “incomplete vs full pipeline”; <strong>~</strong> is the same hint (easy to mistake for minus in some fonts).</p>';
           (function () {
             const series = [
               { key: 'vad', label: 'VAD (ms)', color: '#67e8f9', marker: 'circle' },
@@ -1640,7 +1764,8 @@
               if (s.key === 'total') {
                 for (let i = 0; i < n; i++) {
                   const r = perf[i];
-                  const v = (r.vad || 0) + (r.aivad_delay || 0) + (r.bhvs_delay || 0) + (r.asr_ttlw || 0) + (r.llm_ttfs || 0) + (r.tts_ttfb || 0);
+                  const v = r.end_to_end_reported_ms != null ? r.end_to_end_reported_ms
+                    : (r.vad || 0) + (r.aivad_delay || 0) + (r.bhvs_delay || 0) + (r.asr_ttlw || 0) + (r.llm_ttfs || 0) + (r.tts_ttfb || 0);
                   if (v > 0) pointsBySeries.total.push({ i: i, v: v });
                 }
               } else {
@@ -1746,7 +1871,7 @@
           })();
           html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Turn ID','VAD (ms)','AIVAD Delay (ms)','BHVS Delay (ms)','ASR TTLW (ms)','LLM Connect (ms)','LLM TTFB (ms)','LLM TTFS (ms)','TTS TTFB (ms)','TTeRTC (ms)']) + '</tr></thead><tbody>';
           for (const row of perf) {
-            const vad = row.vad != null ? row.vad + ' ms' : 'N/A';
+            const vad = row.vad != null ? row.vad + ' ms' : '—';
             const aivad = row.aivad_delay != null ? row.aivad_delay + ' ms' : 'N/A';
             const bhvs = row.bhvs_delay != null ? row.bhvs_delay + ' ms' : 'N/A';
             const asrTtlw = row.asr_ttlw != null ? row.asr_ttlw + ' ms' : 'N/A';
@@ -1754,8 +1879,11 @@
             const llmTtfb = row.llm_ttfb != null ? row.llm_ttfb + ' ms' : 'N/A';
             const llmTtfs = row.llm_ttfs != null ? row.llm_ttfs + ' ms' : 'N/A';
             const ttsTtfb = row.tts_ttfb != null ? row.tts_ttfb + ' ms' : 'N/A';
-            const totalExclRtc = (row.vad || 0) + (row.aivad_delay || 0) + (row.bhvs_delay || 0) + (row.asr_ttlw || 0) + (row.llm_ttfs || 0) + (row.tts_ttfb || 0);
-            const totalStr = totalExclRtc > 0 ? totalExclRtc + ' ms' : 'N/A';
+            const sumParts = (row.vad || 0) + (row.aivad_delay || 0) + (row.bhvs_delay || 0) + (row.asr_ttlw || 0) + (row.llm_ttfs || 0) + (row.tts_ttfb || 0);
+            const totalExclRtc = row.end_to_end_reported_ms != null ? row.end_to_end_reported_ms : sumParts;
+            let totalStr = '—';
+            if (row.end_to_end_reported_ms != null) totalStr = totalExclRtc + ' ms';
+            else if (sumParts > 0) totalStr = (row.vad == null ? '~' : '') + sumParts + ' ms' + (row.vad == null ? ' †' : '');
             html += `<tr><td>${row.turn_id}</td><td>${vad}</td><td>${aivad}</td><td>${bhvs}</td><td>${asrTtlw}</td><td>${llmConn}</td><td>${llmTtfb}</td><td>${llmTtfs}</td><td>${ttsTtfb}</td><td>${totalStr}</td></tr>`;
           }
           const medVad = median(perf.map(function (r) { return r.vad; }));
@@ -1766,10 +1894,14 @@
           const medLlmTtfb = median(perf.map(function (r) { return r.llm_ttfb; }));
           const medLlmTtfs = median(perf.map(function (r) { return r.llm_ttfs; }));
           const medTts = median(perf.map(function (r) { return r.tts_ttfb; }));
-          const totalV = function (r) { return (r.vad || 0) + (r.aivad_delay || 0) + (r.bhvs_delay || 0) + (r.asr_ttlw || 0) + (r.llm_ttfs || 0) + (r.tts_ttfb || 0); };
+          const totalV = function (r) {
+            if (r.end_to_end_reported_ms != null) return r.end_to_end_reported_ms;
+            return (r.vad || 0) + (r.aivad_delay || 0) + (r.bhvs_delay || 0) + (r.asr_ttlw || 0) + (r.llm_ttfs || 0) + (r.tts_ttfb || 0);
+          };
           const medTotal = median(perf.map(totalV));
           const fmt = function (v) { return v != null ? Math.round(v) + ' ms' : '—'; };
           html += '</tbody><tfoot><tr class="perf-median-row"><td>Median</td><td>' + fmt(medVad) + '</td><td>' + fmt(medAivad) + '</td><td>' + fmt(medBhvs) + '</td><td>' + fmt(medAsr) + '</td><td>' + fmt(medLlmConn) + '</td><td>' + fmt(medLlmTtfb) + '</td><td>' + fmt(medLlmTtfs) + '</td><td>' + fmt(medTts) + '</td><td>' + fmt(medTotal) + '</td></tr></tfoot></table>';
+          html += '<p class="perf-table-footnote"><strong>Note:</strong> TTeRTC values marked <strong>~…†</strong> are <em>partial</em> totals when VAD (ms) is — for that turn: they sum only the other columns that have numbers. They are <em>not</em> negative times. <strong>†</strong> = incomplete vs a full pipeline row; <strong>~</strong> is the same reminder (can resemble a minus sign in some typefaces).</p>';
         } else html += '<p class="insight-empty">No performance metrics found.</p>';
         html += '</div>';
 
@@ -2019,11 +2151,7 @@
         }).join('');
         container.style.display = 'block';
 
-        document.getElementById('contextBar').classList.toggle('visible', selectedIndex != null);
-
-        const searchWrap = (document.getElementById('searchInput').value || '').trim();
-        document.getElementById('goToFirstMatch').style.display = searchWrap ? 'inline-block' : 'none';
-
+        container.querySelectorAll('.log-entry.selected').forEach(function (el) { el.classList.remove('selected'); });
         if (selectedIndex != null) {
           const selEl = container.querySelector('.log-entry[data-index="' + selectedIndex + '"]');
           if (selEl) {
@@ -2031,6 +2159,11 @@
             selEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
           }
         }
+
+        document.getElementById('contextBar').classList.toggle('visible', selectedIndex != null);
+
+        const searchWrap = (document.getElementById('searchInput').value || '').trim();
+        document.getElementById('goToFirstMatch').style.display = searchWrap ? 'inline-block' : 'none';
 
         container.querySelectorAll('.json-toggle').forEach(el => {
           el.addEventListener('click', function (ev) {
@@ -2192,13 +2325,55 @@
         });
       });
 
-      document.getElementById('fileInput').addEventListener('change', function () {
-        const file = this.files && this.files[0];
-        if (!file) return;
+      function loadLogFile(file) {
+        if (!file || !(file instanceof File)) return;
         const reader = new FileReader();
         reader.onload = () => onFileLoad(reader.result, file.name);
         reader.readAsText(file, 'UTF-8');
+      }
+
+      document.getElementById('fileInput').addEventListener('change', function () {
+        const file = this.files && this.files[0];
+        if (file) loadLogFile(file);
       });
+
+      const appEl = document.getElementById('app');
+      /** DOMStringList (Safari) has .contains; arrays have .includes — avoid throws on GitHub Pages / Safari */
+      function isFileDrag(e) {
+        try {
+          const types = e.dataTransfer && e.dataTransfer.types;
+          if (!types || !types.length) return false;
+          if (typeof types.contains === 'function') return types.contains('Files');
+          if (typeof types.includes === 'function') return types.includes('Files');
+          for (let i = 0; i < types.length; i++) if (types[i] === 'Files') return true;
+          return false;
+        } catch (err) { return false; }
+      }
+      window.addEventListener('dragenter', function (e) {
+        if (!isFileDrag(e)) return;
+        appEl.classList.add('drag-over');
+      }, true);
+      document.addEventListener('dragleave', function (e) {
+        if (!isFileDrag(e)) return;
+        const rel = e.relatedTarget;
+        if (!rel || !document.documentElement.contains(rel))
+          appEl.classList.remove('drag-over');
+      }, true);
+      /* Capture phase + window: whole tab is a drop target (fixes GH Pages / Firefox navigating away on drop) */
+      window.addEventListener('dragover', function (e) {
+        if (!isFileDrag(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = 'copy';
+      }, true);
+      window.addEventListener('drop', function (e) {
+        if (!isFileDrag(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        appEl.classList.remove('drag-over');
+        const file = e.dataTransfer.files && e.dataTransfer.files[0];
+        if (file) loadLogFile(file);
+      }, true);
 
       document.getElementById('filterI').addEventListener('change', applyFilters);
       document.getElementById('filterD').addEventListener('change', applyFilters);
@@ -2228,6 +2403,19 @@
       });
 
       document.getElementById('goToFirstMatch').addEventListener('click', goToFirstMatch);
+
+      document.getElementById('insightsContent').addEventListener('change', function (ev) {
+        if (ev.target.id === 'turnsFinalOnly') {
+          const insights = state && state.insights;
+          const turnsTable = document.getElementById('turnsTable');
+          if (!insights || !turnsTable) return;
+          let list = buildTurnsList(insights);
+          if (ev.target.checked) list = list.filter(function (r) { return r.final === true; });
+          const tbody = turnsTable.querySelector('tbody');
+          if (tbody) tbody.innerHTML = list.map(buildTurnRowHtml).join('');
+          return;
+        }
+      });
 
       document.getElementById('insightsContent').addEventListener('click', function (ev) {
         if (window.getSelection().toString().trim()) return;
