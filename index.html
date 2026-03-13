@@ -544,6 +544,42 @@
     .perf-series-off { visibility: hidden; }
     .insight-table .perf-median-row { font-weight: 600; background: var(--accent-dim); }
     .perf-table-footnote { font-size: 12px; color: var(--text-muted); margin: 12px 0 0; max-width: 720px; line-height: 1.5; }
+    /* Perf headers: instant custom tooltip (no OS delay, no ? cursor) */
+    .insight-table thead th.perf-th-tip {
+      position: relative;
+      cursor: default;
+      text-decoration: underline dotted var(--text-muted);
+      text-underline-offset: 3px;
+    }
+    .insight-table thead th.perf-th-tip::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      left: 50%;
+      bottom: calc(100% + 8px);
+      transform: translateX(-50%);
+      min-width: 180px;
+      max-width: min(340px, 85vw);
+      padding: 8px 10px;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 12px;
+      font-weight: 400;
+      line-height: 1.4;
+      text-align: left;
+      text-decoration: none;
+      white-space: normal;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+      z-index: 200;
+      pointer-events: none;
+      visibility: hidden;
+      opacity: 0;
+    }
+    .insight-table thead th.perf-th-tip:hover::after {
+      visibility: visible;
+      opacity: 1;
+    }
     .insight-table .perf-median-row td { border-top: 2px solid var(--border); }
     .turn-row.turn-user td:nth-child(2) { color: var(--accent); font-weight: 500; }
     .turn-row.turn-agent td:nth-child(2) { color: var(--success); font-weight: 500; }
@@ -1653,6 +1689,16 @@
       function insightHeaderRow(labels) {
         return labels.map((l, i) => '<th class="insight-th-filter" data-col-index="' + i + '">' + escapeHtml(l) + '</th>').join('');
       }
+      /** Performance table only: custom CSS tooltip (instant, no help cursor). */
+      function insightPerfHeaderRow(cols) {
+        return cols.map(function (c, i) {
+          const label = typeof c === 'string' ? c : c.label;
+          const tip = typeof c === 'string' ? '' : (c.title || '');
+          const tipEsc = tip.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+          const dataTip = tip ? ' data-tooltip="' + tipEsc + '"' : '';
+          return '<th class="insight-th-filter perf-th-tip" data-col-index="' + i + '"' + dataTip + '>' + escapeHtml(label) + '</th>';
+        }).join('');
+      }
 
       function renderConversation(turns) {
         if (!turns.length) return '';
@@ -1743,7 +1789,7 @@
         html += '<div class="insight-tab-panel" data-panel="performance">';
         const perf = insights.performanceMetrics || [];
         if (perf.length) {
-          html += '<p class="insight-formula">TTeRTC = backend E2E when logged; else sum(VAD+AIVAD+BHVS+ASR+LLM_TTFS+TTS). <strong>~</strong> + <strong>†</strong> = partial total (VAD not in log for that turn): same number as summing the row’s ms columns that aren’t —/N/A—<em>not</em> a negative value. <strong>†</strong> flags “incomplete vs full pipeline”; <strong>~</strong> is the same hint (easy to mistake for minus in some fonts).</p>';
+          html += '<p class="insight-formula">Module timings by turn; see <strong>Note</strong> under the table for TTeRTC and <strong>~</strong>/<strong>†</strong>.</p>';
           (function () {
             const series = [
               { key: 'vad', label: 'VAD (ms)', color: '#67e8f9', marker: 'circle' },
@@ -1869,7 +1915,18 @@
             svg += '</svg></div></div>';
             html += svg;
           })();
-          html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Turn ID','VAD (ms)','AIVAD Delay (ms)','BHVS Delay (ms)','ASR TTLW (ms)','LLM Connect (ms)','LLM TTFB (ms)','LLM TTFS (ms)','TTS TTFB (ms)','TTeRTC (ms)']) + '</tr></thead><tbody>';
+          html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightPerfHeaderRow([
+            { label: 'Turn ID', title: 'Turn index for this user-speech segment (matches turn_detector / metrics in the log).' },
+            { label: 'VAD (ms)', title: 'Voice Activity Detection window: silence duration after speech ends plus fixed padding (from EOS / E2E report when logged). Not shown if that line is missing for the turn.' },
+            { label: 'AIVAD Delay (ms)', title: 'AIVAD (AI VAD) extra delay when that extension is enabled; N/A when disabled.' },
+            { label: 'BHVS Delay (ms)', title: 'BHVS: behavioral hold / barge-in window (ms) before ASR finalize; often 120 ms when BHVS is on.' },
+            { label: 'ASR TTLW (ms)', title: 'ASR Time To Last Word: from end-of-speech to last finalized transcript for the turn.' },
+            { label: 'LLM Connect (ms)', title: 'Time until the LLM HTTP streaming connection returns headers (before first token).' },
+            { label: 'LLM TTFB (ms)', title: 'LLM Time To First Byte: from request start to first assistant text token in the stream.' },
+            { label: 'LLM TTFS (ms)', title: 'LLM Time To First Sentence: until the first chunk sent to TTS (first speakable sentence).' },
+            { label: 'TTS TTFB (ms)', title: 'TTS Time To First Byte: from TTS request to first audio frame out of the synthesizer.' },
+            { label: 'TTeRTC (ms)', title: 'Total time excluding RTC: backend end-to-end when logged; else sum of VAD + AIVAD + BHVS + ASR TTLW + LLM TTFS + TTS TTFB. ~…† = partial when VAD missing.' }
+          ]) + '</tr></thead><tbody>';
           for (const row of perf) {
             const vad = row.vad != null ? row.vad + ' ms' : '—';
             const aivad = row.aivad_delay != null ? row.aivad_delay + ' ms' : 'N/A';
@@ -1901,7 +1958,7 @@
           const medTotal = median(perf.map(totalV));
           const fmt = function (v) { return v != null ? Math.round(v) + ' ms' : '—'; };
           html += '</tbody><tfoot><tr class="perf-median-row"><td>Median</td><td>' + fmt(medVad) + '</td><td>' + fmt(medAivad) + '</td><td>' + fmt(medBhvs) + '</td><td>' + fmt(medAsr) + '</td><td>' + fmt(medLlmConn) + '</td><td>' + fmt(medLlmTtfb) + '</td><td>' + fmt(medLlmTtfs) + '</td><td>' + fmt(medTts) + '</td><td>' + fmt(medTotal) + '</td></tr></tfoot></table>';
-          html += '<p class="perf-table-footnote"><strong>Note:</strong> TTeRTC values marked <strong>~…†</strong> are <em>partial</em> totals when VAD (ms) is — for that turn: they sum only the other columns that have numbers. They are <em>not</em> negative times. <strong>†</strong> = incomplete vs a full pipeline row; <strong>~</strong> is the same reminder (can resemble a minus sign in some typefaces).</p>';
+          html += '<p class="perf-table-footnote"><strong>Note:</strong> TTeRTC = backend E2E when logged; else sum(VAD+AIVAD+BHVS+ASR+LLM_TTFS+TTS). <strong>~</strong> + <strong>†</strong> = partial total when VAD (ms) is — for that turn—same as adding only the row’s numeric ms columns (not —/N/A). Not a negative time. <strong>†</strong> = incomplete vs full pipeline; <strong>~</strong> = same idea (can look like “−” in some fonts).</p>';
         } else html += '<p class="insight-empty">No performance metrics found.</p>';
         html += '</div>';
 
