@@ -2654,8 +2654,36 @@
         });
       }
 
-      let state = { entries: [], summary: {}, extensions: [], insights: null, selectedIndex: null, contextRadius: null };
+      let state = { entries: [], summary: {}, extensions: [], insights: null, selectedIndex: null, contextRadius: null, pendingScrollToSelection: false };
       let insightColumnFilter = {};
+
+      /** So the jumped-to line is actually in the DOM (not hidden by errors-only, extension, search, time). */
+      function resetLogFiltersForInsightsJump() {
+        document.getElementById('filterI').checked = true;
+        document.getElementById('filterD').checked = true;
+        document.getElementById('filterW').checked = true;
+        document.getElementById('filterE').checked = true;
+        document.getElementById('extFilter').value = '';
+        document.getElementById('searchInput').value = '';
+        document.getElementById('timeFrom').value = '';
+        document.getElementById('timeTo').value = '';
+        document.getElementById('goToFirstMatch').style.display = 'none';
+      }
+
+      /** logContainer scrolls, not the window — center the selected row after layout. */
+      function scrollSelectedIntoLogContainer() {
+        const idx = state.selectedIndex;
+        if (idx == null) return;
+        const logContainer = document.getElementById('logContainer');
+        const logEntries = document.getElementById('logEntries');
+        if (!logContainer || !logEntries) return;
+        const selEl = logEntries.querySelector('.log-entry[data-index="' + idx + '"]');
+        if (!selEl) return;
+        const lcRect = logContainer.getBoundingClientRect();
+        const elRect = selEl.getBoundingClientRect();
+        const delta = (elRect.top + elRect.height / 2) - (lcRect.top + lcRect.height / 2);
+        logContainer.scrollTop += delta;
+      }
 
       function applyFilters() {
         const showI = document.getElementById('filterI').checked;
@@ -2703,10 +2731,15 @@
         container.querySelectorAll('.log-entry.selected').forEach(function (el) { el.classList.remove('selected'); });
         if (selectedIndex != null) {
           const selEl = container.querySelector('.log-entry[data-index="' + selectedIndex + '"]');
-          if (selEl) {
-            selEl.classList.add('selected');
-            selEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
-          }
+          if (selEl) selEl.classList.add('selected');
+        }
+        if (selectedIndex != null && state.pendingScrollToSelection) {
+          state.pendingScrollToSelection = false;
+          requestAnimationFrame(function () {
+            requestAnimationFrame(function () {
+              scrollSelectedIntoLogContainer();
+            });
+          });
         }
 
         const ctxBar = document.getElementById('contextBar');
@@ -2744,8 +2777,16 @@
         const idx = state.entries.findIndex(e => e.msg && e.msg.toLowerCase().includes(search));
         if (idx < 0) return;
         document.querySelector('.view-tabs button[data-view="log"]').click();
+        document.getElementById('filterI').checked = true;
+        document.getElementById('filterD').checked = true;
+        document.getElementById('filterW').checked = true;
+        document.getElementById('filterE').checked = true;
+        document.getElementById('extFilter').value = '';
+        document.getElementById('timeFrom').value = '';
+        document.getElementById('timeTo').value = '';
         state.selectedIndex = idx;
         state.contextRadius = 50;
+        state.pendingScrollToSelection = true;
         applyFilters();
       }
 
@@ -2759,7 +2800,7 @@
           const entries = parseLines(text);
           const summary = extractSummary(entries);
           const extensions = collectExtensions(entries);
-          state = { entries, summary, extensions, insights: null, selectedIndex: null, contextRadius: null };
+          state = { entries, summary, extensions, insights: null, selectedIndex: null, contextRadius: null, pendingScrollToSelection: false };
 
           document.getElementById('summaryPlaceholder').style.display = 'none';
           document.getElementById('summaryContent').style.display = 'block';
@@ -2962,6 +3003,7 @@
         const idx = parseInt(entry.getAttribute('data-index'), 10);
         if (isNaN(idx)) return;
         state.selectedIndex = idx;
+        state.pendingScrollToSelection = true;
         applyFilters();
       });
 
@@ -2996,21 +3038,26 @@
         }
         if (idx < 0) return;
         document.querySelector('.view-tabs button[data-view="log"]').click();
+        resetLogFiltersForInsightsJump();
         state.selectedIndex = idx;
         state.contextRadius = 50;
+        state.pendingScrollToSelection = true;
         applyFilters();
       });
 
       document.getElementById('ctxShow50').addEventListener('click', function () {
         state.contextRadius = 50;
+        state.pendingScrollToSelection = true;
         applyFilters();
       });
       document.getElementById('ctxShow100').addEventListener('click', function () {
         state.contextRadius = 100;
+        state.pendingScrollToSelection = true;
         applyFilters();
       });
       document.getElementById('ctxShowAll').addEventListener('click', function () {
         state.contextRadius = null;
+        state.pendingScrollToSelection = true;
         applyFilters();
       });
       function exitInsightsJump() {
@@ -3022,6 +3069,7 @@
 
       document.getElementById('ctxClearFilters').addEventListener('click', function () {
         state.contextRadius = null;
+        state.pendingScrollToSelection = true;
         document.getElementById('searchInput').value = '';
         document.getElementById('extFilter').value = '';
         document.getElementById('filterI').checked = true;
