@@ -1203,6 +1203,62 @@
         return out;
       }
 
+      /** TTS failures: WebSocket auth (401), empty api_key in config, runtime tts base_dir warnings. */
+      function extractTtsIssues(entries) {
+        const items = [];
+        const seenEmptyKey = { v: false };
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i];
+          if (!e.msg) continue;
+          const msg = e.msg;
+          if (/\[tts\]/i.test(msg) && /Websocket internal error|server rejected WebSocket|HTTP\s+\d{3}/i.test(msg)) {
+            const httpM = msg.match(/HTTP\s+(\d{3})/);
+            items.push({
+              ts: e.ts,
+              kind: 'error',
+              issue: 'websocket',
+              code: httpM ? httpM[1] : null,
+              detail: msg.replace(/\s+/g, ' ').trim().slice(0, 220),
+              entryIndex: i
+            });
+            continue;
+          }
+          if (/base_dir of 'tts' is missing|Skip the loading of (manifest|property).*'tts'/i.test(msg)) {
+            items.push({
+              ts: e.ts,
+              kind: 'warning',
+              issue: 'tts_base_dir',
+              code: null,
+              detail: msg.replace(/\s+/g, ' ').trim().slice(0, 200),
+              entryIndex: i
+            });
+            continue;
+          }
+          if (/\[tts\]\s*config:/i.test(msg) && /api_key=(''|"")/.test(msg) && !seenEmptyKey.v) {
+            seenEmptyKey.v = true;
+            items.push({
+              ts: e.ts,
+              kind: 'warning',
+              issue: 'empty_api_key',
+              code: null,
+              detail: 'TTS init config has empty api_key (often causes WebSocket HTTP 401 to ByteDance/openspeech).',
+              entryIndex: i
+            });
+          }
+          if (/KEYPOINT ignore flush in non-interruptable state/i.test(msg)) {
+            items.push({
+              ts: e.ts,
+              kind: 'info',
+              issue: 'flush_ignored',
+              code: null,
+              detail: msg.replace(/\s+/g, ' ').trim().slice(0, 160),
+              entryIndex: i
+            });
+          }
+        }
+        return items;
+      }
+
       function extractStt(entries) {
         const transcripts = [];
         const metrics = [];
@@ -1961,7 +2017,7 @@
 
       function renderEntry(entry, index, isSelected) {
         const isRelevant = entry.msg && (
-          /llm failure|Something went wrong|Request failed|on_request_exception|ncs on_agent_left|Failed too many times|No app certificate provided|TokenManager not initialized|Requested time .* exceeds timeline duration|500 Internal Server Error|Failed to send message/i.test(entry.msg)
+          /llm failure|Something went wrong|Request failed|on_request_exception|ncs on_agent_left|Failed too many times|No app certificate provided|TokenManager not initialized|Requested time .* exceeds timeline duration|Websocket internal error|server rejected WebSocket|HTTP 401|base_dir of 'tts' is missing|500 Internal Server Error|Failed to send message/i.test(entry.msg)
         );
         const levelClass = entry.level ? `level-${entry.level}` : '';
         let jsonHtml = '';
@@ -2031,6 +2087,7 @@
           { id: 'stt', label: 'STT / ASR metrics' },
           { id: 'rtc', label: 'RTC / Agora' },
           { id: 'llm', label: 'LLM' },
+          { id: 'ttsTab', label: 'TTS' },
           { id: 'events', label: 'Events' }
         ];
 
@@ -2334,6 +2391,33 @@
           }
           html += '</tbody></table>';
         } else html += '<p class="insight-empty">No LLM requests found.</p>';
+        html += '</div>';
+
+        html += '<div class="insight-tab-panel" data-panel="ttsTab">';
+        const ttsIssues = insights.ttsIssues || [];
+        if (ttsIssues.length) {
+          html += '<p><strong>TTS issues &amp; hints</strong></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Severity','Issue','Code','Detail']) + '</tr></thead><tbody>';
+          for (const r of ttsIssues) {
+            const tsAttr = escapeHtml(r.ts || '');
+            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
+            const sev = r.kind === 'error' ? '<span style="color:var(--error)">error</span>' : r.kind === 'warning' ? 'warning' : 'info';
+            html += `<tr class="${r.kind === 'error' ? 'llm-row error' : ''}" data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(r.ts)}</td><td>${sev}</td><td>${escapeHtml(r.issue || '—')}</td><td>${escapeHtml(r.code || '—')}</td><td>${escapeHtml((r.detail || '').slice(0, 100))}</td></tr>`;
+          }
+          html += '</tbody></table>';
+        } else {
+          html += '<p class="insight-empty">No TTS errors or warnings detected.</p>';
+        }
+        const ttsOut = insights.tts || [];
+        if (ttsOut.length) {
+          html += '<p><strong>TTS output (transcripts / text results)</strong></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Turn','Text','Duration (ms)']) + '</tr></thead><tbody>';
+          for (const t of ttsOut) {
+            const tsAttr = escapeHtml(t.ts || '');
+            const idxAttr = t.entryIndex != null ? ' data-index="' + t.entryIndex + '"' : '';
+            const text = (t.text || '').slice(0, 200) + ((t.text || '').length > 200 ? '…' : '');
+            html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(t.ts)}</td><td>${t.turn_id != null ? escapeHtml(String(t.turn_id)) : '—'}</td><td>${escapeHtml(text || '—')}</td><td>${t.duration_ms != null ? t.duration_ms : '—'}</td></tr>`;
+          }
+          html += '</tbody></table>';
+        }
         html += '</div>';
 
         html += '<div class="insight-tab-panel active" data-panel="ncs">';
@@ -2733,6 +2817,7 @@
             stateTransitions: extractStateTransitions(entries),
             stateReports: extractStateReports(entries),
             tts: extractTts(entries),
+            ttsIssues: extractTtsIssues(entries),
             userAsr: extractUserAsrTranscripts(entries),
             evalIdTurns: extractEvalIdMessages(entries),
             llmGlueTurns: extractLlmGlueMessages(entries),
