@@ -707,12 +707,12 @@
             </div>
           </div>
           <div class="context-bar" id="contextBar">
-            <span class="ctx-label">Selected message. Show context:</span>
+            <span class="ctx-label" id="ctxBarLabel">Jumped from Insights — narrow window hides lines outside ±N.</span>
             <button type="button" id="ctxShow50">±50 lines</button>
             <button type="button" id="ctxShow100">±100 lines</button>
-            <button type="button" id="ctxShowAll" class="secondary">Show all</button>
-            <button type="button" id="ctxClearFilters" class="secondary" title="Clear search, extension, time, and level filters (stays in ±context)">Clear filters</button>
-            <button type="button" id="ctxExitJump" class="secondary" title="Show full log and hide this bar (same as filter row Clear)">Exit jump</button>
+            <button type="button" id="ctxShowAll" class="secondary" title="Show every line in the file (still highlights this message)">Full log</button>
+            <button type="button" id="ctxClearFilters" class="secondary" title="Clear search, extension, time &amp; level filters, and show the full log (this line stays selected)">Clear filters</button>
+            <button type="button" id="ctxExitJump" class="secondary" title="Leave jump mode: full log, no selection bar">Done</button>
           </div>
           <div class="log-container" id="logContainer">
             <div class="empty-state" id="emptyState">
@@ -2709,7 +2709,15 @@
           }
         }
 
-        document.getElementById('contextBar').classList.toggle('visible', selectedIndex != null);
+        const ctxBar = document.getElementById('contextBar');
+        ctxBar.classList.toggle('visible', selectedIndex != null);
+        const ctxLbl = document.getElementById('ctxBarLabel');
+        if (ctxLbl && selectedIndex != null) {
+          ctxLbl.textContent =
+            contextRadius != null
+              ? 'Showing ±' + contextRadius + ' lines around the selected message (rest of file is hidden). Use Full log or Clear filters to see everything.'
+              : 'Full log is visible; selected line is highlighted. Use Done to hide this bar.';
+        }
 
         const searchWrap = (document.getElementById('searchInput').value || '').trim();
         document.getElementById('goToFirstMatch').style.display = searchWrap ? 'inline-block' : 'none';
@@ -3013,6 +3021,7 @@
       }
 
       document.getElementById('ctxClearFilters').addEventListener('click', function () {
+        state.contextRadius = null;
         document.getElementById('searchInput').value = '';
         document.getElementById('extFilter').value = '';
         document.getElementById('filterI').checked = true;
