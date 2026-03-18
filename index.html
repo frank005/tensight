@@ -1238,9 +1238,26 @@
         for (let i = 0; i < entries.length; i++) {
           const e = entries[i];
           if (!e.msg) continue;
-          if (e.msg.includes('on_request_start') && e.msg.includes('chat/completions')) {
-            const urlMatch = e.msg.match(/url=URL\('([^']+)'\)/);
-            lastRequest = { ts: e.ts, url: urlMatch ? urlMatch[1] : null, status: null, error: null, model: null, finish_reason: null, duration_ms: null, entryIndex: i };
+          // Newer logs may not include a `chat/completions` substring or `on_request_end`.
+          // We still want to stitch together: on_request_start -> Request failed / finish_reason payload.
+          if (e.msg.includes('on_request_start') && e.msg.includes('[llm]')) {
+            const urlMatch =
+              e.msg.match(/url=URL\('([^']*)'\)/) ||
+              e.msg.match(/url=URL\("([^"]*)"\)/) ||
+              e.msg.match(/url='([^']*)'/) ||
+              e.msg.match(/url="([^"]*)"/);
+            lastRequest = {
+              ts: e.ts,
+              url: urlMatch ? urlMatch[1] : null,
+              status: null,
+              error: null,
+              model: null,
+              finish_reason: null,
+              duration_ms: null,
+              err_message: null,
+              err_code: null,
+              entryIndex: i
+            };
           }
           if (e.msg.includes('on_request_end') && lastRequest) {
             const statusMatch = e.msg.match(/ClientResponse\([^)]+\)\s*\[(\d+)/) || e.msg.match(/\[(\d+)\s+[\w\s]+\]/);
@@ -1252,23 +1269,118 @@
             requests.push(lastRequest);
             lastRequest = null;
           }
-          if (e.msg.includes('Request failed:') && e.level === 'E') {
-            const m = e.msg.match(/Request failed:\s*(\d+),\s*message='([^']*)'/);
-            if (m) {
-              if (lastRequest) { lastRequest.status = m[1]; lastRequest.error = m[2]; lastRequest.entryIndex = i; requests.push(lastRequest); lastRequest = null; }
-              else requests.push({ ts: e.ts, url: null, status: m[1], error: m[2], model: null, finish_reason: 'error', entryIndex: i });
+          if (e.msg.includes('on_request_exception') && e.msg.includes('[llm]')) {
+            // Example: exception=<InvalidUrlClientError >
+            const exMatch = e.msg.match(/exception=<\s*([^>]+?)\s*>/);
+            if (exMatch) {
+              const ex = String(exMatch[1]).trim();
+              if (!lastRequest) {
+                lastRequest = { ts: e.ts, url: null, status: null, error: ex, model: null, finish_reason: 'error', duration_ms: null, err_message: ex, err_code: null, entryIndex: i };
+              } else {
+                lastRequest.error = lastRequest.error || ex;
+                lastRequest.err_message = lastRequest.err_message || ex;
+                lastRequest.finish_reason = lastRequest.finish_reason || 'error';
+                lastRequest.entryIndex = i;
+              }
             }
           }
+
+          if (e.msg.includes('Request failed:') && (e.level === 'E' || e.level === 'W')) {
+            // Common shapes:
+            // 1) Request failed: 500, message='...'
+            // 2) Request failed: InvalidUrlClientError
+            const m = e.msg.match(/Request failed:\s*(\d+),\s*message='([^']*)'/);
+            if (m) {
+              if (lastRequest) {
+                lastRequest.status = m[1];
+                lastRequest.error = m[2];
+                lastRequest.err_message = lastRequest.err_message || m[2];
+                lastRequest.finish_reason = lastRequest.finish_reason || 'error';
+                lastRequest.entryIndex = i;
+                requests.push(lastRequest);
+                lastRequest = null;
+              } else {
+                requests.push({ ts: e.ts, url: null, status: m[1], error: m[2], model: null, finish_reason: 'error', err_message: m[2], err_code: null, duration_ms: null, entryIndex: i });
+              }
+            } else {
+              const exMatch = e.msg.match(/Request failed:\s*([A-Za-z0-9_]+(?:Error|Exception|ClientError)?)/);
+              if (exMatch) {
+                const ex = String(exMatch[1]).trim();
+                if (lastRequest) {
+                  lastRequest.error = lastRequest.error || ex;
+                  lastRequest.err_message = lastRequest.err_message || ex;
+                  lastRequest.finish_reason = lastRequest.finish_reason || 'error';
+                  lastRequest.entryIndex = i;
+                  requests.push(lastRequest);
+                  lastRequest = null;
+                } else {
+                  requests.push({ ts: e.ts, url: null, status: null, error: ex, model: null, finish_reason: 'error', err_message: ex, err_code: null, duration_ms: null, entryIndex: i });
+                }
+              }
+            }
+          }
+
           if (e.msg.includes('finish_reason') && (e.msg.includes('err_message') || e.msg.includes('err_code'))) {
             const j = tryParseJSON(e.msg);
-            if (j && j.choices && j.choices[0]) {
-              const c = j.choices[0];
-              const req = lastRequest || { ts: e.ts, url: null, status: null, error: null, model: null, finish_reason: null, entryIndex: i };
-              req.finish_reason = c.finish_reason;
-              req.err_message = c.err_message;
-              req.err_code = c.err_code;
+            const fallbackFinish = {
+              finish_reason: null,
+              err_message: null,
+              err_code: null,
+              model: null
+            };
+            if (!j) {
+              const finishM = e.msg.match(/"finish_reason"\s*:\s*"([^"]+)"/);
+              const errMessageM = e.msg.match(/"err_message"\s*:\s*"([^"]*)"/);
+              const errCodeM = e.msg.match(/"err_code"\s*:\s*(\d+)/);
+              const modelM = e.msg.match(/"model"\s*:\s*(null|"([^"]+)")/);
+              fallbackFinish.finish_reason = finishM ? finishM[1] : null;
+              fallbackFinish.err_message = errMessageM ? errMessageM[1] : null;
+              fallbackFinish.err_code = errCodeM ? errCodeM[1] : null;
+              fallbackFinish.model = modelM ? (modelM[2] || null) : null;
+            }
+
+            const choice0 = j && j.choices && j.choices[0] ? j.choices[0] : null;
+            if (choice0 || fallbackFinish.err_message || fallbackFinish.finish_reason || fallbackFinish.err_code) {
+              // If we already pushed a request from "Request failed:", merge into the most recent entry.
+              // This avoids duplicates when the finish_reason payload arrives right after.
+              let req = lastRequest;
+              if (!req) {
+                const prev = requests.length ? requests[requests.length - 1] : null;
+                if (prev && prev.entryIndex != null && Math.abs(prev.entryIndex - i) <= 2) req = prev;
+              }
+              if (!req) {
+                req = {
+                  ts: e.ts,
+                  url: null,
+                  status: null,
+                  error: null,
+                  model: null,
+                  finish_reason: null,
+                  duration_ms: null,
+                  err_message: null,
+                  err_code: null,
+                  entryIndex: i
+                };
+              }
+
+              if (choice0) {
+                req.finish_reason = choice0.finish_reason;
+                req.err_message = choice0.err_message;
+                req.err_code = choice0.err_code;
+                if (req.model == null && j.model != null) req.model = j.model;
+              } else {
+                req.finish_reason = req.finish_reason || fallbackFinish.finish_reason;
+                req.err_message = req.err_message || fallbackFinish.err_message;
+                req.err_code = req.err_code || fallbackFinish.err_code;
+                req.model = req.model || fallbackFinish.model;
+              }
+
+              // Mark errors consistently so the UI can highlight the row.
+              req.error = req.error || req.err_message || null;
+              if (req.status == null && req.err_code != null) req.status = String(req.err_code);
               req.entryIndex = i;
-              if (!lastRequest) requests.push(req);
+              if (!requests.includes(req)) requests.push(req);
+              lastRequest = null;
             }
           }
           if (e.msg.includes('ChatCompletion(') && e.msg.includes('model=')) {
@@ -1300,6 +1412,126 @@
           if (m) out.push({ ts: e.ts, event_type: m[1], ext: e.ext, entryIndex: i });
         }
         return out;
+      }
+
+      /**
+       * NCS insights (agent joined/left/errors + memory history).
+       * Observed patterns in the same log:
+       * - "ncs on_agent_joined { ... }"
+       * - "ncs on_agent_left { ... }"
+       * - "KEYPOINT ncs on_agent_memory { ... contents:[{content, role, turn_id, timestamp, metadata}] }"
+       */
+      function extractNcsInsights(entries) {
+        const events = [];
+        const memoryItems = [];
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i];
+          if (!e.msg) continue;
+          if (!e.msg.includes('ncs')) continue;
+
+          // Example: "ncs on_agent_left", "KEYPOINT ncs on_agent_memory"
+          let eventType = null;
+          const mType = e.msg.match(/\bncs\s+((?:on_)?[A-Za-z0-9_]+)\b/);
+          if (mType) eventType = mType[1];
+          if (!eventType) continue;
+
+          // Parse payload: usually Python-dict-ish (single quotes), not strict JSON.
+          let payload = tryParsePythonDict(e.msg);
+          if (!payload) payload = tryParseJSON(e.msg);
+          const agentId = payload && typeof payload === 'object' ? (payload.agent_id || null) : null;
+
+          // Memory: eventType contains "memory" and payload includes "contents" list.
+          if (eventType && /memory/i.test(eventType)) {
+            // tryParsePythonDict can fail when the memory content contains apostrophes (e.g. "I'm ..."),
+            // because it replaces all `'` with `"` indiscriminately. For memory, convert only python *keys* and
+            // single-quoted *values* (not the double-quoted content string).
+            function tryParseNcsMemoryDict(msg) {
+              const start = msg.indexOf('{');
+              if (start < 0) return null;
+              let depth = 0;
+              let end = -1;
+              let inSingle = false;
+              let inDouble = false;
+              let escaped = false;
+              for (let j = start; j < msg.length; j++) {
+                const ch = msg[j];
+                if (escaped) { escaped = false; continue; }
+                if (ch === '\\') { escaped = true; continue; }
+                if (!inDouble && ch === '\'') { inSingle = !inSingle; continue; }
+                if (!inSingle && ch === '"') { inDouble = !inDouble; continue; }
+                if (inSingle || inDouble) continue;
+                if (ch === '{') depth++;
+                else if (ch === '}') { depth--; if (depth === 0) { end = j + 1; break; } }
+              }
+              if (end < 0) return null;
+              const dictStr = msg.slice(start, end);
+              // 1) keys: 'foo':  -> "foo":
+              let converted = dictStr.replace(/'([A-Za-z0-9_]+)'\s*:/g, '"$1":');
+              // 2) simple string values: : 'bar' -> : "bar"
+              converted = converted.replace(/:\s*'([^']*)'/g, ': "$1"');
+              // 3) Python literals:
+              converted = converted.replace(/\bNone\b/g, 'null').replace(/\bTrue\b/g, 'true').replace(/\bFalse\b/g, 'false');
+              try { return JSON.parse(converted); } catch (_) { return null; }
+            }
+
+            if (!(payload && typeof payload === 'object' && Array.isArray(payload.contents))) {
+              const payload2 = tryParseNcsMemoryDict(e.msg);
+              if (payload2) payload = payload2;
+            }
+
+            if (payload && typeof payload === 'object' && Array.isArray(payload.contents)) {
+              for (const item of payload.contents) {
+                if (!item) continue;
+                memoryItems.push({
+                  ts: e.ts,
+                  agent_id: agentId,
+                  start_ts: payload.start_ts != null ? payload.start_ts : null,
+                  stop_ts: payload.stop_ts != null ? payload.stop_ts : null,
+                  timestamp_ms: item.timestamp != null ? item.timestamp : null,
+                  role: item.role != null ? item.role : null,
+                  turn_id: item.turn_id != null ? item.turn_id : null,
+                  source: item.metadata && item.metadata.source != null ? item.metadata.source : null,
+                  text: item.content != null ? item.content : null,
+                  entryIndex: i
+                });
+              }
+            } else {
+              // Still show something for the event.
+              memoryItems.push({
+                ts: e.ts,
+                agent_id: agentId,
+                start_ts: null,
+                stop_ts: null,
+                timestamp_ms: null,
+                role: null,
+                turn_id: null,
+                source: null,
+                text: e.msg,
+                entryIndex: i
+              });
+            }
+            continue;
+          }
+
+          // Non-memory events: joined/left/etc.
+          const status = payload && typeof payload === 'object' ? (payload.status != null ? payload.status : null) : null;
+          const message = payload && typeof payload === 'object' ? (payload.message != null ? payload.message : null) : null;
+          const channel = payload && typeof payload === 'object' ? (payload.channel != null ? payload.channel : null) : null;
+          const startTs = payload && typeof payload === 'object' ? (payload.start_ts != null ? payload.start_ts : null) : null;
+          const stopTs = payload && typeof payload === 'object' ? (payload.stop_ts != null ? payload.stop_ts : null) : null;
+          events.push({
+            ts: e.ts,
+            event_type: eventType,
+            agent_id: agentId,
+            start_ts: startTs,
+            stop_ts: stopTs,
+            status,
+            message,
+            channel,
+            entryIndex: i
+          });
+        }
+        return { events, memoryItems };
       }
 
       /** Performance metrics per turn. Aligns with report_controller + llm key_point lines (glue ttfb, connect times, _log_and_report_latency). */
@@ -1656,7 +1888,7 @@
 
       function renderEntry(entry, index, isSelected) {
         const isRelevant = entry.msg && (
-          /llm failure|Something went wrong|Request failed|500 Internal Server Error|Failed to send message/i.test(entry.msg)
+          /llm failure|Something went wrong|Request failed|on_request_exception|ncs on_agent_left|Failed too many times|500 Internal Server Error|Failed to send message/i.test(entry.msg)
         );
         const levelClass = entry.level ? `level-${entry.level}` : '';
         let jsonHtml = '';
@@ -1717,6 +1949,7 @@
         insightColumnFilter = {};
 
         const tabs = [
+          { id: 'ncs', label: 'Keypoints' },
           { id: 'messages', label: 'Text messages' },
           { id: 'turns', label: 'Turns (user & agent)' },
           { id: 'states', label: 'States' },
@@ -1736,7 +1969,7 @@
         html += '<div id="insightPanels">';
 
         const allMessages = buildAllMessagesList(insights);
-        html += '<div class="insight-tab-panel active" data-panel="messages">';
+        html += '<div class="insight-tab-panel" data-panel="messages">';
         if (allMessages.length) {
           html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Source','Text','Final','Turn','Start (ms)','Duration (ms)']) + '</tr></thead><tbody>';
           for (const row of allMessages) {
@@ -1995,10 +2228,38 @@
             const err = r.error || r.err_message || (r.finish_reason === 'error' ? 'error' : r.finish_reason || '');
             const tsAttr = escapeHtml(r.ts || '');
             const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
-            html += `<tr class="llm-row ${r.status === '500' || r.error ? 'error' : ''}" data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(r.ts)}</td><td><span class="url" title="${escapeHtml(r.url || '')}">${escapeHtml((r.url || '').replace(/^https?:\/\//, '').slice(0, 50))}</span> ${status}</td><td>${r.duration_ms != null ? r.duration_ms : '—'}</td><td>${escapeHtml(r.model || '—')}</td><td>${escapeHtml(String(err).slice(0, 80))}</td></tr>`;
+            const isErrorRow = (r.status === '500' || r.error || r.err_message || r.finish_reason === 'error');
+            html += `<tr class="llm-row ${isErrorRow ? 'error' : ''}" data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(r.ts)}</td><td><span class="url" title="${escapeHtml(r.url || '')}">${escapeHtml((r.url || '').replace(/^https?:\/\//, '').slice(0, 50))}</span> ${status}</td><td>${r.duration_ms != null ? r.duration_ms : '—'}</td><td>${escapeHtml(r.model || '—')}</td><td>${escapeHtml(String(err).slice(0, 80))}</td></tr>`;
           }
           html += '</tbody></table>';
         } else html += '<p class="insight-empty">No LLM requests found.</p>';
+        html += '</div>';
+
+        html += '<div class="insight-tab-panel active" data-panel="ncs">';
+        const ncs = insights.ncs || { events: [], memoryItems: [] };
+        if (ncs.events && ncs.events.length) {
+          html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Event','Agent','Start','Stop','Status','Message','Channel']) + '</tr></thead><tbody>';
+          for (const r of ncs.events) {
+            const tsAttr = escapeHtml(r.ts || '');
+            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
+            html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(r.ts)}</td><td>${escapeHtml(r.event_type || '')}</td><td>${escapeHtml(r.agent_id || '—')}</td><td>${r.start_ts != null ? escapeHtml(String(r.start_ts)) : '—'}</td><td>${r.stop_ts != null ? escapeHtml(String(r.stop_ts)) : '—'}</td><td>${escapeHtml(r.status || '—')}</td><td>${escapeHtml((r.message || '').slice(0, 80) || '—')}</td><td>${escapeHtml(r.channel || '—')}</td></tr>`;
+          }
+          html += '</tbody></table>';
+        } else {
+          html += '<p class="insight-empty">No NCS events found.</p>';
+        }
+
+        if (ncs.memoryItems && ncs.memoryItems.length) {
+          html += '<p><strong>Keypoints Memory history</strong></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Agent','Start','Stop','Timestamp(ms)','Role','Turn','Source','Text']) + '</tr></thead><tbody>';
+          for (const m of ncs.memoryItems) {
+            const tsAttr = escapeHtml(m.ts || '');
+            const idxAttr = m.entryIndex != null ? ' data-index="' + m.entryIndex + '"' : '';
+            const text = (m.text || '').slice(0, 240) + ((m.text || '').length > 240 ? '…' : '');
+            html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(m.ts)}</td><td>${escapeHtml(m.agent_id || '—')}</td><td>${m.start_ts != null ? escapeHtml(String(m.start_ts)) : '—'}</td><td>${m.stop_ts != null ? escapeHtml(String(m.stop_ts)) : '—'}</td><td>${m.timestamp_ms != null ? escapeHtml(String(m.timestamp_ms)) : '—'}</td><td>${escapeHtml(m.role || '—')}</td><td>${m.turn_id != null ? escapeHtml(String(m.turn_id)) : '—'}</td><td>${escapeHtml(m.source || '—')}</td><td>${escapeHtml(text || '—')}</td></tr>`;
+          }
+          html += '</tbody></table>';
+        }
+
         html += '</div>';
 
         html += '<div class="insight-tab-panel" data-panel="events">';
@@ -2361,6 +2622,7 @@
             llmGlueTurns: extractLlmGlueMessages(entries),
             stt: extractStt(entries),
             llm: extractLlm(entries),
+            ncs: extractNcsInsights(entries),
             keypointEvents: extractKeypointEvents(entries),
             performanceMetrics: extractPerformanceMetrics(entries),
             callStartTs: summary.startTs != null ? summary.startTs : (entries.length ? parseLogTs(entries[0].ts) / 1000 : null),
