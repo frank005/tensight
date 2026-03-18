@@ -1206,6 +1206,7 @@
       function extractStt(entries) {
         const transcripts = [];
         const metrics = [];
+        const errors = [];
         for (let i = 0; i < entries.length; i++) {
           const e = entries[i];
           if (!e.msg) continue;
@@ -1224,12 +1225,23 @@
             const d = e.msg.match(/input_audio_duration=(\d+)ms/);
             if (d) metrics.push({ ts: e.ts, input_audio_duration_ms: parseInt(d[1], 10), entryIndex: i });
           }
+          // ASR timeline failures (seen asr.py: Requested time ... exceeds timeline duration ...)
+          const timelineErr = e.msg.match(/Requested time\s*(\d+)ms\s+exceeds timeline duration\s*(\d+)ms/);
+          if (timelineErr) {
+            errors.push({
+              ts: e.ts,
+              requested_time_ms: parseInt(timelineErr[1], 10),
+              timeline_duration_ms: parseInt(timelineErr[2], 10),
+              detail: e.msg,
+              entryIndex: i
+            });
+          }
           if (e.msg.includes('user.transcription') && e.msg.includes('"text"')) {
             const j = tryParseJSON(e.msg);
             if (j && j.text) transcripts.push({ ts: e.ts, text: j.text, user: true, final: j.final, turn_id: j.turn_id, entryIndex: i });
           }
         }
-        return { transcripts, metrics };
+        return { transcripts, metrics, errors };
       }
 
       function extractLlm(entries) {
@@ -1432,6 +1444,36 @@
         return out;
       }
 
+      /** RTC / Agora runtime warnings & errors that are not KEYPOINTs. */
+      function extractRtcInsights(entries) {
+        const items = [];
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i];
+          if (!e || !e.msg) continue;
+          const msg = e.msg;
+
+          const isTokenManager = /No app certificate provided|TokenManager not initialized/i.test(msg);
+          const isSendFailure = /Failed to send message:/i.test(msg);
+          const isDestinationFailure = /Failed to find destination/i.test(msg);
+
+          if (!isTokenManager && !isSendFailure && !isDestinationFailure) continue;
+
+          // Most interesting ones are bracketed (e.g. "[agora_rtc_extension]").
+          const modMatch = msg.match(/\[([^\]]+)\]/);
+          const module = modMatch ? modMatch[1] : null;
+          const kind = e.level === 'E' ? 'error' : 'warning';
+          const detail = msg;
+          items.push({
+            ts: e.ts,
+            kind,
+            module,
+            detail,
+            entryIndex: i
+          });
+        }
+        return { items };
+      }
+
       /**
        * NCS insights (agent joined/left/errors + memory history).
        * Observed patterns in the same log:
@@ -1500,6 +1542,11 @@
             if (payload && typeof payload === 'object' && Array.isArray(payload.contents)) {
               for (const item of payload.contents) {
                 if (!item) continue;
+                const md = item.metadata && typeof item.metadata === 'object' ? item.metadata : {};
+                const confidence = (md.asr_info && md.asr_info.confidence != null) ? md.asr_info.confidence : null;
+                const interruptMode = md.interrupt_mode != null ? md.interrupt_mode : null;
+                const interrupted = (md.interrupted === true) || (interruptMode != null && /interrupt/i.test(String(interruptMode)));
+                const interruptTimestampMs = md.interrupt_timestamp != null ? md.interrupt_timestamp : null;
                 memoryItems.push({
                   ts: e.ts,
                   agent_id: agentId,
@@ -1509,6 +1556,10 @@
                   role: item.role != null ? item.role : null,
                   turn_id: item.turn_id != null ? item.turn_id : null,
                   source: item.metadata && item.metadata.source != null ? item.metadata.source : null,
+                  interrupted: interrupted,
+                  confidence: confidence,
+                  interrupt_mode: interruptMode,
+                  interrupt_timestamp_ms: interruptTimestampMs,
                   text: item.content != null ? item.content : null,
                   entryIndex: i
                 });
@@ -1524,6 +1575,10 @@
                 role: null,
                 turn_id: null,
                 source: null,
+                interrupted: false,
+                confidence: null,
+                interrupt_mode: null,
+                interrupt_timestamp_ms: null,
                 text: e.msg,
                 entryIndex: i
               });
@@ -1906,7 +1961,7 @@
 
       function renderEntry(entry, index, isSelected) {
         const isRelevant = entry.msg && (
-          /llm failure|Something went wrong|Request failed|on_request_exception|ncs on_agent_left|Failed too many times|500 Internal Server Error|Failed to send message/i.test(entry.msg)
+          /llm failure|Something went wrong|Request failed|on_request_exception|ncs on_agent_left|Failed too many times|No app certificate provided|TokenManager not initialized|Requested time .* exceeds timeline duration|500 Internal Server Error|Failed to send message/i.test(entry.msg)
         );
         const levelClass = entry.level ? `level-${entry.level}` : '';
         let jsonHtml = '';
@@ -1974,6 +2029,7 @@
           { id: 'reports', label: 'State reports' },
           { id: 'performance', label: 'Performance' },
           { id: 'stt', label: 'STT / ASR metrics' },
+          { id: 'rtc', label: 'RTC / Agora' },
           { id: 'llm', label: 'LLM' },
           { id: 'events', label: 'Events' }
         ];
@@ -2215,7 +2271,7 @@
 
         html += '<div class="insight-tab-panel" data-panel="stt">';
         const stt = insights.stt;
-        if (stt && (stt.transcripts.length || stt.metrics.length)) {
+        if (stt && (stt.transcripts.length || stt.metrics.length || (stt.errors && stt.errors.length))) {
           if (stt.transcripts.length) {
             html += '<p><strong>Transcripts / vendor results</strong></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Text','Final audio (ms)','Total audio (ms)']) + '</tr></thead><tbody>';
             for (const t of stt.transcripts) {
@@ -2235,7 +2291,34 @@
             }
             html += '</tbody></table>';
           }
+
+          if (stt.errors && stt.errors.length) {
+            html += '<p><strong>ASR timeline errors</strong></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Requested time (ms)','Timeline duration (ms)','Message']) + '</tr></thead><tbody>';
+            for (const err of stt.errors) {
+              const tsAttr = escapeHtml(err.ts || '');
+              const idxAttr = err.entryIndex != null ? ' data-index="' + err.entryIndex + '"' : '';
+              html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(err.ts)}</td><td>${err.requested_time_ms != null ? escapeHtml(String(err.requested_time_ms)) : '—'}</td><td>${err.timeline_duration_ms != null ? escapeHtml(String(err.timeline_duration_ms)) : '—'}</td><td>${escapeHtml((err.detail || '').slice(0, 90) || '—')}</td></tr>`;
+            }
+            html += '</tbody></table>';
+          }
         } else html += '<p class="insight-empty">No STT/ASR data found.</p>';
+        html += '</div>';
+
+        html += '<div class="insight-tab-panel" data-panel="rtc">';
+        const rtc = insights.rtc || { items: [] };
+        if (rtc.items && rtc.items.length) {
+          html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Severity','Module','Message']) + '</tr></thead><tbody>';
+          for (const r of rtc.items) {
+            const tsAttr = escapeHtml(r.ts || '');
+            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
+            const sev = r.kind === 'error' ? '<span style="color:var(--error)">error</span>' : 'warning';
+            const msg = (r.detail || '').slice(0, 120);
+            html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(r.ts)}</td><td>${sev}</td><td>${escapeHtml(r.module || '—')}</td><td>${escapeHtml(msg || '—')}</td></tr>`;
+          }
+          html += '</tbody></table>';
+        } else {
+          html += '<p class="insight-empty">No RTC / Agora runtime warnings or errors found.</p>';
+        }
         html += '</div>';
 
         html += '<div class="insight-tab-panel" data-panel="llm">';
@@ -2268,14 +2351,29 @@
         }
 
         if (ncs.memoryItems && ncs.memoryItems.length) {
-          html += '<p><strong>Keypoints Memory history</strong></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Agent','Start','Stop','Timestamp(ms)','Role','Turn','Source','Text']) + '</tr></thead><tbody>';
+          html += '<p><strong>Keypoints Memory history</strong></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Agent','Start','Stop','Timestamp(ms)','Role','Turn','Source','Interrupted','Confidence','Text']) + '</tr></thead><tbody>';
           for (const m of ncs.memoryItems) {
             const tsAttr = escapeHtml(m.ts || '');
             const idxAttr = m.entryIndex != null ? ' data-index="' + m.entryIndex + '"' : '';
             const text = (m.text || '').slice(0, 240) + ((m.text || '').length > 240 ? '…' : '');
-            html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(m.ts)}</td><td>${escapeHtml(m.agent_id || '—')}</td><td>${m.start_ts != null ? escapeHtml(String(m.start_ts)) : '—'}</td><td>${m.stop_ts != null ? escapeHtml(String(m.stop_ts)) : '—'}</td><td>${m.timestamp_ms != null ? escapeHtml(String(m.timestamp_ms)) : '—'}</td><td>${escapeHtml(m.role || '—')}</td><td>${m.turn_id != null ? escapeHtml(String(m.turn_id)) : '—'}</td><td>${escapeHtml(m.source || '—')}</td><td>${escapeHtml(text || '—')}</td></tr>`;
+            const interruptedStr = m.interrupted ? 'yes' : '—';
+            const confidenceStr = m.confidence != null ? escapeHtml(String(m.confidence)) : '—';
+            html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(m.ts)}</td><td>${escapeHtml(m.agent_id || '—')}</td><td>${m.start_ts != null ? escapeHtml(String(m.start_ts)) : '—'}</td><td>${m.stop_ts != null ? escapeHtml(String(m.stop_ts)) : '—'}</td><td>${m.timestamp_ms != null ? escapeHtml(String(m.timestamp_ms)) : '—'}</td><td>${escapeHtml(m.role || '—')}</td><td>${m.turn_id != null ? escapeHtml(String(m.turn_id)) : '—'}</td><td>${escapeHtml(m.source || '—')}</td><td>${escapeHtml(interruptedStr)}</td><td>${confidenceStr}</td><td>${escapeHtml(text || '—')}</td></tr>`;
           }
           html += '</tbody></table>';
+
+          const interruptedItems = (ncs.memoryItems || []).filter(m => m.interrupted);
+          if (interruptedItems.length) {
+            html += '<p><strong>Interrupted items</strong></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Agent','Timestamp(ms)','Role','Turn','Source','Confidence','Interrupt ts','Text']) + '</tr></thead><tbody>';
+            for (const m of interruptedItems) {
+              const tsAttr = escapeHtml(m.ts || '');
+              const idxAttr = m.entryIndex != null ? ' data-index="' + m.entryIndex + '"' : '';
+              const text = (m.text || '').slice(0, 240) + ((m.text || '').length > 240 ? '…' : '');
+              const confidenceStr = m.confidence != null ? escapeHtml(String(m.confidence)) : '—';
+              html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(m.ts)}</td><td>${escapeHtml(m.agent_id || '—')}</td><td>${m.timestamp_ms != null ? escapeHtml(String(m.timestamp_ms)) : '—'}</td><td>${escapeHtml(m.role || '—')}</td><td>${m.turn_id != null ? escapeHtml(String(m.turn_id)) : '—'}</td><td>${escapeHtml(m.source || '—')}</td><td>${confidenceStr}</td><td>${m.interrupt_timestamp_ms != null ? escapeHtml(String(m.interrupt_timestamp_ms)) : '—'}</td><td>${escapeHtml(text || '—')}</td></tr>`;
+            }
+            html += '</tbody></table>';
+          }
         }
 
         html += '</div>';
@@ -2639,6 +2737,7 @@
             evalIdTurns: extractEvalIdMessages(entries),
             llmGlueTurns: extractLlmGlueMessages(entries),
             stt: extractStt(entries),
+            rtc: extractRtcInsights(entries),
             llm: extractLlm(entries),
             ncs: extractNcsInsights(entries),
             keypointEvents: extractKeypointEvents(entries),
