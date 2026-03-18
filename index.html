@@ -703,7 +703,7 @@
               <button type="button" class="filter-event-btn" data-search="chat/completions">LLM</button>
               <button type="button" class="filter-event-btn" data-search="tts_text_result">TTS</button>
               <button type="button" class="filter-event-btn" data-search="KEYPOINT">KEYPOINT</button>
-              <button type="button" class="filter-event-btn" data-clear="true">Clear</button>
+              <button type="button" class="filter-event-btn" data-clear="true" title="Clear search and exit jump from Insights (show full log)">Clear</button>
             </div>
           </div>
           <div class="context-bar" id="contextBar">
@@ -711,7 +711,8 @@
             <button type="button" id="ctxShow50">±50 lines</button>
             <button type="button" id="ctxShow100">±100 lines</button>
             <button type="button" id="ctxShowAll" class="secondary">Show all</button>
-            <button type="button" id="ctxClearFilters" class="secondary" title="Clear search, extension, and level filters to see all log types in this context">Clear filters</button>
+            <button type="button" id="ctxClearFilters" class="secondary" title="Clear search, extension, time, and level filters (stays in ±context)">Clear filters</button>
+            <button type="button" id="ctxExitJump" class="secondary" title="Show full log and hide this bar (same as filter row Clear)">Exit jump</button>
           </div>
           <div class="log-container" id="logContainer">
             <div class="empty-state" id="emptyState">
@@ -2939,8 +2940,11 @@
         const btn = ev.target.closest('.filter-event-btn');
         if (!btn) return;
         const searchEl = document.getElementById('searchInput');
-        if (btn.getAttribute('data-clear') === 'true') searchEl.value = '';
-        else searchEl.value = btn.getAttribute('data-search') || '';
+        if (btn.getAttribute('data-clear') === 'true') {
+          searchEl.value = '';
+          state.selectedIndex = null;
+          state.contextRadius = null;
+        } else searchEl.value = btn.getAttribute('data-search') || '';
         applyFilters();
       });
 
@@ -3001,8 +3005,28 @@
         state.contextRadius = null;
         applyFilters();
       });
+      function exitInsightsJump() {
+        state.selectedIndex = null;
+        state.contextRadius = null;
+        document.getElementById('searchInput').value = '';
+        applyFilters();
+      }
+
       document.getElementById('ctxClearFilters').addEventListener('click', function () {
         document.getElementById('searchInput').value = '';
+        document.getElementById('extFilter').value = '';
+        document.getElementById('filterI').checked = true;
+        document.getElementById('filterD').checked = true;
+        document.getElementById('filterW').checked = true;
+        document.getElementById('filterE').checked = true;
+        document.getElementById('timeFrom').value = '';
+        document.getElementById('timeTo').value = '';
+        document.getElementById('goToFirstMatch').style.display = 'none';
+        applyFilters();
+      });
+
+      document.getElementById('ctxExitJump').addEventListener('click', function () {
+        exitInsightsJump();
         document.getElementById('extFilter').value = '';
         document.getElementById('filterI').checked = true;
         document.getElementById('filterD').checked = true;
