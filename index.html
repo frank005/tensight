@@ -1270,19 +1270,37 @@
             lastRequest = null;
           }
           if (e.msg.includes('on_request_exception') && e.msg.includes('[llm]')) {
-            // Example: exception=<InvalidUrlClientError >
-            const exMatch = e.msg.match(/exception=<\s*([^>]+?)\s*>/);
-            if (exMatch) {
-              const ex = String(exMatch[1]).trim();
-              if (!lastRequest) {
-                lastRequest = { ts: e.ts, url: null, status: null, error: ex, model: null, finish_reason: 'error', duration_ms: null, err_message: ex, err_code: null, entryIndex: i };
-              } else {
-                lastRequest.error = lastRequest.error || ex;
-                lastRequest.err_message = lastRequest.err_message || ex;
-                lastRequest.finish_reason = lastRequest.finish_reason || 'error';
-                lastRequest.entryIndex = i;
-              }
-            }
+            // Observed shapes across logs:
+            // - exception=<InvalidUrlClientError >
+            // - exception=CancelledError()
+            const exMatch =
+              e.msg.match(/exception=<\s*([^>]+?)\s*>/) ||
+              e.msg.match(/exception=([A-Za-z0-9_]+(?:\(\))?)/);
+            if (!exMatch) continue;
+
+            const ex = String(exMatch[1]).trim();
+            const req = lastRequest || {
+              ts: e.ts,
+              url: null,
+              status: null,
+              error: null,
+              model: null,
+              finish_reason: null,
+              duration_ms: null,
+              err_message: null,
+              err_code: null,
+              entryIndex: i
+            };
+
+            req.error = req.error || ex;
+            req.err_message = req.err_message || ex;
+            req.finish_reason = req.finish_reason || 'error';
+            req.entryIndex = i;
+
+            // Push immediately so we don't miss exceptions when the next on_request_start appears.
+            // If a finish_reason payload arrives right after, it will merge into this row.
+            if (!requests.includes(req)) requests.push(req);
+            lastRequest = null;
           }
 
           if (e.msg.includes('Request failed:') && (e.level === 'E' || e.level === 'W')) {
