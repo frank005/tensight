@@ -1500,32 +1500,60 @@
         return out;
       }
 
-      /** RTC / Agora runtime warnings & errors that are not KEYPOINTs. */
+      /**
+       * RTC / Agora: graph routing failures, cert/token manager, and SDK connection errors.
+       * Skips routine I/D traffic; W-level SDK lines only when they look like real issues.
+       */
       function extractRtcInsights(entries) {
         const items = [];
+        const seen = new Set();
+        function push(e, i, kind, category) {
+          if (seen.has(i)) return;
+          seen.add(i);
+          const msg = e.msg;
+          const modMatch = msg.match(/\[([^\]]+)\]/);
+          const module = modMatch ? modMatch[1] : (e.ext || null);
+          items.push({
+            ts: e.ts,
+            kind,
+            category,
+            module,
+            detail: msg,
+            entryIndex: i
+          });
+        }
+
+        const rtcStack =
+          /\[agora_rtc_extension\]|\[agora_sess_ctrl_extension\]|rtc_extension\.cc|connection_observer\.cc|rtc_connection\.cc|rtc_service\.cc/i;
+        const sdkSeriousW =
+          /\bonError\b|onConnectionLost|onReconnecting|INVALID_TOKEN|invalid\s+token|token\s+expired|Token\s+expired|onClientRoleChangeFailed|ConnectionFailed|connection\s+failed|join.*failed|publish.*failed|subscribe.*failed|ERR_[A-Z0-9_]+/i;
+
         for (let i = 0; i < entries.length; i++) {
           const e = entries[i];
           if (!e || !e.msg) continue;
           const msg = e.msg;
 
-          const isTokenManager = /No app certificate provided|TokenManager not initialized/i.test(msg);
-          const isSendFailure = /Failed to send message:/i.test(msg);
-          const isDestinationFailure = /Failed to find destination/i.test(msg);
+          if (/No app certificate provided|TokenManager not initialized/i.test(msg)) {
+            push(e, i, 'warning', 'cert');
+            continue;
+          }
+          if (/Failed to send message:/i.test(msg)) {
+            push(e, i, e.level === 'E' ? 'error' : 'warning', 'routing');
+            continue;
+          }
+          if (/Failed to find destination/i.test(msg)) {
+            push(e, i, 'warning', 'routing');
+            continue;
+          }
 
-          if (!isTokenManager && !isSendFailure && !isDestinationFailure) continue;
-
-          // Most interesting ones are bracketed (e.g. "[agora_rtc_extension]").
-          const modMatch = msg.match(/\[([^\]]+)\]/);
-          const module = modMatch ? modMatch[1] : null;
-          const kind = e.level === 'E' ? 'error' : 'warning';
-          const detail = msg;
-          items.push({
-            ts: e.ts,
-            kind,
-            module,
-            detail,
-            entryIndex: i
-          });
+          if (!rtcStack.test(msg)) continue;
+          if (e.level === 'E') {
+            push(e, i, 'error', 'sdk');
+            continue;
+          }
+          if (e.level === 'W' && sdkSeriousW.test(msg)) {
+            push(e, i, 'warning', 'sdk');
+          }
         }
         return { items };
       }
@@ -2364,13 +2392,15 @@
         html += '<div class="insight-tab-panel" data-panel="rtc">';
         const rtc = insights.rtc || { items: [] };
         if (rtc.items && rtc.items.length) {
-          html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Severity','Module','Message']) + '</tr></thead><tbody>';
+          html += '<p class="insight-formula"><strong>RTC / Agora</strong> — <code>routing</code> = graph cmd delivery; <code>cert</code> = token manager; <code>sdk</code> = extension / connection errors.</p>';
+          html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Severity','Category','Module','Message']) + '</tr></thead><tbody>';
           for (const r of rtc.items) {
             const tsAttr = escapeHtml(r.ts || '');
             const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
             const sev = r.kind === 'error' ? '<span style="color:var(--error)">error</span>' : 'warning';
+            const cat = escapeHtml(r.category || '—');
             const msg = (r.detail || '').slice(0, 120);
-            html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(r.ts)}</td><td>${sev}</td><td>${escapeHtml(r.module || '—')}</td><td>${escapeHtml(msg || '—')}</td></tr>`;
+            html += `<tr class="${r.kind === 'error' ? 'llm-row error' : ''}" data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(r.ts)}</td><td>${sev}</td><td>${cat}</td><td>${escapeHtml(r.module || '—')}</td><td>${escapeHtml(msg || '—')}</td></tr>`;
           }
           html += '</tbody></table>';
         } else {
