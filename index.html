@@ -381,6 +381,11 @@
     .filter-events-label { font-size: 11px; color: var(--text-muted); margin-right: 4px; }
     .filter-event-btn { padding: 4px 8px; font-size: 11px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text-muted); cursor: pointer; }
     .filter-event-btn:hover { color: var(--text); border-color: var(--accent); }
+    .more-filters-wrap .filter-event-btn {
+      white-space: nowrap;
+      overflow-x: auto;
+      max-width: 100%;
+    }
     .time-input { width: 140px; max-width: 140px; padding: 4px 6px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 11px; }
     .time-input::-webkit-calendar-picker-indicator { cursor: pointer; opacity: 0.7; filter: invert(1); }
     .badge.clickable { cursor: pointer; user-select: none; }
@@ -388,20 +393,23 @@
 
     .log-container {
       flex: 1;
-      overflow: auto;
+      overflow-y: auto;
+      overflow-x: auto;
       padding: 12px;
       min-height: 0;
+      background: var(--surface);
     }
 
     .log-entry {
       font-family: var(--font-mono);
       font-size: 12px;
-      margin-bottom: 2px;
+      margin-bottom: 0;
       border-radius: 4px;
       border-left: 3px solid transparent;
-      padding: 6px 10px;
+      padding: 2px 8px;
       background: var(--surface);
       border: 1px solid transparent;
+      width: 100%;
     }
 
     .log-entry:hover { border-color: var(--border); }
@@ -442,10 +450,12 @@
 
     .log-entry .meta {
       display: flex;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       gap: 8px 16px;
-      margin-bottom: 4px;
+      margin-bottom: 0;
       color: var(--text-muted);
+      align-items: center;
+      flex: 0 0 auto;
     }
 
     .log-entry .ts { color: var(--accent); }
@@ -468,8 +478,42 @@
       color: var(--text);
     }
 
+    /* Collapsed: wrap within the context width (no horizontal scrolling). */
+    .log-entry .msg.line-collapsed {
+      white-space: pre;
+      overflow-x: visible;
+      overflow-wrap: normal;
+      word-break: normal;
+    }
+
+    /* Expanded: preserve whitespace and allow horizontal scroll if needed. */
+    .log-entry .msg.line-expanded {
+      white-space: pre-wrap;
+      overflow-x: hidden;
+    }
+
+    /* Individual line expand/collapse is controlled via double-click (no arrows). */
+
+    .log-entry .log-line {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      white-space: normal;
+      overflow-x: visible;
+      min-width: 0;
+    }
+
+    .log-entry .log-line .msg {
+      flex: 1 1 0;
+      min-width: 0;
+      width: auto;
+      max-width: none;
+    }
+
+
     .log-entry .json-block {
-      margin-top: 8px;
+      margin-top: 2px;
       padding: 8px;
       background: var(--bg);
       border-radius: 4px;
@@ -480,15 +524,160 @@
       overflow-y: auto;
     }
 
+    .json-loading {
+      color: var(--text-muted);
+      font-size: 11px;
+      padding: 2px 0;
+    }
+
     .log-entry .json-toggle {
       margin-top: 4px;
       font-size: 11px;
       color: var(--accent);
       cursor: pointer;
       user-select: none;
+      white-space: nowrap;
+      overflow-x: auto;
+      max-width: 100%;
     }
 
     .log-entry .json-toggle:hover { text-decoration: underline; }
+
+    .log-highlight {
+      background: rgba(250, 204, 21, 0.65);
+      color: var(--bg);
+      border-radius: 3px;
+      padding: 0 2px;
+      outline: 1px solid rgba(250, 204, 21, 0.95);
+      outline-offset: -1px;
+      font-weight: 700;
+    }
+
+    .copy-entry-btn {
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      font-size: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      background: var(--border);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      cursor: pointer;
+      user-select: none;
+    }
+    .copy-entry-btn svg {
+      width: 10px;
+      height: 10px;
+    }
+    .copy-entry-btn:hover {
+      color: var(--text);
+      border-color: var(--accent);
+    }
+
+    .found-count {
+      font-size: 11px;
+      color: var(--text-muted);
+      padding: 4px 6px;
+      border: 1px dashed var(--border);
+      border-radius: 6px;
+      white-space: nowrap;
+    }
+
+    .custom-filter-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 6px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+    }
+    .custom-filter-pill .filter-event-btn {
+      padding: 0;
+      border: none;
+      background: none;
+      color: var(--text-muted);
+      font-size: 11px;
+      max-width: 240px;
+      overflow-x: auto;
+      white-space: nowrap;
+      border-radius: 0;
+    }
+    .custom-filter-pill .filter-event-btn:hover {
+      color: var(--text);
+      border-color: transparent;
+    }
+    .custom-filter-remove-btn {
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--text-muted);
+      cursor: pointer;
+      line-height: 16px;
+      font-size: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      user-select: none;
+    }
+    .custom-filter-remove-btn:hover {
+      color: var(--text);
+      border-color: var(--accent);
+    }
+
+    .json-all-controls {
+      margin-top: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .json-all-controls .json-all-label {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .more-filters-wrap {
+      flex-basis: 100%;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      padding-top: 6px;
+    }
+
+    .custom-filter-adder {
+      flex: 0 1 260px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding-top: 6px;
+    }
+    .custom-filter-adder input[type="text"] {
+      flex: 1;
+      min-width: 120px;
+      padding: 8px 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-size: 13px;
+      box-sizing: border-box;
+    }
+    .custom-filters-list {
+      flex: 1 1 auto;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding-top: 6px;
+    }
 
     .empty-state {
       text-align: center;
@@ -540,9 +729,11 @@
       align-items: center;
       justify-content: center;
       gap: 20px;
-      background: color-mix(in srgb, var(--bg) 92%, black);
-      backdrop-filter: blur(4px);
-      -webkit-backdrop-filter: blur(4px);
+      /* Make this a lightweight "spinner" overlay, not a full blackout screen. */
+      background: rgba(0, 0, 0, 0);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      pointer-events: none;
     }
     .parse-overlay-spinner {
       width: 44px;
@@ -551,6 +742,8 @@
       border-top-color: var(--accent);
       border-radius: 50%;
       animation: parse-spin 0.75s linear infinite;
+      background: rgba(0, 0, 0, 0.28);
+      box-shadow: 0 0 0 12px rgba(0, 0, 0, 0.15);
     }
     @keyframes parse-spin {
       to { transform: rotate(360deg); }
@@ -848,7 +1041,54 @@
               <button type="button" class="filter-event-btn" data-search="[knowledge_retrieval]">RAG</button>
               <button type="button" class="filter-event-btn" data-search="agora_audio3a">Audio3A</button>
               <button type="button" class="filter-event-btn" data-search="KEYPOINT">KEYPOINT</button>
+              <button type="button" id="toggleMoreFilters" class="filter-event-btn" aria-expanded="false" title="Show additional one-click filters">More filters…</button>
               <button type="button" class="filter-event-btn" data-clear="true" title="Clear search and exit jump from Insights (show full log)">Clear</button>
+              <span id="foundCount" class="found-count">Found 0 lines</span>
+              <div id="moreFilters" class="more-filters-wrap" style="display:none;">
+                <button type="button" class="filter-event-btn" data-search="cancel eos_completion task">Filter Words Cancelled</button>
+                <button type="button" class="filter-event-btn" data-search="Sending llm_text_chunk">Filter Words Send</button>
+                <button type="button" class="filter-event-btn" data-search="Sending llm_latency metric">LLM TTFB</button>
+                <button type="button" class="filter-event-btn" data-search="received data line">LLM SSE Output</button>
+                <button type="button" class="filter-event-btn" data-search="assistant message end role='assistant'">LLM Final Output</button>
+                <button type="button" class="filter-event-btn" data-search="Request failed">LLM Request Cancelled</button>
+
+                <button type="button" class="filter-event-btn" data-search="on_data@extension.py:309 [message_collector] on_data llm">Client to TTS</button>
+                <button type="button" class="filter-event-btn" data-search="[azure_tts_extension]">TTS Server to Vendor</button>
+                <button type="button" class="filter-event-btn" data-search="tts_ttfb:">TTS Audio TTFB</button>
+
+                <button type="button" class="filter-event-btn" data-search="[knowledge_retrieval]">KB Request Latency</button>
+
+                <button type="button" class="filter-event-btn" data-search="Tool call succeeded">MCP Result</button>
+                <button type="button" class="filter-event-btn" data-search="semantic sos">Semantic SOS Result</button>
+                <button type="button" class="filter-event-btn" data-search="sos received">SOS</button>
+                <button type="button" class="filter-event-btn" data-search="eos received">EOS</button>
+
+                <button type="button" class="filter-event-btn" data-search="next_turn, send new turn">Start Turn</button>
+                <button type="button" class="filter-event-btn" data-search="end_of_turn, send new turn">End Turn</button>
+
+                <button type="button" class="filter-event-btn" data-search="BVC connection state">BVC Connection</button>
+                <button type="button" class="filter-event-btn" data-search="sal_mode=">SAL Status</button>
+
+                <button type="button" class="filter-event-btn" data-search="Received asr_result">ASR Raw Result</button>
+                <button type="button" class="filter-event-btn" data-search="finalize end">Finalize End</button>
+                <button type="button" class="filter-event-btn" data-search="final': True">ASR Final True</button>
+                <button type="button" class="filter-event-btn" data-search="ignored non-final data">ASR Ignored Data</button>
+                <button type="button" class="filter-event-btn" data-search="asr ttlw">ASR TTLW</button>
+
+                <button type="button" class="filter-event-btn" data-search="on_chat_completion_request@extension.py:804 [llm] content:">LLM Full Input</button>
+
+                <div class="custom-filter-adder">
+                  <input type="text" id="customFilterInput" placeholder="Add custom filter (stored in your browser)" />
+                  <button type="button" id="addCustomFilterBtn" class="filter-event-btn" style="padding: 8px 12px; font-size: 14px; font-weight: 800;" title="Add custom filter">+</button>
+                  <button type="button" id="clearCustomFiltersBtn" class="filter-event-btn" style="padding: 8px 10px; font-size: 12px;" title="Remove all saved custom filters">Clear custom</button>
+                </div>
+                <div class="custom-filters-list" id="customFiltersList"></div>
+              </div>
+            </div>
+            <div class="json-all-controls" aria-label="Log line expand/collapse controls">
+              <span class="json-all-label">Lines:</span>
+              <button type="button" id="expandAllJsonBtn" class="filter-event-btn" title="Expand all log lines in the current view">Expand all</button>
+              <button type="button" id="collapseAllJsonBtn" class="filter-event-btn" title="Collapse all log lines to a single line each">Collapse all</button>
             </div>
           </div>
           <div class="context-bar" id="contextBar">
@@ -908,7 +1148,11 @@
   <script>
     (function () {
       const LEVEL_MAP = { I: 'Info', D: 'Debug', W: 'Warn', E: 'Error' };
-      const RFC_LINE = /^(\d{4}-\d{2}-\d{2}T[\d.:+TZ-]+)\s+(\d+)\((\d+)\)\s+([IDWE])\s+(.*)$/;
+      // Standard log line timestamp (RFC3339 / ISO-ish) e.g. "2026-03-02T09:38:18.087...+00:00 140(172) I ...".
+      // Some logs emit "M" which we treat as Info later.
+      const RFC_LINE = /^(\d{4}-\d{2}-\d{2}T[\d.:+TZ-]+)\s+(\d+)\((\d+)\)\s+([IDWEM])\s+(.*)$/;
+      // Alternate timestamp (seen in some STT logs): "03-12 16:48:50.216 82569(82659) D ...".
+      const ALT_RFC_LINE = /^(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+(\d+)\((\d+)\)\s+([IDWEM])\s+(.*)$/;
       const APP_VERSION_LINE = /^(\d{4}\/\d{2}\/\d{2}\s+[\d.]+)\s+app_version:\s*([^,]+),\s*commit:\s*(\S+),\s*build_time:\s*(.+)$/;
       const TAB_LINE = /^(\d{4}-\d{2}-\d{2}T[^\t]+)\t(\w+)\t(.+)$/;
       const EXTENSION_TAG = /\[([^\]]+)\]/g;
@@ -1020,6 +1264,21 @@
         const lines = text.split(/\r?\n/);
         const entries = [];
         let i = 0;
+        let inferredYear = null;
+
+        const convertAltTsToIso = function (altTs) {
+          // altTs: "MM-DD HH:MM:SS(.fraction)"
+          const year = inferredYear != null ? inferredYear : new Date().getFullYear();
+          const parts = String(altTs || '').trim().split(' ');
+          if (parts.length < 2) return altTs;
+          const md = parts[0];
+          const time = parts.slice(1).join(' ');
+          const mdParts = md.split('-');
+          if (mdParts.length !== 2) return altTs;
+          const mm = mdParts[0];
+          const dd = mdParts[1];
+          return year + '-' + mm + '-' + dd + 'T' + time;
+        };
 
         while (i < lines.length) {
           const line = lines[i];
@@ -1027,6 +1286,10 @@
 
           let match = line.match(APP_VERSION_LINE);
           if (match) {
+            // Example match[1]: "2026/03/12 16.48"
+            const y = String(match[1] || '').split('/')[0];
+            const yNum = parseInt(y, 10);
+            inferredYear = isNaN(yNum) ? inferredYear : yNum;
             entries.push({
               ts: match[1],
               level: 'I',
@@ -1058,21 +1321,34 @@
             continue;
           }
 
-          match = line.match(RFC_LINE);
-          if (match) {
-            const ts = match[1];
-            const pid = match[2];
-            const tid = match[3];
-            const level = match[4];
-            let msg = match[5];
+          let rfcMatch = line.match(RFC_LINE);
+          let altMatch = !rfcMatch ? line.match(ALT_RFC_LINE) : null;
+          if (rfcMatch || altMatch) {
+            const matchUsed = rfcMatch || altMatch;
+            let ts = matchUsed[1];
+            if (altMatch) ts = convertAltTsToIso(ts);
+            const pid = matchUsed[2];
+            const tid = matchUsed[3];
+            let level = matchUsed[4];
+            if (level === 'M') level = 'I'; // "M" is treated as info in the UI.
+            let msg = matchUsed[5];
             const ext = extractExtension(msg);
             let json = tryParseJSON(msg);
+            if (json == null) json = tryParsePythonDict(msg);
 
             i++;
             const continuation = [];
-            while (i < lines.length && !lines[i].match(RFC_LINE) && !lines[i].match(APP_VERSION_LINE) && !lines[i].match(TAB_LINE) && !lines[i].startsWith('SESS_CTRL:')) {
+            while (
+              i < lines.length &&
+              !lines[i].match(RFC_LINE) &&
+              !lines[i].match(ALT_RFC_LINE) &&
+              !lines[i].match(APP_VERSION_LINE) &&
+              !lines[i].match(TAB_LINE) &&
+              !lines[i].startsWith('SESS_CTRL:')
+            ) {
               continuation.push(lines[i]);
-              const more = tryParseJSON(lines[i]);
+              let more = tryParseJSON(lines[i]);
+              if (more == null) more = tryParsePythonDict(lines[i]);
               if (more !== null) json = more;
               i++;
             }
@@ -1080,7 +1356,8 @@
             if (continuation.length) {
               msg = msg + '\n' + continuation.join('\n');
               if (json == null || (typeof json === 'object' && !Array.isArray(json))) {
-                const fromMsg = tryParseJSON(msg);
+                let fromMsg = tryParseJSON(msg);
+                if (fromMsg == null) fromMsg = tryParsePythonDict(msg);
                 if (fromMsg != null) json = fromMsg;
               }
             }
@@ -2398,27 +2675,37 @@
         return list;
       }
 
-      function renderEntry(entry, index, isSelected) {
+      function renderEntry(entry, index, isSelected, searchRaw) {
         const isRelevant = entry.msg && (
           /llm failure|Something went wrong|Request failed|on_request_exception|ncs on_agent_left|Failed too many times|No app certificate provided|TokenManager not initialized|Requested time .* exceeds timeline duration|Websocket internal error|server rejected WebSocket|HTTP 401|base_dir of 'tts' is missing|500 Internal Server Error|Failed to send message/i.test(entry.msg)
         );
         const levelClass = entry.level ? `level-${entry.level}` : '';
-        let jsonHtml = '';
-        if (entry.json != null && typeof entry.json === 'object') {
-          const str = JSON.stringify(entry.json, null, 2);
-          const id = 'json-' + index;
-          jsonHtml = `<div class="json-toggle" data-toggle="${id}">▼ Show JSON</div><div id="${id}" class="json-block" style="display:none;">${escapeHtml(str)}</div>`;
-        }
+        const hasPerLineOverride =
+          state.lineExpanded && Object.prototype.hasOwnProperty.call(state.lineExpanded, index);
+        const perLineExpanded = hasPerLineOverride ? !!state.lineExpanded[index] : false;
+        const globalLineExpanded = state.lineAllExpanded != null ? !!state.lineAllExpanded : false;
+        const expanded = hasPerLineOverride ? perLineExpanded : globalLineExpanded;
+
+        let jsonHtml = ''; // Log-line expansion is independent of JSON parsing.
+
         const classes = ['log-entry', 'clickable', isRelevant ? 'relevant-error' : '', isSelected ? 'selected' : ''].filter(Boolean).join(' ');
         return `
           <div class="${classes}" data-level="${entry.level || ''}" data-index="${index}" ${isRelevant ? 'data-relevant="true"' : ''}>
-            <div class="meta">
-              <span class="ts">${escapeHtml(entry.ts)}</span>
-              <span class="level ${levelClass}">${entry.level || '-'}</span>
-              ${entry.pid ? `<span>${entry.pid}(${entry.tid})</span>` : ''}
-              ${entry.ext ? `<span class="ext">[${escapeHtml(entry.ext)}]</span>` : ''}
+            <div class="log-line">
+              <div class="meta">
+                <button type="button" class="copy-entry-btn" data-copy-index="${index}" title="Copy full log line" aria-label="Copy full log line">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <rect x="2.5" y="2.5" width="13" height="13" rx="2" ry="2" opacity="0.45"></rect>
+                  </svg>
+                </button>
+                <span class="ts">${escapeHtml(entry.ts)}</span>
+                <span class="level ${levelClass}">${entry.level || '-'}</span>
+                ${entry.pid ? `<span>${entry.pid}(${entry.tid})</span>` : ''}
+                ${entry.ext ? `<span class="ext">[${escapeHtml(entry.ext)}]</span>` : ''}
+              </div>
+              <div class="msg ${expanded ? 'line-expanded' : 'line-collapsed'}">${highlightText(entry.msg, searchRaw)}</div>
             </div>
-            <div class="msg">${escapeHtml(entry.msg)}</div>
             ${jsonHtml}
           </div>
         `;
@@ -2429,6 +2716,46 @@
         const div = document.createElement('div');
         div.textContent = s;
         return div.innerHTML;
+      }
+
+      function escapeRegExp(str) {
+        return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      }
+
+      let highlightCacheTerm = null;
+      let highlightCacheRe = null;
+
+      function highlightText(text, termRaw) {
+        const t = termRaw == null ? '' : String(termRaw);
+        const term = t.trim();
+        if (!term) return escapeHtml(text);
+
+        const raw = text == null ? '' : String(text);
+        if (term !== highlightCacheTerm) {
+          highlightCacheTerm = term;
+          highlightCacheRe = null;
+          try {
+            highlightCacheRe = new RegExp(escapeRegExp(term), 'ig');
+          } catch (_) {
+            highlightCacheRe = null;
+          }
+        }
+        if (!highlightCacheRe) return escapeHtml(raw);
+
+        let out = '';
+        let lastIdx = 0;
+        let m;
+        highlightCacheRe.lastIndex = 0;
+        while ((m = highlightCacheRe.exec(raw)) !== null) {
+          const start = m.index;
+          const end = start + m[0].length;
+          out += escapeHtml(raw.slice(lastIdx, start));
+          out += '<span class="log-highlight">' + escapeHtml(m[0]) + '</span>';
+          lastIdx = end;
+          if (m[0].length === 0) break; // safety
+        }
+        out += escapeHtml(raw.slice(lastIdx));
+        return out;
       }
 
       function jsonSyntaxHighlight(jsonStr) {
@@ -3337,7 +3664,23 @@
         });
       }
 
-      let state = { entries: [], summary: {}, extensions: [], insights: null, selectedIndex: null, contextRadius: null, pendingScrollToSelection: false };
+      let state = {
+        entries: [],
+        summary: {},
+        extensions: [],
+        insights: null,
+        selectedIndex: null,
+        contextRadius: null,
+        pendingScrollToSelection: false,
+        // Per-log-entry JSON expand/collapse state (keyed by global log index).
+        jsonExpanded: {},
+        // When set (true/false), acts as a default for all log lines unless overridden in jsonExpanded.
+        jsonAllExpanded: null,
+        // Per-log-entry line expand/collapse state (keyed by global log index).
+        lineExpanded: {},
+        // When set, acts as a default for all log lines unless overridden in lineExpanded.
+        lineAllExpanded: null
+      };
       let insightColumnFilter = {};
 
       /** So the jumped-to line is actually in the DOM (not hidden by errors-only, extension, search, time). */
@@ -3368,61 +3711,235 @@
         logContainer.scrollTop += delta;
       }
 
-      function applyFilters() {
+      function clampLogScrollTop() {
+        const logContainer = document.getElementById('logContainer');
+        if (!logContainer) return;
+        const max = Math.max(0, logContainer.scrollHeight - logContainer.clientHeight);
+        if (logContainer.scrollTop > max) logContainer.scrollTop = max;
+        if (logContainer.scrollTop < 0) logContainer.scrollTop = 0;
+      }
+
+      // ---------- Lazy JSON hydration for log entries ----------
+      let jsonObserver = null;
+      const observedJsonEntries = new WeakSet();
+      let jsonHydrateQueue = [];
+      let jsonHydrateRaf = null;
+
+      function requestedExpandedForIndex(idx) {
+        if (!state) return false;
+        if (state.jsonExpanded && Object.prototype.hasOwnProperty.call(state.jsonExpanded, idx)) {
+          return !!state.jsonExpanded[idx];
+        }
+        return state.jsonAllExpanded != null ? !!state.jsonAllExpanded : false;
+      }
+
+      function hydrateJsonBlockNow(block, idx) {
+        if (!block) return;
+        if (block.dataset && block.dataset.hydrated === '1') return;
+        const entry = state && state.entries ? state.entries[idx] : null;
+        if (!entry || !entry.json) {
+          block.innerHTML = '';
+          if (block.dataset) block.dataset.hydrated = '0';
+          return;
+        }
+        const str = JSON.stringify(entry.json, null, 2);
+        block.innerHTML = escapeHtml(str);
+        if (block.dataset) block.dataset.hydrated = '1';
+      }
+
+      function processJsonHydrateQueue() {
+        jsonHydrateRaf = null;
+        const start = performance.now();
+        while (jsonHydrateQueue.length) {
+          const item = jsonHydrateQueue.shift();
+          if (item && item.block && item.idx != null) {
+            if (item.block.dataset) item.block.dataset.hydrationQueued = '0';
+            hydrateJsonBlockNow(item.block, item.idx);
+          }
+          if (performance.now() - start > 10) break;
+        }
+        if (jsonHydrateQueue.length) {
+          jsonHydrateRaf = requestAnimationFrame(processJsonHydrateQueue);
+        }
+      }
+
+      function queueHydrateJsonBlock(block, idx) {
+        if (!block) return;
+        if (block.dataset && block.dataset.hydrated === '1') return;
+        if (block.dataset && block.dataset.hydrationQueued === '1') return;
+        if (block.dataset) block.dataset.hydrationQueued = '1';
+        jsonHydrateQueue.push({ block, idx });
+        if (!jsonHydrateRaf) jsonHydrateRaf = requestAnimationFrame(processJsonHydrateQueue);
+      }
+
+      function ensureJsonObserver() {
+        if (jsonObserver) return;
+        const root = document.getElementById('logContainer');
+        if (!root) return;
+        jsonObserver = new IntersectionObserver(function (obsEntries) {
+          obsEntries.forEach(function (obs) {
+            const logEntryEl = obs.target;
+            const block = logEntryEl.querySelector && logEntryEl.querySelector('.json-block');
+            if (!block) return;
+            const toggle = logEntryEl.querySelector && logEntryEl.querySelector('.json-toggle');
+            const idx = parseInt(block.dataset.jsonEntryIndex || block.getAttribute('data-json-entry-index') || '', 10);
+            if (isNaN(idx)) return;
+            const shouldExpand = requestedExpandedForIndex(idx);
+            const hasPerOverride = state && state.jsonExpanded && Object.prototype.hasOwnProperty.call(state.jsonExpanded, idx);
+
+            if (obs.isIntersecting) {
+              if (shouldExpand) {
+                if (block.style.display !== 'block') block.style.display = 'block';
+                if (toggle) {
+                  toggle.textContent = '▲ Hide JSON';
+                  toggle.setAttribute('aria-expanded', 'true');
+                }
+                if (!block.innerHTML || (block.dataset && block.dataset.hydrated !== '1')) {
+                  if (block.dataset && block.dataset.hydrated) block.dataset.hydrated = '0';
+                  block.innerHTML = '<div class="json-loading">Loading…</div>';
+                }
+                // Global expand-all: show placeholders only. Per-entry toggle: hydrate.
+                if (hasPerOverride) queueHydrateJsonBlock(block, idx);
+              } else {
+                if (block.style.display === 'block') block.style.display = 'none';
+                if (toggle) {
+                  toggle.textContent = '▼ Show JSON';
+                  toggle.setAttribute('aria-expanded', 'false');
+                }
+              }
+            } else {
+              if (block.style.display === 'block') {
+                block.style.display = 'none';
+                // When global expand/collapse is active, keep memory usage in check.
+                if (!hasPerOverride && state && state.jsonAllExpanded != null) {
+                  block.innerHTML = '';
+                  if (block.dataset) block.dataset.hydrated = '0';
+                }
+                if (toggle) {
+                  toggle.textContent = shouldExpand ? '▲ Hide JSON' : '▼ Show JSON';
+                  toggle.setAttribute('aria-expanded', shouldExpand ? 'true' : 'false');
+                }
+              }
+            }
+          });
+        }, { root: root, threshold: 0.05 });
+      }
+
+      function syncJsonObserverTargets(containerEl) {
+        ensureJsonObserver();
+        if (!jsonObserver || !containerEl || !containerEl.querySelectorAll) return;
+        containerEl.querySelectorAll('.log-entry').forEach(function (el) {
+          if (observedJsonEntries.has(el)) return;
+          observedJsonEntries.add(el);
+          jsonObserver.observe(el);
+        });
+      }
+
+      function doApplyFilters() {
+        // Return a promise so the overlay spinner can stay visible
+        // until chunked DOM rendering completes.
+        let resolveFn = null;
+        const donePromise = new Promise(function (resolve) {
+          resolveFn = resolve;
+        });
         const showI = document.getElementById('filterI').checked;
         const showD = document.getElementById('filterD').checked;
         const showW = document.getElementById('filterW').checked;
         const showE = document.getElementById('filterE').checked;
-        const search = (document.getElementById('searchInput').value || '').trim().toLowerCase();
+        const searchRaw = (document.getElementById('searchInput').value || '').trim();
+        const search = searchRaw.toLowerCase();
         const ext = (document.getElementById('extFilter').value || '').trim();
         const timeFromStr = (document.getElementById('timeFrom').value || '').trim();
         const timeToStr = (document.getElementById('timeTo').value || '').trim();
         const timeFromVal = timeFromStr ? parseUserDateTime(timeFromStr) : NaN;
         const timeToVal = timeToStr ? parseUserDateTime(timeToStr) : NaN;
+        const wantTimeFrom = !isNaN(timeFromVal);
+        const wantTimeTo = !isNaN(timeToVal);
         const contextRadius = state.contextRadius;
         const selectedIndex = state.selectedIndex;
 
         let pool = state.entries;
+        let baseGlobalIndex = 0;
         if (contextRadius != null && selectedIndex != null) {
           const low = Math.max(0, selectedIndex - contextRadius);
           const high = Math.min(state.entries.length - 1, selectedIndex + contextRadius);
           pool = state.entries.slice(low, high + 1);
+          baseGlobalIndex = low;
         }
 
-        const visible = pool.filter((e, i) => {
-          const globalIndex = contextRadius != null && selectedIndex != null ? selectedIndex - contextRadius + i : state.entries.indexOf(e);
-          if (globalIndex < 0) return false;
-          if (e.level === 'I' && !showI) return false;
-          if (e.level === 'D' && !showD) return false;
-          if (e.level === 'W' && !showW) return false;
-          if (e.level === 'E' && !showE) return false;
-          if (ext && e.ext !== ext) return false;
-          if (search && !(e.msg && e.msg.toLowerCase().includes(search))) return false;
-          const et = parseLogTs(e.ts);
-          if (!isNaN(timeFromVal) && (isNaN(et) || et < timeFromVal)) return false;
-          if (!isNaN(timeToVal) && (isNaN(et) || et > timeToVal)) return false;
-          return true;
-        });
+        // Build an array of { entry, globalIdx } to avoid O(n) indexOf lookups.
+        const visible = [];
+        for (let i = 0; i < pool.length; i++) {
+          const e = pool[i];
+          const globalIdx = baseGlobalIndex + i;
+          if (e.level === 'I' && !showI) continue;
+          if (e.level === 'D' && !showD) continue;
+          if (e.level === 'W' && !showW) continue;
+          if (e.level === 'E' && !showE) continue;
+          if (ext && e.ext !== ext) continue;
+          if (search && !(e.msg && e.msg.toLowerCase().includes(search))) continue;
+          if (wantTimeFrom || wantTimeTo) {
+            const et = parseLogTs(e.ts);
+            if (wantTimeFrom && (isNaN(et) || et < timeFromVal)) continue;
+            if (wantTimeTo && (isNaN(et) || et > timeToVal)) continue;
+          }
+          visible.push({ entry: e, globalIdx });
+        }
+
+        const foundCountEl = document.getElementById('foundCount');
+        if (foundCountEl) {
+          const n = visible.length;
+          foundCountEl.textContent = 'Found ' + n + ' line' + (n === 1 ? '' : 's');
+        }
 
         const container = document.getElementById('logEntries');
-        container.innerHTML = visible.map((e) => {
-          const globalIdx = state.entries.indexOf(e);
-          return renderEntry(e, globalIdx, globalIdx === selectedIndex);
-        }).join('');
         container.style.display = 'block';
+        container.innerHTML = '';
 
-        container.querySelectorAll('.log-entry.selected').forEach(function (el) { el.classList.remove('selected'); });
-        if (selectedIndex != null) {
-          const selEl = container.querySelector('.log-entry[data-index="' + selectedIndex + '"]');
-          if (selEl) selEl.classList.add('selected');
-        }
-        if (selectedIndex != null && state.pendingScrollToSelection) {
-          state.pendingScrollToSelection = false;
+        const maxInlineHtml = 2000; // chunk rendering for large logs
+        const doFinalize = function () {
           requestAnimationFrame(function () {
-            requestAnimationFrame(function () {
-              scrollSelectedIntoLogContainer();
-            });
+            clampLogScrollTop();
+
+            if (selectedIndex != null && state.pendingScrollToSelection) {
+              state.pendingScrollToSelection = false;
+              requestAnimationFrame(function () {
+                requestAnimationFrame(function () {
+                  scrollSelectedIntoLogContainer();
+                  if (resolveFn) resolveFn();
+                });
+              });
+            } else {
+              if (resolveFn) resolveFn();
+            }
           });
+        };
+
+        if (visible.length <= maxInlineHtml) {
+          container.innerHTML = visible.map((v) => {
+            return renderEntry(v.entry, v.globalIdx, v.globalIdx === selectedIndex, searchRaw);
+          }).join('');
+          doFinalize();
+        } else {
+          const chunkSize = 750;
+          let cursor = 0;
+
+          function renderNextChunk() {
+            const end = Math.min(visible.length, cursor + chunkSize);
+            const html = visible.slice(cursor, end).map((v) => {
+              return renderEntry(v.entry, v.globalIdx, v.globalIdx === selectedIndex, searchRaw);
+            }).join('');
+            container.insertAdjacentHTML('beforeend', html);
+            cursor = end;
+
+            if (cursor < visible.length) {
+              requestAnimationFrame(renderNextChunk);
+            } else {
+              doFinalize();
+            }
+          }
+
+          renderNextChunk();
         }
 
         const ctxBar = document.getElementById('contextBar');
@@ -3438,20 +3955,40 @@
         const searchWrap = (document.getElementById('searchInput').value || '').trim();
         document.getElementById('goToFirstMatch').style.display = searchWrap ? 'inline-block' : 'none';
 
-        container.querySelectorAll('.json-toggle').forEach(el => {
-          el.addEventListener('click', function (ev) {
-            ev.stopPropagation();
-            const id = this.getAttribute('data-toggle');
-            const block = document.getElementById(id);
-            if (block.style.display === 'none') {
-              block.style.display = 'block';
-              this.textContent = '▲ Hide JSON';
+        // JSON expand/collapse is disabled in log view (line expand/collapse only).
+
+        return donePromise;
+      }
+
+      let applyFiltersSeq = 0;
+      let applyFiltersDebounceTimer = null;
+      let applyFiltersSpinnerTimer = null;
+      function applyFilters() {
+        // Debounce expensive DOM re-rendering and show a lightweight spinner only if it takes time.
+        applyFiltersSeq++;
+        const seq = applyFiltersSeq;
+
+        if (applyFiltersDebounceTimer) clearTimeout(applyFiltersDebounceTimer);
+        if (applyFiltersSpinnerTimer) clearTimeout(applyFiltersSpinnerTimer);
+
+        // Delay the actual work so we don't re-render while the user is still typing.
+        applyFiltersDebounceTimer = setTimeout(function () {
+          // If a newer update request came in, do nothing.
+          if (seq !== applyFiltersSeq) return;
+          setParseOverlay(true, 'Updating view…');
+          try {
+            const p = doApplyFilters();
+            if (p && typeof p.finally === 'function') {
+              p.finally(function () {
+                setParseOverlay(false);
+              });
             } else {
-              block.style.display = 'none';
-              this.textContent = '▼ Show JSON';
+              setParseOverlay(false);
             }
-          });
-        });
+          } catch (_) {
+            setParseOverlay(false);
+          }
+        }, 250);
       }
 
       function goToFirstMatch() {
@@ -3548,7 +4085,19 @@
           const entries = parseLines(text);
           const summary = extractSummary(entries);
           const extensions = collectExtensions(entries);
-          state = { entries, summary, extensions, insights: null, selectedIndex: null, contextRadius: null, pendingScrollToSelection: false };
+          state = {
+            entries,
+            summary,
+            extensions,
+            insights: null,
+            selectedIndex: null,
+            contextRadius: null,
+            pendingScrollToSelection: false,
+            lineExpanded: {},
+            lineAllExpanded: null,
+            jsonExpanded: {},
+            jsonAllExpanded: null
+          };
 
           document.getElementById('summaryPlaceholder').style.display = 'none';
           document.getElementById('summaryContent').style.display = 'block';
@@ -3756,6 +4305,256 @@
         if (file) loadLogFile(file);
       }, true);
 
+      // ---------- Log view controls: JSON expand/collapse, copy, extra filters ----------
+      const CUSTOM_FILTERS_KEY = 'tenLogReaderCustomFilters_v1';
+      function loadCustomFilters() {
+        try {
+          const raw = localStorage.getItem(CUSTOM_FILTERS_KEY);
+          const parsed = raw ? JSON.parse(raw) : [];
+          if (!Array.isArray(parsed)) return [];
+          return parsed.map(v => String(v)).filter(Boolean);
+        } catch (_) {
+          return [];
+        }
+      }
+      function saveCustomFilters(list) {
+        try {
+          localStorage.setItem(CUSTOM_FILTERS_KEY, JSON.stringify(list));
+        } catch (_) {}
+      }
+      function escapeAttr(s) {
+        return String(s)
+          .replace(/&/g, '&amp;')
+          .replace(/"/g, '&quot;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+      }
+
+      let customFilters = loadCustomFilters();
+
+      function renderCustomFilters() {
+        const wrap = document.getElementById('customFiltersList');
+        if (!wrap) return;
+        if (!customFilters || !customFilters.length) {
+          wrap.innerHTML = '';
+          return;
+        }
+        wrap.innerHTML = customFilters.map((term, idx) => (
+          '<span class="custom-filter-pill" data-custom-filter-idx="' + idx + '">' +
+            '<button type="button" class="filter-event-btn" data-search="' + escapeAttr(term) + '" title="Custom filter">' + escapeHtml(term) + '</button>' +
+            '<button type="button" class="custom-filter-remove-btn" data-remove-idx="' + idx + '" aria-label="Remove custom filter" title="Remove">×</button>' +
+          '</span>'
+        )).join('');
+      }
+
+      const moreFiltersBtn = document.getElementById('toggleMoreFilters');
+      const moreFiltersEl = document.getElementById('moreFilters');
+      if (moreFiltersBtn && moreFiltersEl) {
+        moreFiltersBtn.addEventListener('click', function () {
+          const open = moreFiltersEl.style.display !== 'none';
+          moreFiltersEl.style.display = open ? 'none' : 'flex';
+          moreFiltersBtn.setAttribute('aria-expanded', open ? 'false' : 'true');
+        });
+      }
+
+      if (customFilters && document.getElementById('customFiltersList')) {
+        document.getElementById('customFiltersList').addEventListener('click', function (ev) {
+          const rmBtn = ev.target.closest('.custom-filter-remove-btn');
+          if (!rmBtn) return;
+          ev.stopPropagation();
+          const idx = parseInt(rmBtn.getAttribute('data-remove-idx'), 10);
+          if (isNaN(idx)) return;
+          if (!customFilters || !customFilters.length) return;
+          customFilters.splice(idx, 1);
+          saveCustomFilters(customFilters);
+          renderCustomFilters();
+        });
+      }
+
+      const expandAllJsonBtn = document.getElementById('expandAllJsonBtn');
+      const collapseAllJsonBtn = document.getElementById('collapseAllJsonBtn');
+      if (expandAllJsonBtn) {
+        expandAllJsonBtn.addEventListener('click', function () {
+          if (!state || !Array.isArray(state.entries) || !state.entries.length) return;
+          state.lineAllExpanded = true;
+          state.lineExpanded = {};
+          ensureLineAllScrollListener();
+          refreshLineExpansionInViewport();
+          requestAnimationFrame(clampLogScrollTop);
+
+          const logEl = document.getElementById('logEntries');
+          if (logEl) {
+            const logContainer = document.getElementById('logContainer');
+            if (!logContainer) return;
+            const rootRect = logContainer.getBoundingClientRect();
+            let shown = 0;
+            const maxShow = 500; // cap updates to keep UI responsive
+            const entriesEls = logEl.querySelectorAll('.log-entry');
+            for (let i = 0; i < entriesEls.length; i++) {
+              const el = entriesEls[i];
+              const elRect = el.getBoundingClientRect();
+              const overlaps = elRect.bottom >= rootRect.top && elRect.top <= rootRect.bottom;
+              if (!overlaps) continue;
+              if (shown >= maxShow) break;
+              const msgEl = el.querySelector && el.querySelector('.msg');
+              if (msgEl) {
+                msgEl.classList.toggle('line-expanded', true);
+                msgEl.classList.toggle('line-collapsed', false);
+              }
+              shown++;
+            }
+            requestAnimationFrame(clampLogScrollTop);
+          }
+        });
+      }
+      if (collapseAllJsonBtn) {
+        collapseAllJsonBtn.addEventListener('click', function () {
+          if (!state || !Array.isArray(state.entries) || !state.entries.length) return;
+          state.lineAllExpanded = false;
+          state.lineExpanded = {};
+          ensureLineAllScrollListener();
+          refreshLineExpansionInViewport();
+          requestAnimationFrame(clampLogScrollTop);
+
+          const logEl = document.getElementById('logEntries');
+          if (logEl) {
+            // Collapse only currently visible blocks first.
+            const logContainer = document.getElementById('logContainer');
+            if (!logContainer) return;
+            const rootRect = logContainer.getBoundingClientRect();
+            let collapsed = 0;
+            const entriesEls = logEl.querySelectorAll('.log-entry');
+            for (let i = 0; i < entriesEls.length; i++) {
+              const el = entriesEls[i];
+              const elRect = el.getBoundingClientRect();
+              const overlaps = elRect.bottom >= rootRect.top && elRect.top <= rootRect.bottom;
+              if (!overlaps) continue;
+              if (collapsed >= 800) break;
+              const msgEl = el.querySelector && el.querySelector('.msg');
+              if (msgEl) {
+                msgEl.classList.toggle('line-expanded', false);
+                msgEl.classList.toggle('line-collapsed', true);
+              }
+              collapsed++;
+            }
+            requestAnimationFrame(clampLogScrollTop);
+          }
+        });
+      }
+
+      const addCustomFiltersBtn = document.getElementById('addCustomFilterBtn');
+      const clearCustomFiltersBtn = document.getElementById('clearCustomFiltersBtn');
+      const customFilterInput = document.getElementById('customFilterInput');
+      if (customFilterInput && addCustomFiltersBtn) {
+        customFilterInput.addEventListener('keydown', function (ev) {
+          if (ev.key !== 'Enter') return;
+          ev.preventDefault();
+          addCustomFiltersBtn.click();
+        });
+        addCustomFiltersBtn.addEventListener('click', function () {
+          if (!customFilterInput) return;
+          const term = (customFilterInput.value || '').trim();
+          if (!term) return;
+          const lower = term.toLowerCase();
+          const exists = customFilters.some(t => String(t).toLowerCase() === lower);
+          if (!exists) {
+            customFilters.push(term);
+            saveCustomFilters(customFilters);
+          }
+          customFilterInput.value = '';
+          renderCustomFilters();
+        });
+      }
+      if (clearCustomFiltersBtn) {
+        clearCustomFiltersBtn.addEventListener('click', function () {
+          customFilters = [];
+          saveCustomFilters(customFilters);
+          renderCustomFilters();
+        });
+      }
+      renderCustomFilters();
+
+      // Double-click a log line to expand/collapse the log message itself.
+      let logClickTimer = null;
+      let ignoreNextLogClickUntil = 0;
+      const logEntriesEl = document.getElementById('logEntries');
+
+      // When global line expand-all is enabled, keep messages in view expanded as the user scrolls.
+      let lineAllScrollRaf = null;
+      let lineAllScrollListenerBound = false;
+      function refreshLineExpansionInViewport() {
+        if (!state || state.lineAllExpanded == null) return;
+        const logContainer = document.getElementById('logContainer');
+        const logEl = document.getElementById('logEntries');
+        if (!logContainer || !logEl) return;
+
+        const rootTop = logContainer.scrollTop;
+        const rootBottom = rootTop + logContainer.clientHeight;
+
+        const entries = logEl.querySelectorAll('.log-entry');
+        for (let i = 0; i < entries.length; i++) {
+          const el = entries[i];
+          const top = el.offsetTop;
+          const bottom = top + el.offsetHeight;
+          if (top > rootBottom) break;
+          if (bottom < rootTop) continue;
+
+          const idx = parseInt(el.getAttribute('data-index'), 10);
+          if (isNaN(idx)) continue;
+
+          const hasOverride = state.lineExpanded && Object.prototype.hasOwnProperty.call(state.lineExpanded, idx);
+          const effectiveExpanded = hasOverride ? !!state.lineExpanded[idx] : !!state.lineAllExpanded;
+
+          const msgEl = el.querySelector('.msg');
+          if (msgEl) {
+            msgEl.classList.toggle('line-expanded', effectiveExpanded);
+            msgEl.classList.toggle('line-collapsed', !effectiveExpanded);
+          }
+          // no arrows
+        }
+      }
+
+      function ensureLineAllScrollListener() {
+        if (lineAllScrollListenerBound) return;
+        const logContainer = document.getElementById('logContainer');
+        if (!logContainer) return;
+        logContainer.addEventListener('scroll', function () {
+          if (!state || state.lineAllExpanded == null) return;
+          if (lineAllScrollRaf) return;
+          lineAllScrollRaf = requestAnimationFrame(function () {
+            lineAllScrollRaf = null;
+            refreshLineExpansionInViewport();
+          });
+        });
+        lineAllScrollListenerBound = true;
+      }
+
+      if (logEntriesEl) {
+        logEntriesEl.addEventListener('dblclick', function (ev) {
+          if (logClickTimer) clearTimeout(logClickTimer);
+          logClickTimer = null;
+          ignoreNextLogClickUntil = Date.now() + 600;
+          ev.preventDefault();
+          ev.stopPropagation();
+          const entryEl = ev.target.closest('.log-entry');
+          if (!entryEl) return;
+          const idx = parseInt(entryEl.getAttribute('data-index'), 10);
+          if (isNaN(idx)) return;
+
+          const hasOverride = state.lineExpanded && Object.prototype.hasOwnProperty.call(state.lineExpanded, idx);
+          const effectiveExpanded = hasOverride ? !!state.lineExpanded[idx] : !!state.lineAllExpanded;
+          const nextExpanded = !effectiveExpanded;
+          if (!state.lineExpanded) state.lineExpanded = {};
+          state.lineExpanded[idx] = nextExpanded;
+
+          const msgEl = entryEl.querySelector('.msg');
+          if (msgEl) {
+            msgEl.classList.toggle('line-expanded', nextExpanded);
+            msgEl.classList.toggle('line-collapsed', !nextExpanded);
+          }
+        });
+      }
+
       document.getElementById('filterI').addEventListener('change', applyFilters);
       document.getElementById('filterD').addEventListener('change', applyFilters);
       document.getElementById('filterW').addEventListener('change', applyFilters);
@@ -3768,6 +4567,14 @@
       document.querySelector('.filters').addEventListener('click', function (ev) {
         const btn = ev.target.closest('.filter-event-btn');
         if (!btn) return;
+        const ignoreIds = new Set([
+          'toggleMoreFilters',
+          'expandAllJsonBtn',
+          'collapseAllJsonBtn',
+          'addCustomFilterBtn',
+          'clearCustomFiltersBtn'
+        ]);
+        if (btn.id && ignoreIds.has(btn.id)) return;
         const searchEl = document.getElementById('searchInput');
         if (btn.getAttribute('data-clear') === 'true') {
           searchEl.value = '';
@@ -3778,13 +4585,50 @@
       });
 
       document.getElementById('logEntries').addEventListener('click', function (ev) {
+        const copyBtn = ev.target.closest('.copy-entry-btn');
+        if (copyBtn) {
+          if (logClickTimer) clearTimeout(logClickTimer);
+          ev.stopPropagation();
+          const idx = parseInt(copyBtn.getAttribute('data-copy-index'), 10);
+          if (!isNaN(idx) && state && Array.isArray(state.entries)) {
+            const entry = state.entries[idx];
+            if (entry) copyText(entry.raw != null ? entry.raw : (entry.msg != null ? entry.msg : ''));
+          }
+          return;
+        }
+        if (Date.now() < ignoreNextLogClickUntil) return;
+
+        // (no per-line arrows)
+
+        const jsonToggle = ev.target.closest('.json-toggle');
+        if (jsonToggle) return; // don't change selection when clicking JSON toggle
+
         const entry = ev.target.closest('.log-entry');
         if (!entry) return;
         const idx = parseInt(entry.getAttribute('data-index'), 10);
         if (isNaN(idx)) return;
-        state.selectedIndex = idx;
-        state.pendingScrollToSelection = true;
-        applyFilters();
+
+        // If we're in full-log mode (no context window), just update selection highlight + scroll.
+        // This avoids expensive re-render on big logs.
+        if (state && state.contextRadius == null) {
+          const container = document.getElementById('logEntries');
+          const prevSel = container && container.querySelector('.log-entry.selected');
+          const nextSel = container && container.querySelector('.log-entry[data-index="' + idx + '"]');
+          if (prevSel) prevSel.classList.remove('selected');
+          if (nextSel) nextSel.classList.add('selected');
+          state.selectedIndex = idx;
+          state.pendingScrollToSelection = false;
+          return;
+        }
+
+        // Context window mode: re-render is needed to shift ±N lines.
+        if (logClickTimer) clearTimeout(logClickTimer);
+        logClickTimer = setTimeout(function () {
+          logClickTimer = null;
+          state.selectedIndex = idx;
+          state.pendingScrollToSelection = false;
+          applyFilters();
+        }, 180);
       });
 
       document.getElementById('goToFirstMatch').addEventListener('click', goToFirstMatch);
