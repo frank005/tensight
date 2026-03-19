@@ -623,8 +623,10 @@
               <dd id="sumChannel">—</dd>
               <dt>Start TS</dt>
               <dd id="sumStartTs">—</dd>
-              <dt>RTC SID</dt>
+              <dt>RTC SID → Argus</dt>
               <dd><a id="linkArgus" href="#" target="_blank" rel="noopener" class="summary-link">—</a></dd>
+              <dt class="summary-argus-channel" style="display: none;">Channel → Argus</dt>
+              <dd class="summary-argus-channel" style="display: none;"><a id="linkArgusChannel" href="#" target="_blank" rel="noopener" class="summary-link">—</a></dd>
               <dt>Graph ID</dt>
               <dd id="sumGraphId">—</dd>
               <dt>LLM</dt>
@@ -2790,6 +2792,59 @@
         applyFilters();
       }
 
+      /** Argus needs fromTs/toTs so search is not limited to a default 3-day window. */
+      function computeArgusTimeRangeSec(summary, entries) {
+        let startSec = summary.startTs != null ? Number(summary.startTs) : null;
+        let endSec = summary.stopTs != null ? Number(summary.stopTs) : null;
+        if (startSec == null && entries.length) {
+          const t = parseLogTs(entries[0].ts);
+          if (!isNaN(t)) startSec = Math.floor(t / 1000);
+        }
+        if (endSec == null && entries.length) {
+          const t = parseLogTs(entries[entries.length - 1].ts);
+          if (!isNaN(t)) endSec = Math.ceil(t / 1000);
+        }
+        if (startSec == null && endSec != null) startSec = endSec - 7200;
+        if (startSec == null) return null;
+        if (endSec == null) endSec = startSec + 7200;
+        const padBefore = 3600;
+        const padAfter = 3600;
+        let fromTs = Math.floor(startSec - padBefore);
+        let toTs = Math.ceil(endSec + padAfter);
+        if (toTs <= fromTs) toTs = fromTs + 3600;
+        if (fromTs < 0) fromTs = 0;
+        return { fromTs, toTs };
+      }
+
+      function argusFallbackRangeSec() {
+        const now = Math.floor(Date.now() / 1000);
+        return { fromTs: now - 86400 * 14, toTs: now + 3600 };
+      }
+
+      function argusUrlBySid(rtcSid, fromTs, toTs) {
+        return (
+          'https://argus.agoralab.co/call/search?sids=' +
+          encodeURIComponent(rtcSid) +
+          '&fromTs=' +
+          fromTs +
+          '&toTs=' +
+          toTs +
+          '&page=1'
+        );
+      }
+
+      function argusUrlByChannel(channelName, fromTs, toTs) {
+        return (
+          'https://argus.agoralab.co/call/search?sids=&channelName=' +
+          encodeURIComponent(channelName) +
+          '&fromTs=' +
+          fromTs +
+          '&toTs=' +
+          toTs +
+          '&page=1'
+        );
+      }
+
       function onFileLoad(text, fileName) {
         document.getElementById('fileName').textContent = fileName || 'ten.err.log';
         document.getElementById('loading').style.display = 'block';
@@ -2821,13 +2876,36 @@
             const utcStr = new Date(ts * 1000).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
             startTsEl.textContent = ts + ' (' + utcStr + ')';
           } else startTsEl.textContent = '—';
+          let argusRange = computeArgusTimeRangeSec(summary, entries);
+          if (!argusRange && (summary.rtcSid || summary.channel)) argusRange = argusFallbackRangeSec();
           const argusLink = document.getElementById('linkArgus');
-          if (summary.rtcSid) {
+          const argusCh = document.getElementById('linkArgusChannel');
+          const argusChRows = document.querySelectorAll('.summary-argus-channel');
+          if (summary.rtcSid && argusRange) {
             argusLink.textContent = summary.rtcSid;
-            argusLink.href = 'https://argus.agoralab.co/call/search?sids=' + encodeURIComponent(summary.rtcSid);
+            argusLink.href = argusUrlBySid(summary.rtcSid, argusRange.fromTs, argusRange.toTs);
+            argusLink.title =
+              'Argus: SID + fromTs/toTs ' + argusRange.fromTs + ' … ' + argusRange.toTs;
           } else {
             argusLink.textContent = '—';
             argusLink.href = '#';
+            argusLink.title = '';
+          }
+          if (summary.channel && argusRange) {
+            argusCh.href = argusUrlByChannel(summary.channel, argusRange.fromTs, argusRange.toTs);
+            argusCh.textContent =
+              summary.channel.length > 36 ? summary.channel.slice(0, 34) + '…' : summary.channel;
+            argusCh.title = 'Argus by channel + same time window as SID link';
+            argusChRows.forEach(function (el) {
+              el.style.display = '';
+            });
+          } else {
+            argusCh.href = '#';
+            argusCh.textContent = '—';
+            argusCh.title = '';
+            argusChRows.forEach(function (el) {
+              el.style.display = 'none';
+            });
           }
           document.getElementById('sumGraphId').textContent = summary.graphId || '—';
           document.getElementById('sumLlm').textContent = summary.llmUrl || summary.llmModule || '—';
