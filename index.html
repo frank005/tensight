@@ -36,6 +36,7 @@
       line-height: 1.5;
     }
     body.parse-busy { overflow: hidden; }
+    body.modal-open { overflow: hidden; }
 
     .app {
       display: grid;
@@ -189,6 +190,105 @@
     .badge--error { background: rgba(248, 81, 73, 0.2); color: var(--error); }
     .badge--warn { background: rgba(210, 153, 34, 0.2); color: var(--warn); }
     .badge--info { background: var(--accent-dim); color: var(--accent); }
+    .badge--ok { background: rgba(63, 185, 80, 0.18); color: var(--success); }
+    .badge--off { background: rgba(139, 148, 158, 0.18); color: var(--text-muted); }
+
+    .summary-pretty-wrap { display: grid; gap: 12px; }
+    .summary-pretty-grid {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    @media (max-width: 980px) { .summary-pretty-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 680px) { .summary-pretty-grid { grid-template-columns: 1fr; } }
+    .summary-pretty-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      min-width: 0;
+    }
+    .summary-pretty-k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+    .summary-pretty-v { margin-top: 6px; font-weight: 600; font-size: 13px; color: var(--text); display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+    .summary-pretty-v code { font-family: var(--font-mono); font-size: 12px; font-weight: 500; color: var(--text); word-break: break-word; }
+    .summary-flag-table { width: 100%; border-collapse: collapse; }
+    .summary-flag-table td { padding: 6px 0; border-bottom: 1px solid rgba(48, 54, 61, 0.55); vertical-align: middle; }
+    .summary-flag-table tr:last-child td { border-bottom: none; }
+    .summary-flag-k { font-size: 12px; color: var(--text); }
+    .summary-flag-k code { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+    .summary-flag-v { text-align: right; white-space: nowrap; }
+
+    .json-hl { font-family: var(--font-mono); font-size: 12px; line-height: 1.5; white-space: pre; overflow: auto; }
+    .json-hl .k { color: #93c5fd; }
+    .json-hl .s { color: #86efac; }
+    .json-hl .n { color: #fda4af; }
+    .json-hl .b { color: #fcd34d; }
+    .json-hl .z { color: #c4b5fd; }
+    .json-hl .p { color: var(--text-muted); }
+    .json-copy-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg);
+      color: var(--text);
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .json-copy-btn:hover { filter: brightness(1.08); }
+    .json-copy-btn svg { width: 14px; height: 14px; }
+
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 110000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+    }
+    .modal-overlay.visible { display: flex; }
+    .modal-dialog {
+      width: min(980px, 100%);
+      max-height: min(84vh, 860px);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.55);
+    }
+    .modal-header {
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border-bottom: 1px solid var(--border);
+      min-height: 46px;
+    }
+    .modal-title { font-weight: 700; }
+    .modal-actions { display: flex; align-items: center; gap: 10px; }
+    .modal-close {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+    }
+    .modal-close:hover { filter: brightness(1.08); }
+    .modal-body { padding: 14px; overflow: auto; min-height: 0; }
+    .modal-subtitle { font-size: 12px; color: var(--text-muted); margin: -6px 0 10px; }
 
     .filters {
       padding: 12px 16px;
@@ -501,10 +601,10 @@
 
     .insights-view { display: none; flex-direction: column; padding: 0; overflow: hidden; min-height: 0; flex: 1; }
     .insights-view.active { display: flex; }
-    .insight-tabs { display: flex; align-items: center; gap: 8px; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; min-height: 44px; min-width: 0; }
-    .insight-tabs-filter-wrap { flex-shrink: 0; display: flex; align-items: center; gap: 6px; }
+    .insight-tabs { display: flex; flex-direction: column; align-items: stretch; gap: 8px; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; min-width: 0; }
+    .insight-tabs-filter-wrap { flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
     .insight-tabs-filter-wrap label { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
-    .insight-tabs-scroll { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; overflow-x: auto; flex: 1; min-width: 0; }
+    .insight-tabs-scroll { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; overflow-x: auto; min-width: 0; width: 100%; }
     .insight-tabs-scroll::-webkit-scrollbar { height: 6px; }
     .insight-tabs-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
     .insight-tabs button { flex-shrink: 0; padding: 6px 10px; font-size: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-muted); cursor: pointer; font-weight: 500; white-space: nowrap; }
@@ -742,6 +842,11 @@
               <button type="button" class="filter-event-btn" data-search="aivad_eval">AIVAD</button>
               <button type="button" class="filter-event-btn" data-search="chat/completions">LLM</button>
               <button type="button" class="filter-event-btn" data-search="tts_text_result">TTS</button>
+              <button type="button" class="filter-event-btn" data-search="[avatar]">Avatar</button>
+              <button type="button" class="filter-event-btn" data-search="[agora_rtm]">RTM</button>
+              <button type="button" class="filter-event-btn" data-search="[mcp_client]">MCP</button>
+              <button type="button" class="filter-event-btn" data-search="[knowledge_retrieval]">RAG</button>
+              <button type="button" class="filter-event-btn" data-search="agora_audio3a">Audio3A</button>
               <button type="button" class="filter-event-btn" data-search="KEYPOINT">KEYPOINT</button>
               <button type="button" class="filter-event-btn" data-clear="true" title="Clear search and exit jump from Insights (show full log)">Clear</button>
             </div>
@@ -774,6 +879,30 @@
     <div class="parse-overlay-spinner" aria-hidden="true"></div>
     <p class="parse-overlay-msg" id="parseOverlayMsg">Parsing log…</p>
     <p class="parse-overlay-hint">Large logs are parsed in your browser; this can take a moment.</p>
+  </div>
+
+  <div id="jsonModal" class="modal-overlay" aria-hidden="true">
+    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="jsonModalTitle">
+      <div class="modal-header">
+        <div>
+          <div class="modal-title" id="jsonModalTitle">JSON</div>
+          <div class="modal-subtitle" id="jsonModalSubtitle"></div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="json-copy-btn" id="jsonModalCopyBtn" title="Copy JSON">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            Copy
+          </button>
+          <button type="button" class="modal-close" id="jsonModalCloseBtn" aria-label="Close">×</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <pre class="json-hl" id="jsonModalPre"></pre>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -1009,12 +1138,19 @@
           sttModule: null,
           eventStartInfo: null,
           createRequestBody: null,
+          sessCtrlVersion: null,
+          rtm: null,
+          tools: null,
           errors: 0,
           warnings: 0,
           turns: []
         };
 
         for (const e of entries) {
+          if (!summary.sessCtrlVersion && e.ext === 'agora_sess_ctrl' && e.msg && e.msg.includes('SESS_CTRL: version:')) {
+            const m = e.msg.match(/SESS_CTRL:\s*version:\s*([^\s]+)/);
+            if (m) summary.sessCtrlVersion = m[1];
+          }
           if (e.level === 'E') summary.errors++;
           if (e.level === 'W') summary.warnings++;
           if (e.msg && e.msg.includes('app_version:')) {
@@ -1152,6 +1288,75 @@
               if (!summary.channel && p.channel) summary.channel = p.channel;
             }
           }
+
+          // RTM init info (avoid tokens)
+          if (!summary.rtm && e.msg && (e.msg.includes('Rtm client created successfully') || e.msg.includes('rtm_enabled'))) {
+            const j = e.json || tryParseJSON(e.msg);
+            if (j && typeof j === 'object' && (j.rtm_enabled === true || j.rtm_presence_enabled === true || j.rtm_metadata_enabled === true)) {
+              summary.rtm = {
+                enabled: j.rtm_enabled === true,
+                presence_enabled: j.rtm_presence_enabled === true,
+                metadata_enabled: j.rtm_metadata_enabled === true,
+                lock_enabled: j.rtm_lock_enabled === true,
+                is_stream: j.rtm_is_stream === true,
+                user_id: j.user_id != null ? String(j.user_id) : null,
+                channel: j.channel || null,
+                addon: e.ext || null
+              };
+            }
+          }
+          if (!summary.rtm && e.msg && e.msg.includes('Subscribe channel') && e.msg.includes('presence')) {
+            const m = e.msg.match(/Subscribe channel\s+([^\s]+)\s+with request id:\s*(\d+)\s+presence:\s*(\d+)\s+metadata\s*(\d+)\s+lock\s*(\d+)/i);
+            if (m) {
+              summary.rtm = {
+                enabled: true,
+                presence_enabled: m[3] === '1',
+                metadata_enabled: m[4] === '1',
+                lock_enabled: m[5] === '1',
+                is_stream: null,
+                user_id: null,
+                channel: m[1],
+                addon: e.ext || null
+              };
+            }
+          }
+
+          // Tools / MCP summary + observed tool calls
+          if (!summary.tools) summary.tools = { is_tool_call_available: null, servers: [], total_tools: null, mcp_errors: [], tool_calls: {} };
+          if (e.msg && e.msg.includes('MCP [key_point] config loaded:')) {
+            const mAvail = e.msg.match(/is_tool_call_available=([A-Za-z]+)/);
+            if (mAvail) summary.tools.is_tool_call_available = (mAvail[1] === 'True' || mAvail[1] === 'true');
+          }
+          if (e.msg && e.msg.includes('connecting to server:')) {
+            const m = e.msg.match(/connecting to server:\s*([^(]+)\s*\(([^)]+)\)/i);
+            if (m) {
+              const name = (m[1] || '').trim();
+              const transport = (m[2] || '').trim();
+              if (name && !summary.tools.servers.some(s => s.name === name)) summary.tools.servers.push({ name, transport, url: null });
+            }
+          }
+          // URL clues (from MCP init errors / httpx request lines)
+          if (summary.tools && summary.tools.servers && summary.tools.servers.length) {
+            const urlMatch = e.msg && e.msg.match(/https?:\/\/[^\s"']+/);
+            if (urlMatch && /\/mcp\//i.test(urlMatch[0])) {
+              const last = summary.tools.servers[summary.tools.servers.length - 1];
+              if (last && !last.url) last.url = urlMatch[0];
+            }
+          }
+          if (e.msg && e.msg.includes('initialization completed: total_tools=')) {
+            const m = e.msg.match(/total_tools=(\d+)/);
+            if (m) summary.tools.total_tools = parseInt(m[1], 10);
+          }
+          if (e.level === 'E' && e.ext === 'mcp_client' && e.msg && e.msg.includes('MCP') && e.msg.includes('failed')) {
+            summary.tools.mcp_errors.push({ ts: e.ts || '', msg: e.msg.slice(0, 220) });
+          }
+          if (e.msg && e.msg.includes('tool_call') && (e.msg.includes('tool_call ') || e.msg.includes('tool_call:'))) {
+            const m = e.msg.match(/tool_call[:\s]+([A-Za-z0-9_]+)\b/);
+            if (m) {
+              const name = m[1];
+              summary.tools.tool_calls[name] = (summary.tools.tool_calls[name] || 0) + 1;
+            }
+          }
           if ((!summary.llmUrl || !summary.llmModule) && e.msg && e.msg.includes('[llm]') && e.msg.includes('GlueConfig') && e.msg.includes('url=')) {
             const urlMatch = e.msg.match(/url='([^']+)'/);
             if (urlMatch) {
@@ -1159,6 +1364,13 @@
               if (!summary.llmModule) summary.llmModule = urlMatch[1].replace(/^https?:\/\//, '').split('/')[0];
             }
           }
+        }
+
+        if (summary.tools) {
+          const hasServers = summary.tools.servers && summary.tools.servers.length;
+          const hasCalls = summary.tools.tool_calls && Object.keys(summary.tools.tool_calls).length;
+          const hasMcp = summary.tools.is_tool_call_available != null || summary.tools.total_tools != null || hasServers || (summary.tools.mcp_errors && summary.tools.mcp_errors.length);
+          if (!hasMcp && !hasCalls) summary.tools = null;
         }
 
         return summary;
@@ -1738,6 +1950,102 @@
         return { events, memoryItems };
       }
 
+      function extractRtmTab(entries) {
+        const out = { events: [], stats: { presence_events: 0, message_events: 0, presence_sets: 0 } };
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i];
+          if (!e.msg) continue;
+          if (e.msg.includes('rtm_presence_event')) out.stats.presence_events++;
+          if (e.msg.includes('rtm_message_event')) out.stats.message_events++;
+          if (e.msg.includes('set_presence_state')) out.stats.presence_sets++;
+          if (/\[agora_rtm\]|\brtm\.cc\b|rtm_(presence|message)_event|set_presence_state|Subscribe channel|Login@rtm\.cc|Rtm client/i.test(e.msg)) {
+            out.events.push({
+              ts: e.ts,
+              ext: e.ext || '',
+              level: e.level || '',
+              msg: redactInlineSecrets(e.msg).slice(0, 260),
+              entryIndex: i
+            });
+          }
+        }
+        return out;
+      }
+
+      function extractToolsTab(entries) {
+        const out = { events: [], toolCalls: {}, mcpErrors: [], servers: [], totalTools: null, isToolCallAvailable: null };
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i];
+          if (!e.msg) continue;
+          if (e.msg.includes('MCP [key_point] config loaded:')) {
+            const mAvail = e.msg.match(/is_tool_call_available=([A-Za-z]+)/);
+            if (mAvail) out.isToolCallAvailable = (mAvail[1] === 'True' || mAvail[1] === 'true');
+          }
+          if (e.msg.includes('connecting to server:')) {
+            const m = e.msg.match(/connecting to server:\s*([^(]+)\s*\(([^)]+)\)/i);
+            if (m) {
+              const name = (m[1] || '').trim();
+              const transport = (m[2] || '').trim();
+              if (name && !out.servers.some(s => s.name === name)) out.servers.push({ name, transport, url: null });
+            }
+          }
+          if (e.msg.includes('initialization completed: total_tools=')) {
+            const m = e.msg.match(/total_tools=(\d+)/);
+            if (m) out.totalTools = parseInt(m[1], 10);
+          }
+          const urlMatch = e.msg.match(/https?:\/\/[^\s"']+/);
+          if (urlMatch && /\/mcp\//i.test(urlMatch[0]) && out.servers.length) {
+            const last = out.servers[out.servers.length - 1];
+            if (last && !last.url) last.url = urlMatch[0];
+          }
+          if (e.level === 'E' && e.ext === 'mcp_client' && e.msg.includes('MCP') && e.msg.includes('failed')) {
+            out.mcpErrors.push({ ts: e.ts || '', msg: redactInlineSecrets(e.msg).slice(0, 220), entryIndex: i });
+          }
+          if (e.msg.includes('tool_call')) {
+            const m = e.msg.match(/tool_call[:\s]+([A-Za-z0-9_]+)\b/);
+            if (m) out.toolCalls[m[1]] = (out.toolCalls[m[1]] || 0) + 1;
+          }
+          if (/\[mcp_client\]|\bMCP \[key_point\]|\btool_call\b|\btool_result\b/i.test(e.msg)) {
+            out.events.push({ ts: e.ts, ext: e.ext || '', level: e.level || '', msg: redactInlineSecrets(e.msg).slice(0, 260), entryIndex: i });
+          }
+        }
+        return out;
+      }
+
+      function extractAvatarTab(entries) {
+        const out = { events: [], hasAvatarExt: false, vendors: new Set(), avatarIds: new Set(), channel: null, uid: null, quality: null, video_encoding: null, api_url: null };
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i];
+          if (!e.msg) continue;
+          if (e.ext === 'avatar' || /\[avatar\]/.test(e.msg) || /heygen_avatar_python/i.test(e.msg)) out.hasAvatarExt = true;
+          if (e.msg.includes('AVATAR_VENDOR')) {
+            const m = e.msg.match(/AVATAR_VENDOR['"]?\s*[:=]\s*['"]([^'"]+)['"]/);
+            if (m) out.vendors.add(m[1]);
+          }
+          if (e.msg.includes('AVATAR_ID')) {
+            const m = e.msg.match(/AVATAR_ID['"]?\s*[:=]\s*['"]([^'"]+)['"]/);
+            if (m) out.avatarIds.add(m[1]);
+          }
+          if (!out.channel && /\[avatar\]/.test(e.msg) && /agora_settings/i.test(e.msg) && /\bchannel\b/i.test(e.msg) && /\buid\b/i.test(e.msg)) {
+            const mCh = e.msg.match(/['"]channel['"]\s*:\s*['"]([^'"]+)['"]/i);
+            const mUid = e.msg.match(/['"]uid['"]\s*:\s*['"]?(\d+)['"]?/i);
+            if (mCh) out.channel = mCh[1];
+            if (mUid) out.uid = mUid[1];
+            const mQ = e.msg.match(/['"]quality['"]\s*:\s*['"]([^'"]+)['"]/i);
+            if (mQ) out.quality = mQ[1];
+            const mEnc = e.msg.match(/['"]video_encoding['"]\s*:\s*['"]([^'"]+)['"]/i);
+            if (mEnc) out.video_encoding = mEnc[1];
+            const mUrl = e.msg.match(/to\s+(https?:\/\/[^\s]+)\s+with payload:/i);
+            if (mUrl) out.api_url = mUrl[1];
+          }
+          if (e.ext === 'avatar' || /\[avatar\]/.test(e.msg) || /avatar/i.test(e.ext || '') || /heygen_avatar_python/i.test(e.msg)) {
+            out.events.push({ ts: e.ts, ext: e.ext || '', level: e.level || '', msg: redactInlineSecrets(e.msg).slice(0, 260), entryIndex: i });
+          }
+        }
+        out.vendors = Array.from(out.vendors);
+        out.avatarIds = Array.from(out.avatarIds);
+        return out;
+      }
+
       /** Performance metrics per turn. Aligns with report_controller + llm key_point lines (glue ttfb, connect times, _log_and_report_latency). */
       function extractPerformanceMetrics(entries) {
         const byTurn = {};
@@ -2122,6 +2430,110 @@
         div.textContent = s;
         return div.innerHTML;
       }
+
+      function jsonSyntaxHighlight(jsonStr) {
+        try {
+          const raw = typeof jsonStr === 'string' ? jsonStr : JSON.stringify(jsonStr, null, 2);
+          const re = /("(\\u[a-fA-F0-9]{4}|\\[^u]|[^\\"])*"(?:\s*:)?|\btrue\b|\bfalse\b|\bnull\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g;
+          let out = '';
+          let last = 0;
+          let m;
+          while ((m = re.exec(raw)) !== null) {
+            out += escapeHtml(raw.slice(last, m.index));
+            const tok = m[0];
+            let cls = 'p';
+            if (tok.charAt(0) === '"') cls = tok.endsWith(':') ? 'k' : 's';
+            else if (tok === 'true' || tok === 'false') cls = 'b';
+            else if (tok === 'null') cls = 'z';
+            else cls = 'n';
+            out += '<span class="' + cls + '">' + escapeHtml(tok) + '</span>';
+            last = m.index + tok.length;
+          }
+          out += escapeHtml(raw.slice(last));
+          return out;
+        } catch (_) {
+          return escapeHtml(String(jsonStr));
+        }
+      }
+
+      let jsonModalCurrentText = '';
+      function redactSecrets(value) {
+        const seen = new WeakSet();
+        function walk(v, k) {
+          if (v == null) return v;
+          const key = (k || '').toString();
+          if (key && /(api[_-]?key|token|authorization|access[_-]?key|secret|password|bearer)/i.test(key)) {
+            return '***';
+          }
+          if (typeof v !== 'object') return v;
+          if (seen.has(v)) return '[Circular]';
+          seen.add(v);
+          if (Array.isArray(v)) return v.map(function (x) { return walk(x, ''); });
+          const out = {};
+          for (const kk in v) out[kk] = walk(v[kk], kk);
+          return out;
+        }
+        return walk(value, '');
+      }
+
+      function redactInlineSecrets(msg) {
+        if (!msg || typeof msg !== 'string') return '';
+        let s = msg;
+        s = s.replace(/(['"]?(?:api[_-]?key|access[_-]?key|secret|password|authorization|bearer|token)['"]?\s*[:=]\s*)['"][^'"]*['"]/gi, '$1"***"');
+        s = s.replace(/(\btoken\b\s*[:=]\s*)[^\s,}]+/gi, '$1***');
+        return s;
+      }
+      function openJsonModal(title, subtitle, obj) {
+        const overlay = document.getElementById('jsonModal');
+        const pre = document.getElementById('jsonModalPre');
+        const t = document.getElementById('jsonModalTitle');
+        const st = document.getElementById('jsonModalSubtitle');
+        const safeObj = (typeof obj === 'string') ? obj : redactSecrets(obj);
+        const text = typeof safeObj === 'string' ? safeObj : JSON.stringify(safeObj, null, 2);
+        jsonModalCurrentText = text || '';
+        t.textContent = title || 'JSON';
+        st.textContent = subtitle || '';
+        pre.innerHTML = jsonSyntaxHighlight(text || '');
+        overlay.classList.add('visible');
+        overlay.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('modal-open');
+      }
+      function closeJsonModal() {
+        const overlay = document.getElementById('jsonModal');
+        overlay.classList.remove('visible');
+        overlay.setAttribute('aria-hidden', 'true');
+        document.body.classList.remove('modal-open');
+        jsonModalCurrentText = '';
+      }
+
+      function copyText(text) {
+        const s = text == null ? '' : String(text);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          return navigator.clipboard.writeText(s).catch(function () {
+            const ta = document.createElement('textarea');
+            ta.value = s;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.focus();
+            ta.select();
+            try { document.execCommand('copy'); } catch (_) {}
+            document.body.removeChild(ta);
+          });
+        }
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = s;
+          ta.style.position = 'fixed';
+          ta.style.left = '-9999px';
+          document.body.appendChild(ta);
+          ta.focus();
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+        } catch (_) {}
+        return Promise.resolve();
+      }
       function insightHeaderRow(labels) {
         return labels.map((l, i) => '<th class="insight-th-filter" data-col-index="' + i + '">' + escapeHtml(l) + '</th>').join('');
       }
@@ -2147,22 +2559,163 @@
         return `<h3>Conversation</h3><div>${items}</div>`;
       }
 
+      function renderPrettySummaryPanel(insights) {
+        const summary = insights && insights.summary ? insights.summary : null;
+        if (!summary) return '<p class="insight-empty">No summary available.</p>';
+
+        const ev = summary.eventStartInfo && summary.eventStartInfo.taskInfo ? summary.eventStartInfo : null;
+        const ti = ev ? ev.taskInfo : null;
+        const info = ti && ti.info && typeof ti.info === 'object' ? ti.info : {};
+        const geo = ti && ti.geoLocation && typeof ti.geoLocation === 'object' ? ti.geoLocation : null;
+        const createReq = summary.createRequestBody && summary.createRequestBody.properties ? summary.createRequestBody : null;
+        const props = createReq ? createReq.properties : null;
+
+        const versions = (function () {
+          const out = {};
+          if (summary.appVersion) out['App'] = summary.appVersion;
+          if (ti && ti.apiVersion) out['API'] = ti.apiVersion;
+          if (summary.sessCtrlVersion) out['Sess ctrl'] = summary.sessCtrlVersion;
+          return out;
+        })();
+
+        function ynBadge(v) {
+          if (v === true) return '<span class="badge badge--ok">Enabled</span>';
+          if (v === false) return '<span class="badge badge--off">Disabled</span>';
+          if (v == null) return '<span class="badge badge--off">—</span>';
+          return '<span class="badge badge--info">' + escapeHtml(String(v)) + '</span>';
+        }
+
+        function kvCard(label, valueHtml) {
+          return '<div class="summary-pretty-card"><div class="summary-pretty-k">' + escapeHtml(label) + '</div><div class="summary-pretty-v">' + valueHtml + '</div></div>';
+        }
+
+        function mono(v) {
+          const s = v == null || v === '' ? '—' : String(v);
+          return '<code>' + escapeHtml(s) + '</code>';
+        }
+
+        const asrVendor = info.ASR_VENDOR || (props && props.asr && (props.asr.vendor || props.asr.vendor_name)) || summary.sttModule || '—';
+        const asrLang = info.ASR_LANGUAGE || (props && props.asr && props.asr.language) || '—';
+        const ttsVendor = info.TTS_VENDOR || (props && props.tts && (props.tts.vendor || props.tts.vendor_name)) || summary.ttsModule || '—';
+        const llmStr = (props && props.llm && (props.llm.url || props.llm.vendor || (typeof props.llm === 'string' ? props.llm : null))) || summary.llmUrl || summary.llmModule || '—';
+        const geoStr = geo ? [geo.city, geo.country, geo.region].filter(Boolean).join(' / ') : '—';
+        const avatarVendor = info.AVATAR_VENDOR || '—';
+        const avatarId = info.AVATAR_ID || '—';
+        const bvcUrl = info.BVC_URL || '—';
+
+        const flagKeys = Object.keys(info || {}).filter(function (k) { return /^ENABLE_/.test(k); }).sort();
+        function labelForFlagKey(k) {
+          return k
+            .replace(/^ENABLE_/, '')
+            .toLowerCase()
+            .split('_')
+            .map(function (s) { return s ? (s.charAt(0).toUpperCase() + s.slice(1)) : s; })
+            .join(' ');
+        }
+
+        let html = '<div class="summary-pretty-wrap">';
+        html += '<div class="summary-pretty-grid">';
+        html += kvCard('ASR', '<span>' + mono(asrVendor) + '</span><span>' + mono(asrLang) + '</span>');
+        html += kvCard('LLM', '<span>' + mono(llmStr) + '</span><span class="badge badge--info">' + escapeHtml(summary.llmUrl ? 'url' : (summary.llmModule ? 'module' : '—')) + '</span>');
+        html += kvCard('TTS', '<span>' + mono(ttsVendor) + '</span><span>' + mono('') + '</span>');
+        html += kvCard('Service', '<span>' + mono(ti && ti.service) + '</span><span>' + mono(ti && ti.apiVersion) + '</span>');
+        html += kvCard('GeoLocation', '<span>' + mono(geoStr) + '</span><span>' + mono(geo && geo.continent) + '</span>');
+        html += kvCard('Channel', '<span>' + mono((ti && ti.taskLabels && ti.taskLabels.channel) || summary.channel) + '</span><span>' + mono('') + '</span>');
+        if (info.AVATAR_VENDOR || info.AVATAR_ID) {
+          html += kvCard('Avatar', '<span>' + mono(avatarVendor) + '</span><span>' + mono(avatarId) + '</span>');
+        }
+        if (info.BVC_URL) {
+          html += kvCard('BVC', '<span>' + mono(bvcUrl) + '</span><span>' + mono('') + '</span>');
+        }
+        html += '</div>';
+
+        html += '<div class="summary-card summary-json-card"><h3 class="summary-card-title">Options</h3>';
+        if (!flagKeys.length && (info.SAL_MODE == null || String(info.SAL_MODE).trim() === '')) {
+          html += '<p class="summary-json-hint">No ENABLE_* flags found in event-start info.</p>';
+        } else {
+          html += '<table class="summary-flag-table"><tbody>';
+          const hasSalMode = (info.SAL_MODE != null && String(info.SAL_MODE).trim() !== '');
+          // Keep ordering dynamic: SAL mode is displayed inline with ENABLE_SAL (if present), and not duplicated.
+          if (!flagKeys.includes('ENABLE_SAL') && hasSalMode) {
+            html += '<tr><td class="summary-flag-k">SAL mode <code>SAL_MODE</code></td><td class="summary-flag-v"><code>' + escapeHtml(String(info.SAL_MODE)) + '</code></td></tr>';
+          }
+          for (const k of flagKeys) {
+            if (k === 'ENABLE_SAL') {
+              html += '<tr><td class="summary-flag-k">SAL <code>ENABLE_SAL</code>' + (hasSalMode ? ' / <code>SAL_MODE</code>' : '') + '</td><td class="summary-flag-v">' + ynBadge(info[k]) + (hasSalMode ? ' <code style="margin-left:8px;">' + escapeHtml(String(info.SAL_MODE)) + '</code>' : '') + '</td></tr>';
+              continue;
+            }
+            html += '<tr><td class="summary-flag-k">' + escapeHtml(labelForFlagKey(k)) + ' <code>' + escapeHtml(k) + '</code></td><td class="summary-flag-v">' + ynBadge(info[k]) + '</td></tr>';
+          }
+          html += '</tbody></table>';
+        }
+        html += '</div>';
+
+        html += '<div class="summary-card summary-json-card"><h3 class="summary-card-title">Task versions</h3>';
+        const vKeys = Object.keys(versions);
+        if (vKeys.length) {
+          html += '<dl>' + vKeys.map(k => '<dt>' + escapeHtml(k) + '</dt><dd>' + escapeHtml(String(versions[k])) + '</dd>').join('') + '</dl>';
+        } else {
+          html += '<p class="summary-json-hint">No version snapshot found in this log.</p>';
+        }
+        html += '</div>';
+
+        if (summary.rtm) {
+          const r = summary.rtm;
+          html += '<div class="summary-card summary-json-card"><h3 class="summary-card-title">RTM</h3>';
+          html += '<dl>';
+          html += '<dt>Enabled</dt><dd>' + (r.enabled ? 'yes' : 'no') + '</dd>';
+          html += '<dt>Presence</dt><dd>' + (r.presence_enabled ? 'yes' : 'no') + '</dd>';
+          html += '<dt>Metadata</dt><dd>' + (r.metadata_enabled ? 'yes' : 'no') + '</dd>';
+          html += '<dt>Lock</dt><dd>' + (r.lock_enabled ? 'yes' : 'no') + '</dd>';
+          if (r.channel) html += '<dt>Channel</dt><dd>' + escapeHtml(String(r.channel)) + '</dd>';
+          if (r.user_id) html += '<dt>UID</dt><dd>' + escapeHtml(String(r.user_id)) + '</dd>';
+          html += '</dl>';
+          html += '</div>';
+        }
+
+        if (summary.tools) {
+          const t = summary.tools;
+          html += '<div class="summary-card summary-json-card"><h3 class="summary-card-title">Tools</h3>';
+          html += '<dl>';
+          if (t.is_tool_call_available != null) html += '<dt>Tool calling available</dt><dd>' + (t.is_tool_call_available ? 'yes' : 'no') + '</dd>';
+          if (t.total_tools != null) html += '<dt>Total tools</dt><dd>' + escapeHtml(String(t.total_tools)) + '</dd>';
+          if (t.servers && t.servers.length) html += '<dt>MCP servers</dt><dd>' + escapeHtml(t.servers.map(function (s) { return s.name + (s.transport ? ' (' + s.transport + ')' : '') + (s.url ? ' — ' + s.url : ''); }).join('\n')) + '</dd>';
+          html += '</dl>';
+          if (t.mcp_errors && t.mcp_errors.length) {
+            html += '<p class="summary-json-hint">MCP errors: ' + escapeHtml(String(t.mcp_errors.length)) + ' (see Insights → Tools for details)</p>';
+          }
+          html += '</div>';
+        }
+
+        html += '<div class="summary-card summary-json-card"><h3 class="summary-card-title">Raw JSON</h3>';
+        html += '<p class="summary-json-hint">Open a syntax-colored JSON viewer with copy.</p>';
+        if (summary.eventStartInfo) html += '<button type="button" class="summary-json-toggle open-json-modal" data-json-kind="eventStart">View event start JSON</button>';
+        if (summary.createRequestBody) html += '<button type="button" class="summary-json-toggle open-json-modal" data-json-kind="createReq">View create request JSON</button>';
+        html += '</div>';
+        html += '</div>';
+        return html;
+      }
+
       function renderInsights(insights) {
         const root = document.getElementById('insightsContent');
         if (!insights) { root.innerHTML = '<p class="insight-empty">Load a log file to see extracted insights.</p>'; return; }
         insightColumnFilter = {};
 
         const tabs = [
+          { id: 'summaryPretty', label: 'Summary' },
           { id: 'ncs', label: 'Keypoints' },
           { id: 'messages', label: 'Text messages' },
           { id: 'turns', label: 'Turns (user & agent)' },
           { id: 'states', label: 'States' },
           { id: 'reports', label: 'State reports' },
           { id: 'performance', label: 'Performance' },
-          { id: 'stt', label: 'STT / ASR metrics' },
           { id: 'rtc', label: 'RTC / Agora' },
+          { id: 'stt', label: 'STT / ASR metrics' },
           { id: 'llm', label: 'LLM' },
           { id: 'ttsTab', label: 'TTS' },
+          { id: 'avatarTab', label: 'Avatar' },
+          { id: 'rtmTab', label: 'RTM' },
+          { id: 'toolsTab', label: 'Tools' },
           { id: 'events', label: 'Events' }
         ];
 
@@ -2173,6 +2726,10 @@
         html += '</div></div>';
 
         html += '<div id="insightPanels">';
+
+        html += '<div class="insight-tab-panel active" data-panel="summaryPretty">';
+        html += renderPrettySummaryPanel(insights);
+        html += '</div>';
 
         const allMessages = buildAllMessagesList(insights);
         html += '<div class="insight-tab-panel" data-panel="messages">';
@@ -2470,6 +3027,71 @@
         } else html += '<p class="insight-empty">No LLM requests found.</p>';
         html += '</div>';
 
+        html += '<div class="insight-tab-panel" data-panel="avatarTab">';
+        const avatar = insights.avatarTab || { events: [], vendors: [], avatarIds: [], hasAvatarExt: false, channel: null, uid: null, quality: null, video_encoding: null, api_url: null };
+        if ((avatar.vendors && avatar.vendors.length) || (avatar.avatarIds && avatar.avatarIds.length) || (avatar.events && avatar.events.length)) {
+          if (avatar.vendors && avatar.vendors.length) html += '<p class="summary-json-hint"><strong>Vendor</strong>: ' + escapeHtml(avatar.vendors.join(', ')) + '</p>';
+          if (avatar.avatarIds && avatar.avatarIds.length) html += '<p class="summary-json-hint"><strong>Avatar ID</strong>: ' + escapeHtml(avatar.avatarIds.join(', ')) + '</p>';
+          if (avatar.channel || avatar.uid || avatar.quality || avatar.video_encoding) {
+            html += '<p class="summary-json-hint"><strong>Channel</strong>: ' + escapeHtml(avatar.channel || '—') +
+              ' · <strong>UID</strong>: ' + escapeHtml(avatar.uid || '—') +
+              (avatar.quality ? ' · <strong>Quality</strong>: ' + escapeHtml(avatar.quality) : '') +
+              (avatar.video_encoding ? ' · <strong>Encoding</strong>: ' + escapeHtml(avatar.video_encoding) : '') +
+              '</p>';
+          }
+          if (avatar.api_url) html += '<p class="summary-json-hint"><strong>API</strong>: ' + escapeHtml(avatar.api_url) + '</p>';
+          if (avatar.events && avatar.events.length) {
+            html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Ext','Level','Message']) + '</tr></thead><tbody>';
+            for (const row of avatar.events) {
+              const idxAttr = row.entryIndex != null ? ' data-index="' + row.entryIndex + '"' : '';
+              html += `<tr${idxAttr}><td>${escapeHtml(row.ts || '')}</td><td>${escapeHtml(row.ext || '')}</td><td>${escapeHtml(row.level || '')}</td><td>${escapeHtml(row.msg || '')}</td></tr>`;
+            }
+            html += '</tbody></table>';
+          } else {
+            html += '<p class="insight-empty">No avatar log lines found.</p>';
+          }
+        } else html += '<p class="insight-empty">No avatar configuration found.</p>';
+        html += '</div>';
+
+        html += '<div class="insight-tab-panel" data-panel="rtmTab">';
+        const rtm = insights.rtmTab || { events: [], stats: {} };
+        if (rtm && rtm.events && rtm.events.length) {
+          html += '<p class="summary-json-hint">Presence events: ' + (rtm.stats.presence_events || 0) + ' · Message events: ' + (rtm.stats.message_events || 0) + ' · Presence set: ' + (rtm.stats.presence_sets || 0) + '</p>';
+          html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Ext','Level','Message']) + '</tr></thead><tbody>';
+          for (const row of rtm.events) {
+            const idxAttr = row.entryIndex != null ? ' data-index="' + row.entryIndex + '"' : '';
+            html += `<tr${idxAttr}><td>${escapeHtml(row.ts || '')}</td><td>${escapeHtml(row.ext || '')}</td><td>${escapeHtml(row.level || '')}</td><td>${escapeHtml(row.msg || '')}</td></tr>`;
+          }
+          html += '</tbody></table>';
+        } else html += '<p class="insight-empty">No RTM events found.</p>';
+        html += '</div>';
+
+        html += '<div class="insight-tab-panel" data-panel="toolsTab">';
+        const tools = insights.toolsTab || null;
+        if (tools) {
+          const callNames = tools.toolCalls ? Object.keys(tools.toolCalls).sort(function (a, b) { return (tools.toolCalls[b] || 0) - (tools.toolCalls[a] || 0); }) : [];
+          html += '<div class="summary-card summary-json-card"><h3 class="summary-card-title">MCP</h3><dl>';
+          if (tools.isToolCallAvailable != null) html += '<dt>Tool calling available</dt><dd>' + (tools.isToolCallAvailable ? 'yes' : 'no') + '</dd>';
+          if (tools.totalTools != null) html += '<dt>Total tools</dt><dd>' + escapeHtml(String(tools.totalTools)) + '</dd>';
+          if (tools.servers && tools.servers.length) html += '<dt>Servers</dt><dd>' + escapeHtml(tools.servers.map(function (s) { return s.name + (s.transport ? ' (' + s.transport + ')' : '') + (s.url ? ' — ' + s.url : ''); }).join('\n')) + '</dd>';
+          if (tools.mcpErrors && tools.mcpErrors.length) html += '<dt>MCP errors</dt><dd>' + escapeHtml(String(tools.mcpErrors.length)) + '</dd>';
+          html += '</dl></div>';
+          if (callNames.length) {
+            html += '<div class="summary-card summary-json-card"><h3 class="summary-card-title">Observed tool calls</h3><dl>';
+            for (const n of callNames) html += '<dt>' + escapeHtml(n) + '</dt><dd>' + escapeHtml(String(tools.toolCalls[n])) + '</dd>';
+            html += '</dl></div>';
+          }
+          if (tools.events && tools.events.length) {
+            html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Ext','Level','Message']) + '</tr></thead><tbody>';
+            for (const row of tools.events) {
+              const idxAttr = row.entryIndex != null ? ' data-index="' + row.entryIndex + '"' : '';
+              html += `<tr${idxAttr}><td>${escapeHtml(row.ts || '')}</td><td>${escapeHtml(row.ext || '')}</td><td>${escapeHtml(row.level || '')}</td><td>${escapeHtml(row.msg || '')}</td></tr>`;
+            }
+            html += '</tbody></table>';
+          } else html += '<p class="insight-empty">No MCP / tool-call logs found.</p>';
+        } else html += '<p class="insight-empty">No MCP / tool-call logs found.</p>';
+        html += '</div>';
+
         html += '<div class="insight-tab-panel" data-panel="ttsTab">';
         const ttsIssues = insights.ttsIssues || [];
         if (ttsIssues.length) {
@@ -2497,7 +3119,7 @@
         }
         html += '</div>';
 
-        html += '<div class="insight-tab-panel active" data-panel="ncs">';
+        html += '<div class="insight-tab-panel" data-panel="ncs">';
         const ncs = insights.ncs || { events: [], memoryItems: [] };
         if (ncs.events && ncs.events.length) {
           html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Event','Agent','Start','Stop','Status','Message','Channel']) + '</tr></thead><tbody>';
@@ -2553,6 +3175,21 @@
 
         html += '</div>';
         root.innerHTML = html;
+
+        // JSON modal buttons (Summary tab)
+        root.querySelectorAll('.open-json-modal').forEach(function (btn) {
+          btn.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            const kind = btn.getAttribute('data-json-kind');
+            const sum = insights && insights.summary ? insights.summary : null;
+            if (!sum) return;
+            if (kind === 'eventStart' && sum.eventStartInfo) {
+              openJsonModal('Event start JSON', 'Parsed from log', sum.eventStartInfo);
+            } else if (kind === 'createReq' && sum.createRequestBody) {
+              openJsonModal('Create request JSON', 'Parsed from log', sum.createRequestBody);
+            }
+          });
+        });
 
         root.querySelectorAll('.perf-chart-wrap').forEach(function (wrap) {
           if (!wrap.querySelector('.perf-chart-svg-wrap svg')) return;
@@ -3017,6 +3654,7 @@
           state.selectedIndex = null;
           state.contextRadius = null;
           state.insights = {
+            summary: summary,
             stateTransitions: extractStateTransitions(entries),
             stateReports: extractStateReports(entries),
             tts: extractTts(entries),
@@ -3026,6 +3664,9 @@
             llmGlueTurns: extractLlmGlueMessages(entries),
             stt: extractStt(entries),
             rtc: extractRtcInsights(entries),
+            rtmTab: extractRtmTab(entries),
+            toolsTab: extractToolsTab(entries),
+            avatarTab: extractAvatarTab(entries),
             llm: extractLlm(entries),
             ncs: extractNcsInsights(entries),
             keypointEvents: extractKeypointEvents(entries),
@@ -3247,6 +3888,20 @@
         pre.style.display = show ? 'block' : 'none';
         this.textContent = show ? 'Hide JSON' : 'Show JSON';
         this.setAttribute('aria-expanded', show);
+      });
+
+      // JSON modal controls (used by Insights → Summary)
+      document.getElementById('jsonModalCloseBtn').addEventListener('click', function () {
+        closeJsonModal();
+      });
+      document.getElementById('jsonModalCopyBtn').addEventListener('click', function () {
+        copyText(jsonModalCurrentText);
+      });
+      document.getElementById('jsonModal').addEventListener('click', function (e) {
+        if (e.target && e.target.id === 'jsonModal') closeJsonModal();
+      });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') closeJsonModal();
       });
 
       document.getElementById('badgeErrors').addEventListener('click', function () {
