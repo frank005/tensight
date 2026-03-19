@@ -1034,6 +1034,7 @@
               <button type="button" class="filter-event-btn" data-search="asr_result">ASR</button>
               <button type="button" class="filter-event-btn" data-search="aivad_eval">AIVAD</button>
               <button type="button" class="filter-event-btn" data-search="chat/completions">LLM</button>
+              <button type="button" class="filter-event-btn" data-search="[v2v]">MLLM / V2V</button>
               <button type="button" class="filter-event-btn" data-search="tts_text_result">TTS</button>
               <button type="button" class="filter-event-btn" data-search="[avatar]">Avatar</button>
               <button type="button" class="filter-event-btn" data-search="[agora_rtm]">RTM</button>
@@ -1411,6 +1412,7 @@
           stopStatus: null,
           stopMessage: null,
           llmModule: null, llmUrl: null,
+          mllmVendor: null, mllmModel: null, mllmUrl: null,
           ttsModule: null,
           sttModule: null,
           eventStartInfo: null,
@@ -1422,6 +1424,7 @@
           warnings: 0,
           turns: []
         };
+        const seenTurnKeys = new Set();
 
         for (const e of entries) {
           if (!summary.sessCtrlVersion && e.ext === 'agora_sess_ctrl' && e.msg && e.msg.includes('SESS_CTRL: version:')) {
@@ -1479,11 +1482,25 @@
                 if (rtc && rtc.property && rtc.property.channel) summary.channel = rtc.property.channel;
               }
               const llmNode = j.nodes.find(n => n.name === 'llm');
+              const v2vNode = j.nodes.find(function (n) {
+                if (!n || !n.name) return false;
+                if (n.name === 'v2v') return true;
+                const addon = (n.addon || '').toLowerCase();
+                return addon.includes('v2v');
+              });
               const ttsNode = j.nodes.find(n => n.name === 'tts');
               const asrNode = j.nodes.find(n => n.name === 'asr');
               if (llmNode) {
                 summary.llmModule = llmNode.addon || llmNode.name || null;
                 if (llmNode.property && llmNode.property.url) summary.llmUrl = llmNode.property.url;
+              }
+              if (v2vNode && v2vNode.property) {
+                const p = v2vNode.property;
+                if (!summary.mllmVendor && p.vendor) summary.mllmVendor = p.vendor;
+                if (!summary.mllmUrl && p.url) summary.mllmUrl = p.url;
+                if (!summary.mllmModel && p.params && p.params.model) summary.mllmModel = p.params.model;
+                if (!summary.llmUrl && p.url) summary.llmUrl = p.url;
+                if (!summary.llmModule && (p.vendor || v2vNode.addon || v2vNode.name)) summary.llmModule = p.vendor || v2vNode.addon || v2vNode.name;
               }
               if (ttsNode) summary.ttsModule = ttsNode.addon || ttsNode.name || null;
               if (asrNode) summary.sttModule = asrNode.addon || asrNode.name || null;
@@ -1511,6 +1528,37 @@
                   content: typeof item.content === 'string' ? item.content : String(item.content),
                   turn_id: item.turn_id,
                   source: item.metadata && item.metadata.source
+                });
+              }
+            }
+          }
+          // MLLM often emits single transcription objects instead of a {role, content} array.
+          // Example shape:
+          // { object: "assistant.transcription", text: "...", turn_id: 1, metadata: { source: "mllm" } }
+          if (
+            e.json &&
+            typeof e.json === 'object' &&
+            typeof e.json.object === 'string' &&
+            e.json.text != null &&
+            (e.json.object === 'assistant.transcription' || e.json.object === 'user.transcription')
+          ) {
+            const role = e.json.object === 'assistant.transcription' ? 'assistant' : 'user';
+            const sourceRaw = e.json.metadata && e.json.metadata.source != null ? e.json.metadata.source : null;
+            const source = sourceRaw != null ? String(sourceRaw) : (e.msg && e.msg.includes('"source":"mllm"') ? 'mllm' : null);
+            if (source && source.toLowerCase() !== 'mllm') {
+              // Only treat MLLM transcriptions as "conversation turns" for the summary.
+              // (Other sources like tts/asr have their own extractors and can stay separate.)
+            } else {
+              const content = typeof e.json.text === 'string' ? e.json.text : String(e.json.text);
+              const turnId = e.json.turn_id != null ? e.json.turn_id : null;
+              const key = role + '|' + (turnId != null ? String(turnId) : '') + '|' + content + '|' + (source || '');
+              if (!seenTurnKeys.has(key)) {
+                seenTurnKeys.add(key);
+                summary.turns.push({
+                  role,
+                  content,
+                  turn_id: turnId,
+                  source: source || undefined
                 });
               }
             }
@@ -2288,6 +2336,70 @@
         return out;
       }
 
+      function extractV2vTab(entries) {
+        const out = { events: [], stats: { assistant_transcriptions: 0, user_transcriptions: 0, mllm_source: 0, chat_completion_data: 0 } };
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i];
+          if (!e.msg) continue;
+          const msg = e.msg;
+          const isV2v =
+            e.ext === 'v2v' ||
+            /\[v2v\]/i.test(msg) ||
+            /assistant\.transcription|user\.transcription/.test(msg) ||
+            /"source":"mllm"|'source':\s*'mllm'|\bENABLE_MLLM\b/.test(msg) ||
+            /\bon_data name chat_completion\b/.test(msg);
+          if (!isV2v) continue;
+
+          if (/assistant\.transcription/.test(msg)) out.stats.assistant_transcriptions++;
+          if (/user\.transcription/.test(msg)) out.stats.user_transcriptions++;
+          if (/"source":"mllm"|'source':\s*'mllm'|\bsource=mllm\b/.test(msg)) out.stats.mllm_source++;
+          if (/\bon_data name chat_completion\b/.test(msg)) out.stats.chat_completion_data++;
+
+          out.events.push({
+            ts: e.ts,
+            ext: e.ext || '',
+            level: e.level || '',
+            msg: redactInlineSecrets(msg).slice(0, 300),
+            entryIndex: i
+          });
+        }
+        return out;
+      }
+
+      function extractV2vTranscriptions(entries) {
+        const out = [];
+        const seen = new Set();
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i];
+          if (!e || !e.msg) continue;
+          let j = e.json;
+          if (!j && e.msg.includes('transcription') && e.msg.includes('"object"')) j = tryParseJSON(e.msg);
+          if (!j || typeof j !== 'object') continue;
+          if (j.object !== 'assistant.transcription' && j.object !== 'user.transcription') continue;
+          if (j.text == null || String(j.text).trim() === '') continue;
+          const source = j.metadata && j.metadata.source != null ? String(j.metadata.source) : '';
+          if (source && source.toLowerCase() !== 'mllm') continue;
+          const speaker = j.object === 'assistant.transcription' ? 'agent' : 'user';
+          const row = {
+            speaker,
+            source: source || 'mllm',
+            ts: e.ts,
+            text: typeof j.text === 'string' ? j.text : String(j.text),
+            final: j.final === true ? true : (j.final === false ? false : null),
+            turn_id: j.turn_id != null ? j.turn_id : null,
+            start_ms: j.start_ms != null ? j.start_ms : null,
+            duration_ms: j.duration_ms != null ? j.duration_ms : null,
+            language: j.language || null,
+            entryIndex: i
+          };
+          const key = row.speaker + '|' + (row.turn_id != null ? row.turn_id : '') + '|' + row.text + '|' + (row.start_ms != null ? row.start_ms : '');
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(row);
+        }
+        return out;
+      }
+
       function extractAvatarTab(entries) {
         const out = { events: [], hasAvatarExt: false, vendors: new Set(), avatarIds: new Set(), channel: null, uid: null, quality: null, video_encoding: null, api_url: null };
         for (let i = 0; i < entries.length; i++) {
@@ -2608,6 +2720,19 @@
             list.push({ ts: o.ts, source: o.user ? 'user' : 'asr', text: typeof o.text === 'string' ? o.text : (o.text || '').toString(), final: o.final, turn_id: o.turn_id, start_ms: null, duration_ms: o.total_audio_proc_ms != null ? o.total_audio_proc_ms : o.final_audio_proc_ms, language: null, entryIndex: o.entryIndex });
           });
         }
+        (insights.v2vTranscriptions || []).forEach(o => {
+          list.push({
+            ts: o.ts,
+            source: o.speaker === 'agent' ? 'v2v-agent' : 'v2v-user',
+            text: o.text,
+            final: o.final,
+            turn_id: o.turn_id,
+            start_ms: o.start_ms,
+            duration_ms: o.duration_ms,
+            language: o.language,
+            entryIndex: o.entryIndex
+          });
+        });
         list.sort((a, b) => {
           const ta = parseLogTs(a.ts);
           const tb = parseLogTs(b.ts);
@@ -2650,6 +2775,17 @@
         }));
         const evalTurns = (insights.evalIdTurns || []);
         const glueTurns = (insights.llmGlueTurns || []);
+        const v2vTurns = (insights.v2vTranscriptions || []).map(o => ({
+          speaker: o.speaker,
+          turn: o.turn_id,
+          ts: o.ts,
+          text: o.text,
+          final: o.final,
+          start_ms: o.start_ms,
+          duration_ms: o.duration_ms,
+          language: o.language,
+          entryIndex: o.entryIndex
+        }));
         const byKey = {};
         function addOne(row) {
           const k = (row.turn != null ? row.turn : '') + '|' + row.speaker;
@@ -2661,6 +2797,7 @@
         }
         evalTurns.forEach(addOne);
         glueTurns.forEach(addOne);
+        v2vTurns.forEach(addOne);
         userFromAsr.forEach(addOne);
         agentFromTts.forEach(addOne);
         const list = Object.values(byKey);
@@ -2925,6 +3062,10 @@
         const asrLang = info.ASR_LANGUAGE || (props && props.asr && props.asr.language) || '—';
         const ttsVendor = info.TTS_VENDOR || (props && props.tts && (props.tts.vendor || props.tts.vendor_name)) || summary.ttsModule || '—';
         const llmStr = (props && props.llm && (props.llm.url || props.llm.vendor || (typeof props.llm === 'string' ? props.llm : null))) || summary.llmUrl || summary.llmModule || '—';
+        const mllmEnabled = info.ENABLE_MLLM === true;
+        const mllmVendor = summary.mllmVendor || '—';
+        const mllmModel = summary.mllmModel || '—';
+        const mllmUrl = summary.mllmUrl || '—';
         const geoStr = geo ? [geo.city, geo.country, geo.region].filter(Boolean).join(' / ') : '—';
         const avatarVendor = info.AVATAR_VENDOR || '—';
         const avatarId = info.AVATAR_ID || '—';
@@ -2944,6 +3085,15 @@
         html += '<div class="summary-pretty-grid">';
         html += kvCard('ASR', '<span>' + mono(asrVendor) + '</span><span>' + mono(asrLang) + '</span>');
         html += kvCard('LLM', '<span>' + mono(llmStr) + '</span><span class="badge badge--info">' + escapeHtml(summary.llmUrl ? 'url' : (summary.llmModule ? 'module' : '—')) + '</span>');
+        if (mllmEnabled || summary.mllmVendor || summary.mllmModel || summary.mllmUrl) {
+          html += kvCard(
+            'MLLM / V2V',
+            '<span>' + mono(mllmVendor !== '—' ? mllmVendor : mllmModel) + '</span><span class="badge badge--info">' + escapeHtml(mllmEnabled ? 'enabled' : (mllmUrl !== '—' ? 'url' : '—')) + '</span>'
+          );
+          if (mllmUrl && mllmUrl !== '—') {
+            html += kvCard('MLLM URL', '<span>' + mono(mllmUrl) + '</span><span>' + mono('') + '</span>');
+          }
+        }
         html += kvCard('TTS', '<span>' + mono(ttsVendor) + '</span><span>' + mono('') + '</span>');
         html += kvCard('Service', '<span>' + mono(ti && ti.service) + '</span><span>' + mono(ti && ti.apiVersion) + '</span>');
         html += kvCard('GeoLocation', '<span>' + mono(geoStr) + '</span><span>' + mono(geo && geo.continent) + '</span>');
@@ -3039,6 +3189,7 @@
           { id: 'rtc', label: 'RTC / Agora' },
           { id: 'stt', label: 'STT / ASR metrics' },
           { id: 'llm', label: 'LLM' },
+          { id: 'v2vTab', label: 'MLLM / V2V' },
           { id: 'ttsTab', label: 'TTS' },
           { id: 'avatarTab', label: 'Avatar' },
           { id: 'rtmTab', label: 'RTM' },
@@ -3352,6 +3503,22 @@
           }
           html += '</tbody></table>';
         } else html += '<p class="insight-empty">No LLM requests found.</p>';
+        html += '</div>';
+
+        html += '<div class="insight-tab-panel" data-panel="v2vTab">';
+        const v2v = insights.v2vTab || { events: [], stats: {} };
+        if (v2v.events && v2v.events.length) {
+          html += '<p class="summary-json-hint">Assistant transcriptions: ' + (v2v.stats.assistant_transcriptions || 0) +
+            ' · User transcriptions: ' + (v2v.stats.user_transcriptions || 0) +
+            ' · MLLM source rows: ' + (v2v.stats.mllm_source || 0) +
+            ' · chat_completion rows: ' + (v2v.stats.chat_completion_data || 0) + '</p>';
+          html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Ext','Level','Message']) + '</tr></thead><tbody>';
+          for (const row of v2v.events) {
+            const idxAttr = row.entryIndex != null ? ' data-index="' + row.entryIndex + '"' : '';
+            html += `<tr${idxAttr}><td>${escapeHtml(row.ts || '')}</td><td>${escapeHtml(row.ext || '')}</td><td>${escapeHtml(row.level || '')}</td><td>${escapeHtml(row.msg || '')}</td></tr>`;
+          }
+          html += '</tbody></table>';
+        } else html += '<p class="insight-empty">No MLLM / V2V events found.</p>';
         html += '</div>';
 
         html += '<div class="insight-tab-panel" data-panel="avatarTab">';
@@ -4215,6 +4382,8 @@
             rtc: extractRtcInsights(entries),
             rtmTab: extractRtmTab(entries),
             toolsTab: extractToolsTab(entries),
+            v2vTab: extractV2vTab(entries),
+            v2vTranscriptions: extractV2vTranscriptions(entries),
             avatarTab: extractAvatarTab(entries),
             llm: extractLlm(entries),
             ncs: extractNcsInsights(entries),
