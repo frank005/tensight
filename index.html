@@ -35,6 +35,7 @@
       font-size: 14px;
       line-height: 1.5;
     }
+    body.parse-busy { overflow: hidden; }
 
     .app {
       display: grid;
@@ -430,6 +431,45 @@
       color: var(--text-muted);
     }
 
+    .parse-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 100000;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      background: color-mix(in srgb, var(--bg) 92%, black);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+    }
+    .parse-overlay-spinner {
+      width: 44px;
+      height: 44px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: parse-spin 0.75s linear infinite;
+    }
+    @keyframes parse-spin {
+      to { transform: rotate(360deg); }
+    }
+    .parse-overlay-msg {
+      margin: 0;
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .parse-overlay-hint {
+      margin: -8px 0 0;
+      font-size: 13px;
+      color: var(--text-muted);
+      max-width: 280px;
+      text-align: center;
+      line-height: 1.4;
+    }
+
     .stats-row {
       display: flex;
       gap: 8px;
@@ -728,6 +768,12 @@
         </div>
       </div>
     </main>
+  </div>
+
+  <div id="parseOverlay" class="parse-overlay" aria-hidden="true" role="status" aria-live="polite">
+    <div class="parse-overlay-spinner" aria-hidden="true"></div>
+    <p class="parse-overlay-msg" id="parseOverlayMsg">Parsing log…</p>
+    <p class="parse-overlay-hint">Large logs are parsed in your browser; this can take a moment.</p>
   </div>
 
   <script>
@@ -2843,13 +2889,25 @@
         );
       }
 
+      function setParseOverlay(show, message) {
+        var ov = document.getElementById('parseOverlay');
+        var msg = document.getElementById('parseOverlayMsg');
+        if (message) msg.textContent = message;
+        ov.setAttribute('aria-hidden', show ? 'false' : 'true');
+        ov.style.display = show ? 'flex' : 'none';
+        document.body.classList.toggle('parse-busy', !!show);
+      }
+
       function onFileLoad(text, fileName) {
+        document.getElementById('parseOverlayMsg').textContent = 'Parsing log…';
         document.getElementById('fileName').textContent = fileName || 'ten.err.log';
         document.getElementById('loading').style.display = 'block';
         document.getElementById('emptyState').style.display = 'none';
         document.getElementById('logEntries').style.display = 'none';
 
-        requestAnimationFrame(() => {
+        requestAnimationFrame(function () {
+          requestAnimationFrame(function () {
+            try {
           const entries = parseLines(text);
           const summary = extractSummary(entries);
           const extensions = collectExtensions(entries);
@@ -2979,6 +3037,13 @@
 
           document.getElementById('loading').style.display = 'none';
           applyFilters();
+            } catch (err) {
+              console.error(err);
+              alert('Failed to parse log: ' + (err && err.message ? err.message : String(err)));
+            } finally {
+              setParseOverlay(false);
+            }
+          });
         });
       }
 
@@ -2993,9 +3058,18 @@
 
       function loadLogFile(file) {
         if (!file || !(file instanceof File)) return;
-        const reader = new FileReader();
-        reader.onload = () => onFileLoad(reader.result, file.name);
-        reader.readAsText(file, 'UTF-8');
+        setParseOverlay(true, 'Reading file…');
+        requestAnimationFrame(function () {
+          var reader = new FileReader();
+          reader.onerror = function () {
+            setParseOverlay(false);
+            alert('Could not read the file.');
+          };
+          reader.onload = function () {
+            onFileLoad(reader.result, file.name);
+          };
+          reader.readAsText(file, 'UTF-8');
+        });
       }
 
       document.getElementById('fileInput').addEventListener('change', function () {
