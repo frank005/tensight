@@ -997,7 +997,6 @@
             <span class="badge badge--warn clickable" id="badgeWarnings" role="button" title="Show only warnings">0 warnings</span>
             <span class="badge badge--info clickable" id="badgeEntries" role="button" title="Show all entries">0 entries</span>
           </div>
-          <div id="conversationSummary" class="conversation-section"></div>
         </div>
       </aside>
 
@@ -1160,7 +1159,13 @@
 
       function extractExtension(msg) {
         const m = msg.match(/\[([^\]]+)\]/);
-        return m ? m[1] : null;
+        if (!m) return null;
+        const ext = (m[1] || '').trim();
+        // Guard against bracketed JSON/blob payloads accidentally becoming "extensions".
+        if (!ext || ext.length > 64) return null;
+        if (/[{}"\\]/.test(ext)) return null;
+        if (!/^[A-Za-z0-9_:.@/\-]+$/.test(ext)) return null;
+        return ext;
       }
 
       /** Parse log timestamp to ms (for comparison). Handles RFC3339 with nanos and YYYY/MM/DD H:mm:ss.xxx */
@@ -1259,6 +1264,34 @@
         } catch (_) {
           return null;
         }
+      }
+
+      function parseIpcSlaveStartPayload(msg) {
+        if (!msg || typeof msg !== 'string' || !msg.includes('ipc_slave_start')) return null;
+        const out = { header: null, payload: null, eventPayload: null };
+        const headerIdx = msg.indexOf('header:');
+        const payloadIdx = msg.indexOf(', payload:');
+        if (headerIdx !== -1 && payloadIdx !== -1 && payloadIdx > headerIdx) {
+          const headerText = msg.slice(headerIdx + 'header:'.length, payloadIdx).trim();
+          const payloadText = msg.slice(payloadIdx + ', payload:'.length).trim();
+          out.header = tryParseJSON(headerText);
+          out.payload = tryParseJSON(payloadText);
+        } else {
+          // Fallback when formatting changes.
+          const maybe = tryParseJSON(msg);
+          if (maybe && typeof maybe === 'object') {
+            out.payload = maybe.payload || null;
+            out.header = maybe.header || null;
+          }
+        }
+        const payloadObj = out.payload && typeof out.payload === 'object' ? out.payload : null;
+        const payloadStr = payloadObj && typeof payloadObj.slaveServiceEventPayload === 'string'
+          ? payloadObj.slaveServiceEventPayload
+          : null;
+        if (payloadStr) {
+          try { out.eventPayload = JSON.parse(payloadStr); } catch (_) {}
+        }
+        return out;
       }
 
       function parseLines(text) {
@@ -1412,11 +1445,13 @@
           stopStatus: null,
           stopMessage: null,
           llmModule: null, llmUrl: null,
+          llmModel: null, llmSystemPrompt: null,
           mllmVendor: null, mllmModel: null, mllmUrl: null,
           ttsModule: null,
           sttModule: null,
           eventStartInfo: null,
           createRequestBody: null,
+          sipLabels: null,
           sessCtrlVersion: null,
           rtm: null,
           tools: null,
@@ -1493,6 +1528,13 @@
               if (llmNode) {
                 summary.llmModule = llmNode.addon || llmNode.name || null;
                 if (llmNode.property && llmNode.property.url) summary.llmUrl = llmNode.property.url;
+                if (!summary.llmModel && llmNode.property && llmNode.property.params && llmNode.property.params.model) {
+                  summary.llmModel = llmNode.property.params.model;
+                }
+                if (!summary.llmSystemPrompt && llmNode.property && Array.isArray(llmNode.property.system_messages) && llmNode.property.system_messages.length) {
+                  const first = llmNode.property.system_messages[0];
+                  if (first && first.content != null) summary.llmSystemPrompt = String(first.content);
+                }
               }
               if (v2vNode && v2vNode.property) {
                 const p = v2vNode.property;
@@ -1515,7 +1557,18 @@
           if ((!summary.llmModule || !summary.ttsModule || !summary.sttModule) && e.msg && e.msg.includes('"nodes"') && (e.msg.includes('start_graph') || e.msg.includes('"name":"llm"'))) {
             const g = e.json || tryParseJSON(e.msg);
             if (g && g.nodes && Array.isArray(g.nodes)) {
-              if (!summary.llmModule) { const n = g.nodes.find(nn => nn.name === 'llm'); if (n) summary.llmModule = n.addon || n.name; }
+              if (!summary.llmModule || !summary.llmModel || !summary.llmSystemPrompt || !summary.llmUrl) {
+                const n = g.nodes.find(nn => nn.name === 'llm');
+                if (n) {
+                  if (!summary.llmModule) summary.llmModule = n.addon || n.name;
+                  if (!summary.llmUrl && n.property && n.property.url) summary.llmUrl = n.property.url;
+                  if (!summary.llmModel && n.property && n.property.params && n.property.params.model) summary.llmModel = n.property.params.model;
+                  if (!summary.llmSystemPrompt && n.property && Array.isArray(n.property.system_messages) && n.property.system_messages.length) {
+                    const first = n.property.system_messages[0];
+                    if (first && first.content != null) summary.llmSystemPrompt = String(first.content);
+                  }
+                }
+              }
               if (!summary.ttsModule) { const n = g.nodes.find(nn => nn.name === 'tts'); if (n) summary.ttsModule = n.addon || n.name; }
               if (!summary.sttModule) { const n = g.nodes.find(nn => nn.name === 'asr'); if (n) summary.sttModule = n.addon || n.name; }
             }
@@ -1584,15 +1637,16 @@
               j = tryParsePythonDict(e.msg);
             }
             if (!j && e.msg && e.msg.includes('ipc_slave_start') && e.msg.includes('slaveServiceEventPayload')) {
-              const outer = tryParseJSON(e.msg);
-              const payloadStr = outer && outer.payload && typeof outer.payload.slaveServiceEventPayload === 'string' ? outer.payload.slaveServiceEventPayload : null;
-              if (payloadStr) try { j = JSON.parse(payloadStr); } catch (_) {}
+              const ipc = parseIpcSlaveStartPayload(e.msg);
+              if (ipc && ipc.eventPayload) j = ipc.eventPayload;
             }
             if (j && typeof j === 'object' && j.taskInfo && typeof j.taskInfo === 'object' && (j.taskInfo.appId != null || j.taskInfo.taskId != null)) {
               summary.eventStartInfo = j;
               const info = j.taskInfo.info || j.taskInfo;
               if (!summary.sttModule && (info.ASR_VENDOR || info.asr_vendor)) summary.sttModule = info.ASR_VENDOR || info.asr_vendor;
               if (!summary.ttsModule && (info.TTS_VENDOR || info.tts_vendor)) summary.ttsModule = info.TTS_VENDOR || info.tts_vendor;
+              if (!summary.llmModel && (info.LLM_MODEL || info.MODEL)) summary.llmModel = info.LLM_MODEL || info.MODEL;
+              if (!summary.sipLabels && info && info.LABELS && typeof info.LABELS === 'object') summary.sipLabels = info.LABELS;
             }
           }
           if (!summary.createRequestBody && (e.json || e.msg)) {
@@ -2336,7 +2390,83 @@
         return out;
       }
 
-      function extractV2vTab(entries) {
+      function extractSipTab(entries, summary) {
+        const out = {
+          enabled: null,
+          applyMode: null,
+          sipDefaultEnabled: null,
+          fromNumber: null,
+          toNumber: null,
+          campaignId: null,
+          callId: null,
+          managerJobs: [],
+          events: [],
+          stats: { manager_events: 0, call_events: 0 }
+        };
+        const info = summary && summary.eventStartInfo && summary.eventStartInfo.taskInfo && summary.eventStartInfo.taskInfo.info
+          ? summary.eventStartInfo.taskInfo.info
+          : null;
+        if (info && Object.prototype.hasOwnProperty.call(info, 'ENABLE_SIP')) out.enabled = info.ENABLE_SIP;
+        const labels = info && info.LABELS && typeof info.LABELS === 'object' ? info.LABELS : (summary && summary.sipLabels ? summary.sipLabels : null);
+        if (labels) {
+          out.fromNumber = labels._from_number || null;
+          out.toNumber = labels._to_number || null;
+          out.campaignId = labels._campaign_id || null;
+          out.callId = labels._call_id || labels._sip_call_id || null;
+        }
+        const managerJobSeen = new Set();
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i];
+          if (!e || !e.msg) continue;
+          const msg = e.msg;
+          if ((!out.fromNumber || !out.toNumber || !out.campaignId || !out.callId) && msg.includes('ipc_slave_start') && msg.includes('slaveServiceEventPayload')) {
+            const ipc = parseIpcSlaveStartPayload(msg);
+            const labels2 = ipc && ipc.eventPayload && ipc.eventPayload.taskInfo && ipc.eventPayload.taskInfo.info && ipc.eventPayload.taskInfo.info.LABELS
+              ? ipc.eventPayload.taskInfo.info.LABELS
+              : null;
+            if (labels2) {
+              if (!out.fromNumber) out.fromNumber = labels2._from_number || null;
+              if (!out.toNumber) out.toNumber = labels2._to_number || null;
+              if (!out.campaignId) out.campaignId = labels2._campaign_id || null;
+              if (!out.callId) out.callId = labels2._call_id || labels2._sip_call_id || null;
+            }
+          }
+          const sipDefaultMatch = msg.match(/\\?"sip_default\\?"\s*:\s*\{[^}]*?\\?"apply_mode\\?"\s*:\s*\\?"([^"\\]+)\\?"[^}]*?\\?"enable\\?"\s*:\s*(true|false)/i)
+            || msg.match(/['"]sip_default['"]\s*:\s*\{[^}]*?['"]apply_mode['"]\s*:\s*['"]([^'"]+)['"][^}]*?['"]enable['"]\s*:\s*(true|false)/i);
+          if (sipDefaultMatch) {
+            if (!out.applyMode) out.applyMode = sipDefaultMatch[1];
+            if (out.sipDefaultEnabled == null) out.sipDefaultEnabled = String(sipDefaultMatch[2]).toLowerCase() === 'true';
+          }
+          const managerMatch = msg.match(/\btool["']?\s*:\s*["']([^"']*sip[^"']*)["']/i) || msg.match(/\btool[:=]\s*([A-Za-z0-9_\-]*sip[A-Za-z0-9_\-]*)/i);
+          const reasonMatch = msg.match(/\breason["']?\s*:\s*["']([^"']+)["']/i);
+          const durationMatch = msg.match(/\bduration_ms["']?\s*:\s*(\d+)/i);
+          if (/mcp_servers\/sip-manager|sip-silence-hangup|silence_hangup/i.test(msg)) {
+            out.stats.manager_events++;
+            const tool = managerMatch ? managerMatch[1] : (/sip-silence-hangup/i.test(msg) ? 'sip-silence-hangup' : null);
+            const reason = reasonMatch ? reasonMatch[1] : (/silence_hangup/i.test(msg) ? 'silence_hangup' : null);
+            const durationMs = durationMatch ? parseInt(durationMatch[1], 10) : null;
+            const key = (tool || '') + '|' + (reason || '') + '|' + (durationMs != null ? durationMs : '');
+            if (tool && !managerJobSeen.has(key)) {
+              managerJobSeen.add(key);
+              out.managerJobs.push({ tool, reason, durationMs });
+            }
+          }
+          if (/\b(sip_default|sip-manager|sip[-_ ]|invite|ring(?:ing)?|hangup|bye|dtmf)\b/i.test(msg)) {
+            out.stats.call_events++;
+            out.events.push({
+              ts: e.ts,
+              ext: e.ext || '',
+              level: e.level || '',
+              msg: redactInlineSecrets(msg).slice(0, 300),
+              entryIndex: i
+            });
+          }
+        }
+        return out;
+      }
+
+      function extractV2vTab(entries, enabled) {
+        if (!enabled) return { events: [], stats: { assistant_transcriptions: 0, user_transcriptions: 0, mllm_source: 0, chat_completion_data: 0 } };
         const out = { events: [], stats: { assistant_transcriptions: 0, user_transcriptions: 0, mllm_source: 0, chat_completion_data: 0 } };
         for (let i = 0; i < entries.length; i++) {
           const e = entries[i];
@@ -2346,7 +2476,7 @@
             e.ext === 'v2v' ||
             /\[v2v\]/i.test(msg) ||
             /assistant\.transcription|user\.transcription/.test(msg) ||
-            /"source":"mllm"|'source':\s*'mllm'|\bENABLE_MLLM\b/.test(msg) ||
+            /"source":"mllm"|'source':\s*'mllm'/.test(msg) ||
             /\bon_data name chat_completion\b/.test(msg);
           if (!isV2v) continue;
 
@@ -2366,7 +2496,8 @@
         return out;
       }
 
-      function extractV2vTranscriptions(entries) {
+      function extractV2vTranscriptions(entries, enabled) {
+        if (!enabled) return [];
         const out = [];
         const seen = new Set();
         for (let i = 0; i < entries.length; i++) {
@@ -3012,17 +3143,6 @@
         }).join('');
       }
 
-      function renderConversation(turns) {
-        if (!turns.length) return '';
-        const items = turns.map(t => `
-          <div class="turn ${t.role} ${t.source === 'llm failure' ? 'failure' : ''}">
-            <div class="role">${escapeHtml(t.role)}${t.turn_id != null ? ' · turn ' + t.turn_id : ''}</div>
-            <div class="content">${escapeHtml(t.content)}</div>
-          </div>
-        `).join('');
-        return `<h3>Conversation</h3><div>${items}</div>`;
-      }
-
       function renderPrettySummaryPanel(insights) {
         const summary = insights && insights.summary ? insights.summary : null;
         if (!summary) return '<p class="insight-empty">No summary available.</p>';
@@ -3062,6 +3182,7 @@
         const asrLang = info.ASR_LANGUAGE || (props && props.asr && props.asr.language) || '—';
         const ttsVendor = info.TTS_VENDOR || (props && props.tts && (props.tts.vendor || props.tts.vendor_name)) || summary.ttsModule || '—';
         const llmStr = (props && props.llm && (props.llm.url || props.llm.vendor || (typeof props.llm === 'string' ? props.llm : null))) || summary.llmUrl || summary.llmModule || '—';
+        const llmModel = summary.llmModel || (props && props.llm && props.llm.params && props.llm.params.model) || '—';
         const mllmEnabled = info.ENABLE_MLLM === true;
         const mllmVendor = summary.mllmVendor || '—';
         const mllmModel = summary.mllmModel || '—';
@@ -3084,7 +3205,7 @@
         let html = '<div class="summary-pretty-wrap">';
         html += '<div class="summary-pretty-grid">';
         html += kvCard('ASR', '<span>' + mono(asrVendor) + '</span><span>' + mono(asrLang) + '</span>');
-        html += kvCard('LLM', '<span>' + mono(llmStr) + '</span><span class="badge badge--info">' + escapeHtml(summary.llmUrl ? 'url' : (summary.llmModule ? 'module' : '—')) + '</span>');
+        html += kvCard('LLM', '<span>' + mono(llmStr) + '</span><span>' + mono(llmModel) + '</span>');
         if (mllmEnabled || summary.mllmVendor || summary.mllmModel || summary.mllmUrl) {
           html += kvCard(
             'MLLM / V2V',
@@ -3192,6 +3313,7 @@
           { id: 'v2vTab', label: 'MLLM / V2V' },
           { id: 'ttsTab', label: 'TTS' },
           { id: 'avatarTab', label: 'Avatar' },
+          { id: 'sipTab', label: 'SIP' },
           { id: 'rtmTab', label: 'RTM' },
           { id: 'toolsTab', label: 'Tools' },
           { id: 'events', label: 'Events' }
@@ -3491,6 +3613,14 @@
         html += '</div>';
 
         html += '<div class="insight-tab-panel" data-panel="llm">';
+        const sumForLlm = insights.summary || {};
+        if (sumForLlm.llmModel || sumForLlm.llmSystemPrompt) {
+          html += '<p class="summary-json-hint"><strong>Model</strong>: ' + escapeHtml(sumForLlm.llmModel || '—') + '</p>';
+          if (sumForLlm.llmSystemPrompt) {
+            const preview = String(sumForLlm.llmSystemPrompt).slice(0, 320);
+            html += '<details><summary>System prompt preview</summary><pre class="summary-json-view">' + escapeHtml(preview + (String(sumForLlm.llmSystemPrompt).length > 320 ? '\n... (truncated)' : '')) + '</pre></details>';
+          }
+        }
         if (insights.llm && insights.llm.length) {
           html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','URL / Status','Duration (ms)','Model','Finish / Error']) + '</tr></thead><tbody>';
           for (const r of insights.llm) {
@@ -3545,6 +3675,37 @@
             html += '<p class="insight-empty">No avatar log lines found.</p>';
           }
         } else html += '<p class="insight-empty">No avatar configuration found.</p>';
+        html += '</div>';
+
+        html += '<div class="insight-tab-panel" data-panel="sipTab">';
+        const sip = insights.sipTab || { enabled: null, applyMode: null, sipDefaultEnabled: null, fromNumber: null, toNumber: null, campaignId: null, callId: null, managerJobs: [], events: [], stats: {} };
+        html += '<p class="summary-json-hint"><strong>ENABLE_SIP</strong>: ' + escapeHtml(sip.enabled == null ? '—' : String(sip.enabled)) +
+          (sip.applyMode ? ' · <strong>sip_default.apply_mode</strong>: ' + escapeHtml(String(sip.applyMode)) : '') +
+          (sip.sipDefaultEnabled != null ? ' · <strong>sip_default.enable</strong>: ' + escapeHtml(String(sip.sipDefaultEnabled)) : '') +
+          '</p>';
+        if (sip.fromNumber || sip.toNumber || sip.campaignId || sip.callId) {
+          html += '<table class="insight-table insight-filterable"><thead><tr>' + insightHeaderRow(['From', 'To', 'Campaign', 'Call ID']) + '</tr></thead><tbody>';
+          html += `<tr><td>${escapeHtml(sip.fromNumber || '—')}</td><td>${escapeHtml(sip.toNumber || '—')}</td><td>${escapeHtml(sip.campaignId || '—')}</td><td>${escapeHtml(sip.callId || '—')}</td></tr>`;
+          html += '</tbody></table>';
+        }
+        if (sip.managerJobs && sip.managerJobs.length) {
+          html += '<table class="insight-table insight-filterable"><thead><tr>' + insightHeaderRow(['SIP manager tool', 'Reason', 'Duration (ms)']) + '</tr></thead><tbody>';
+          for (const j of sip.managerJobs) {
+            html += `<tr><td>${escapeHtml(j.tool || '—')}</td><td>${escapeHtml(j.reason || '—')}</td><td>${j.durationMs != null ? j.durationMs : '—'}</td></tr>`;
+          }
+          html += '</tbody></table>';
+        }
+        if (sip.events && sip.events.length) {
+          html += '<p class="summary-json-hint">Manager events: ' + (sip.stats.manager_events || 0) + ' · SIP call events: ' + (sip.stats.call_events || 0) + '</p>';
+          html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Ext','Level','Message']) + '</tr></thead><tbody>';
+          for (const row of sip.events) {
+            const idxAttr = row.entryIndex != null ? ' data-index="' + row.entryIndex + '"' : '';
+            html += `<tr${idxAttr}><td>${escapeHtml(row.ts || '')}</td><td>${escapeHtml(row.ext || '')}</td><td>${escapeHtml(row.level || '')}</td><td>${escapeHtml(row.msg || '')}</td></tr>`;
+          }
+          html += '</tbody></table>';
+        } else {
+          html += '<p class="insight-empty">No SIP-specific events found.</p>';
+        }
         html += '</div>';
 
         html += '<div class="insight-tab-panel" data-panel="rtmTab">';
@@ -4360,15 +4521,25 @@
           document.getElementById('badgeWarnings').textContent = summary.warnings + ' warnings';
           document.getElementById('badgeEntries').textContent = entries.length + ' entries';
 
-          const convEl = document.getElementById('conversationSummary');
-          convEl.innerHTML = renderConversation(summary.turns);
-
           const extSelect = document.getElementById('extFilter');
           extSelect.innerHTML = '<option value="">All extensions</option>' +
             extensions.map(ex => `<option value="${escapeHtml(ex)}">${escapeHtml(ex)}</option>`).join('');
 
           state.selectedIndex = null;
           state.contextRadius = null;
+          const infoObj = summary && summary.eventStartInfo && summary.eventStartInfo.taskInfo && summary.eventStartInfo.taskInfo.info
+            ? summary.eventStartInfo.taskInfo.info
+            : {};
+          const hasExplicitMllmFlag = Object.prototype.hasOwnProperty.call(infoObj, 'ENABLE_MLLM');
+          const flagVal = hasExplicitMllmFlag ? infoObj.ENABLE_MLLM : null;
+          const flagTrue = flagVal === true || String(flagVal).toLowerCase() === 'true' || String(flagVal) === '1';
+          const hasV2vSignal = entries.some(function (e) {
+            const msg = e && e.msg ? e.msg : '';
+            return e.ext === 'v2v' || /\[v2v\]/i.test(msg) || /"source":"mllm"|'source':\s*'mllm'/.test(msg);
+          });
+          // Strict behavior requested: when ENABLE_MLLM is present and false, keep MLLM tab empty.
+          // If the flag is absent, allow fallback to observed v2v/mllm signals.
+          const mllmEnabled = hasExplicitMllmFlag ? flagTrue : hasV2vSignal;
           state.insights = {
             summary: summary,
             stateTransitions: extractStateTransitions(entries),
@@ -4382,8 +4553,9 @@
             rtc: extractRtcInsights(entries),
             rtmTab: extractRtmTab(entries),
             toolsTab: extractToolsTab(entries),
-            v2vTab: extractV2vTab(entries),
-            v2vTranscriptions: extractV2vTranscriptions(entries),
+            sipTab: extractSipTab(entries, summary),
+            v2vTab: extractV2vTab(entries, mllmEnabled),
+            v2vTranscriptions: extractV2vTranscriptions(entries, mllmEnabled),
             avatarTab: extractAvatarTab(entries),
             llm: extractLlm(entries),
             ncs: extractNcsInsights(entries),
