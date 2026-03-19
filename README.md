@@ -1,51 +1,74 @@
 # TEN Log Reader (Tensight)
 
-Web-based reader for **ten.err** / **ten.err.log** (Agora TEN / Conversational AI runtime logs). Parses the log in the browser and surfaces session info, structured **Insights**, and the raw log with filters.
+Web-based reader for **`ten.err`** / **`ten.err.log`** (Agora TEN / Conversational AI runtime logs).
+It parses logs fully in the browser and surfaces a searchable log viewer plus structured **Insights**.
 
-No server required — open `index.html` or host the folder on GitHub Pages.
+No backend required.
 
-## How to use
+## Run
 
-1. Open **`index.html`** in a browser, or drag-and-drop a log file onto the page.
-2. Use **Choose log file** to load `ten.err`, `ten.err.log`, or any file in the supported format.
-3. **Log** view: filter by level (I/D/W/E), extension, time range, and search. Quick filter chips (LLM, TTS, KEYPOINT, etc.) and **Clear** reset search and exit “jump from Insights” mode.
-4. **Insights** view: tables derived from the log. **Keypoints** opens first (NCS join/leave/memory, including interrupt + ASR confidence where present). Click a row to jump to that line in the log (filters reset so the line is visible; the log panel scrolls to it). Use **Full log** / **Clear filters** / **Done** on the context bar to widen or dismiss.
+- Open **`index.html`** directly in a browser, or host the folder (for example with GitHub Pages).
+- Load a file via **Choose log file** (or drag-and-drop).
 
-Large files (multi‑MB) may take a few seconds to parse.
+## Project structure
 
-## Features
+- **`index.html`**: UI layout/markup
+- **`styles.css`**: all styling
+- **`app.js`**: parsing, extraction, rendering, interactions
 
-### Summary
+## What it supports
 
-- App version, build, Agent ID, channel (+ Argus by channel), RTC SID (+ Argus by SID), graph, LLM/TTS/STT hints, optional stop card and task/create-request blocks. Argus URLs include `fromTs`/`toTs` from the session when known.
+### Log parsing
 
-### Insights tabs (extracted data)
-
-| Tab | Contents |
-|-----|----------|
-| **Keypoints** | NCS `on_agent_joined` / `on_agent_left` / `on_agent_memory` (memory table + interrupted rows + confidence) |
-| **Text messages** | User ASR + agent TTS + STT lines |
-| **Turns** | User & agent turns (glue / eval / ASR) |
-| **States / State reports** | State machine transitions and reports |
-| **Performance** | Per-turn latency chart + module timings |
-| **STT / ASR** | Transcripts, metrics, **ASR timeline errors** (e.g. requested time vs timeline duration) |
-| **RTC / Agora** | Cert/token warnings, graph routing failures, Agora extension **E** lines + serious **W** (onError, token, connection, etc.) — by category: routing / cert / sdk |
-| **LLM** | Requests, failures, exceptions, `finish_reason` / error payloads |
-| **TTS** | WebSocket/auth issues (e.g. HTTP 401), empty `api_key` hints, base_dir warnings; TTS text results |
-| **Events** | `KEYPOINT [event_type:…]` lines |
+- RFC3339-style lines (`timestamp pid(tid) level message`)
+- Alternate timestamp format (`MM-DD HH:MM:SS(.ms) ...`) used by some STT logs
+- Levels `I/D/W/E` plus `M` (mapped to info)
+- Optional `[extension]` extraction with guards against bracketed JSON blobs
+- Continuation multi-line entries
+- Tab-separated Go-style lines (`INFO`, `WARN`, etc.)
+- `SESS_CTRL:` lines
 
 ### Log view
 
-- **Highlighting** for many failure patterns (LLM, NCS leave, TTS WS errors, ASR timeline, RTC cert/routing, etc.), not only raw `E` lines.
-- **JSON** in a line can be expanded/collapsed.
+- Level toggles, extension filter, time range, search
+- Quick event chips + “More filters”
+- Per-line copy button
+- Global line **Expand all / Collapse all** with per-line double-click expand
+- Match highlighting for search/filter text
+- Context jump from Insights rows and “Full log / Clear filters / Done” controls
+- Large-log handling: debounced filtering + chunked rendering + spinner overlay
 
-## Log format supported
+### Summary cards
 
-- RFC3339-style timestamp + `PID(TID)` + level `I`/`D`/`W`/`E` + message  
-- Optional `[extension]` in the message  
-- Continuation / multi-line entries  
-- Header lines: `app_version`, `commit`, `build_time`  
-- Tab-separated Go-style lines (`INFO`, `WARN`, …)  
-- `SESS_CTRL:` lines  
+- App/build info, channel, graph, RTC SID, Argus links, stop status
+- Dynamic `ENABLE_*` + `SAL_MODE` options table
+- Task version snapshot (when present)
+- Event-start / create-request JSON modal viewer (highlighted + copy)
+- LLM/ASR/TTS hints from graph + event payloads
+- MLLM/V2V summary card (only when enabled/signaled)
 
-Log files are not committed to the repo (see `.gitignore`).
+### Insights tabs
+
+| Tab | Contents |
+|-----|----------|
+| **Summary** | Pretty summary cards + options + task versions |
+| **Keypoints** | NCS joined/left/memory events |
+| **Text messages** | ASR/TTS/turn text stream |
+| **Turns (user & agent)** | Consolidated turn timeline |
+| **States / State reports** | State transitions and reporter outputs |
+| **Performance** | Per-turn latency graph/table (ASR/LLM/TTS/VAD/AIVAD/BHVS + totals) |
+| **RTC / Agora** | RTC warnings/errors by category |
+| **STT / ASR metrics** | Transcript + metric + timeline-error extraction |
+| **LLM** | Request/status/error rows, model, and system-prompt preview when available |
+| **MLLM / V2V** | V2V events/transcriptions (strictly gated by `ENABLE_MLLM` when flag exists) |
+| **TTS** | TTS-specific issues and outputs |
+| **Avatar** | Avatar-related config/events |
+| **SIP** | `ENABLE_SIP`, SIP defaults, from/to/campaign/call IDs, sip-manager events |
+| **RTM** | Presence/message/set_presence activity |
+| **Tools** | MCP/tool-call availability, servers, call counts, MCP errors |
+| **Events** | Generic `KEYPOINT [event_type:...]` timeline |
+
+## Notes
+
+- Parsing and extraction are frontend-only; large logs can still take a moment.
+- Log files are excluded from git (see `.gitignore`).
