@@ -620,13 +620,11 @@
               <dt>Agent ID</dt>
               <dd><span id="sumAgentId">—</span> <a id="linkConvoReplay" href="#" target="_blank" rel="noopener" class="summary-link" style="display:none;">ConvoReplay</a></dd>
               <dt>Channel</dt>
-              <dd id="sumChannel">—</dd>
+              <dd><span id="sumChannel">—</span> <a id="linkArgusChannel" href="#" target="_blank" rel="noopener" class="summary-link" style="display: none;">Argus</a></dd>
               <dt>Start TS</dt>
               <dd id="sumStartTs">—</dd>
-              <dt>RTC SID → Argus</dt>
+              <dt>RTC SID</dt>
               <dd><a id="linkArgus" href="#" target="_blank" rel="noopener" class="summary-link">—</a></dd>
-              <dt class="summary-argus-channel" style="display: none;">Channel → Argus</dt>
-              <dd class="summary-argus-channel" style="display: none;"><a id="linkArgusChannel" href="#" target="_blank" rel="noopener" class="summary-link">—</a></dd>
               <dt>Graph ID</dt>
               <dd id="sumGraphId">—</dd>
               <dt>LLM</dt>
@@ -2818,7 +2816,7 @@
 
       function argusFallbackRangeSec() {
         const now = Math.floor(Date.now() / 1000);
-        return { fromTs: now - 86400 * 14, toTs: now + 3600 };
+        return { fromTs: now - 86400 * 30, toTs: now };
       }
 
       function argusUrlBySid(rtcSid, fromTs, toTs) {
@@ -2870,6 +2868,7 @@
             convoreplay.style.display = '';
           } else convoreplay.style.display = 'none';
           document.getElementById('sumChannel').textContent = summary.channel || '—';
+          const argusCh = document.getElementById('linkArgusChannel');
           const startTsEl = document.getElementById('sumStartTs');
           if (summary.startTs != null) {
             const ts = summary.startTs;
@@ -2879,13 +2878,10 @@
           let argusRange = computeArgusTimeRangeSec(summary, entries);
           if (!argusRange && (summary.rtcSid || summary.channel)) argusRange = argusFallbackRangeSec();
           const argusLink = document.getElementById('linkArgus');
-          const argusCh = document.getElementById('linkArgusChannel');
-          const argusChRows = document.querySelectorAll('.summary-argus-channel');
           if (summary.rtcSid && argusRange) {
             argusLink.textContent = summary.rtcSid;
             argusLink.href = argusUrlBySid(summary.rtcSid, argusRange.fromTs, argusRange.toTs);
-            argusLink.title =
-              'Argus: SID + fromTs/toTs ' + argusRange.fromTs + ' … ' + argusRange.toTs;
+            argusLink.title = '';
           } else {
             argusLink.textContent = '—';
             argusLink.href = '#';
@@ -2893,19 +2889,10 @@
           }
           if (summary.channel && argusRange) {
             argusCh.href = argusUrlByChannel(summary.channel, argusRange.fromTs, argusRange.toTs);
-            argusCh.textContent =
-              summary.channel.length > 36 ? summary.channel.slice(0, 34) + '…' : summary.channel;
-            argusCh.title = 'Argus by channel + same time window as SID link';
-            argusChRows.forEach(function (el) {
-              el.style.display = '';
-            });
+            argusCh.style.display = '';
           } else {
             argusCh.href = '#';
-            argusCh.textContent = '—';
-            argusCh.title = '';
-            argusChRows.forEach(function (el) {
-              el.style.display = 'none';
-            });
+            argusCh.style.display = 'none';
           }
           document.getElementById('sumGraphId').textContent = summary.graphId || '—';
           document.getElementById('sumLlm').textContent = summary.llmUrl || summary.llmModule || '—';

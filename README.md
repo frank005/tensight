@@ -17,7 +17,7 @@ Large files (multi‑MB) may take a few seconds to parse.
 
 ### Summary
 
-- App version, build, Agent ID, channel, graph, LLM/TTS/STT hints, optional stop card and task/create-request blocks. **Argus** links (RTC SID and optional channel search) include `fromTs` / `toTs` from session start/stop (with padding) so Argus is not stuck on a short default window.
+- App version, build, Agent ID, channel (+ Argus by channel), RTC SID (+ Argus by SID), graph, LLM/TTS/STT hints, optional stop card and task/create-request blocks. Argus URLs include `fromTs`/`toTs` from the session when known.
 
 ### Insights tabs (extracted data)
 
