@@ -58,7 +58,7 @@ No backend required.
 | **States / State reports** | State transitions and reporter outputs |
 | **Performance** | Per-turn latency graph/table (ASR/LLM/TTS/VAD/AIVAD/BHVS + totals) |
 | **RTC / Agora** | RTC warnings/errors by category |
-| **STT / ASR metrics** | Transcript + metric + timeline-error extraction |
+| **STT / ASR metrics** | Transcripts, metrics, timeline errors, and **`send asr_error:`** vendor/protocol errors (often logged as `I`, not `E`) |
 | **LLM** | Request/status/error rows, model, and system-prompt preview when available |
 | **MLLM / V2V** | V2V events/transcriptions (strictly gated by `ENABLE_MLLM` when flag exists) |
 | **TTS** | TTS-specific issues and outputs |

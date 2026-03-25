@@ -775,12 +775,34 @@
           const timelineErr = e.msg.match(/Requested time\s*(\d+)ms\s+exceeds timeline duration\s*(\d+)ms/);
           if (timelineErr) {
             errors.push({
+              kind: 'timeline',
               ts: e.ts,
               requested_time_ms: parseInt(timelineErr[1], 10),
               timeline_duration_ms: parseInt(timelineErr[2], 10),
               detail: e.msg,
               entryIndex: i
             });
+          }
+          // Vendor/protocol ASR errors (logged as key_point I-lines): "send asr_error: {...}"
+          const asrErrTag = 'send asr_error:';
+          const asrErrIdx = e.msg.indexOf(asrErrTag);
+          if (asrErrIdx >= 0) {
+            const jsonStr = e.msg.slice(asrErrIdx + asrErrTag.length).trim();
+            const j = tryParseJSON(jsonStr);
+            if (j && typeof j === 'object') {
+              const vi = j.vendor_info && typeof j.vendor_info === 'object' ? j.vendor_info : null;
+              errors.push({
+                kind: 'asr_error',
+                ts: e.ts,
+                code: j.code != null ? j.code : null,
+                message: j.message != null ? String(j.message) : null,
+                vendor: vi && vi.vendor != null ? String(vi.vendor) : null,
+                vendor_code: vi && vi.code != null ? String(vi.code) : null,
+                vendor_message: vi && vi.message != null ? String(vi.message) : null,
+                detail: redactInlineSecrets(e.msg).slice(0, 500),
+                entryIndex: i
+              });
+            }
           }
           if (e.msg.includes('user.transcription') && e.msg.includes('"text"')) {
             const j = tryParseJSON(e.msg);
@@ -1797,7 +1819,7 @@
 
       function renderEntry(entry, index, isSelected, searchRaw) {
         const isRelevant = entry.msg && (
-          /llm failure|Something went wrong|Request failed|on_request_exception|ncs on_agent_left|Failed too many times|No app certificate provided|TokenManager not initialized|Requested time .* exceeds timeline duration|Websocket internal error|server rejected WebSocket|HTTP 401|base_dir of 'tts' is missing|500 Internal Server Error|Failed to send message/i.test(entry.msg)
+          /llm failure|Something went wrong|Request failed|on_request_exception|ncs on_agent_left|Failed too many times|No app certificate provided|TokenManager not initialized|Requested time .* exceeds timeline duration|send asr_error:|Websocket internal error|server rejected WebSocket|HTTP 401|base_dir of 'tts' is missing|500 Internal Server Error|Failed to send message/i.test(entry.msg)
         );
         const levelClass = entry.level ? `level-${entry.level}` : '';
         const hasPerLineOverride =
@@ -2434,13 +2456,27 @@
           }
 
           if (stt.errors && stt.errors.length) {
-            html += '<p><strong>ASR timeline errors</strong></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Requested time (ms)','Timeline duration (ms)','Message']) + '</tr></thead><tbody>';
-            for (const err of stt.errors) {
-              const tsAttr = escapeHtml(err.ts || '');
-              const idxAttr = err.entryIndex != null ? ' data-index="' + err.entryIndex + '"' : '';
-              html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(err.ts)}</td><td>${err.requested_time_ms != null ? escapeHtml(String(err.requested_time_ms)) : '—'}</td><td>${err.timeline_duration_ms != null ? escapeHtml(String(err.timeline_duration_ms)) : '—'}</td><td>${escapeHtml((err.detail || '').slice(0, 90) || '—')}</td></tr>`;
+            const timelineErrs = stt.errors.filter(function (err) { return !err.kind || err.kind === 'timeline'; });
+            const vendorErrs = stt.errors.filter(function (err) { return err.kind === 'asr_error'; });
+            if (timelineErrs.length) {
+              html += '<p><strong>ASR timeline errors</strong></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Requested time (ms)','Timeline duration (ms)','Message']) + '</tr></thead><tbody>';
+              for (const err of timelineErrs) {
+                const tsAttr = escapeHtml(err.ts || '');
+                const idxAttr = err.entryIndex != null ? ' data-index="' + err.entryIndex + '"' : '';
+                html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(err.ts)}</td><td>${err.requested_time_ms != null ? escapeHtml(String(err.requested_time_ms)) : '—'}</td><td>${err.timeline_duration_ms != null ? escapeHtml(String(err.timeline_duration_ms)) : '—'}</td><td>${escapeHtml((err.detail || '').slice(0, 90) || '—')}</td></tr>`;
+              }
+              html += '</tbody></table>';
             }
-            html += '</tbody></table>';
+            if (vendorErrs.length) {
+              html += '<p><strong>ASR vendor / protocol errors</strong> <span class="summary-json-hint">(from <code>send asr_error:</code> lines, often logged as <code>I</code>)</span></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Code','Vendor','Message','Vendor detail']) + '</tr></thead><tbody>';
+              for (const err of vendorErrs) {
+                const tsAttr = escapeHtml(err.ts || '');
+                const idxAttr = err.entryIndex != null ? ' data-index="' + err.entryIndex + '"' : '';
+                const vm = err.vendor_message || err.message || '';
+                html += `<tr class="llm-row error" data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(err.ts)}</td><td>${err.code != null ? escapeHtml(String(err.code)) : '—'}</td><td>${err.vendor != null ? escapeHtml(String(err.vendor)) : '—'}</td><td>${escapeHtml((err.message || '').slice(0, 120) || '—')}</td><td>${escapeHtml(vm.slice(0, 120) || '—')}</td></tr>`;
+              }
+              html += '</tbody></table>';
+            }
           }
         } else html += '<p class="insight-empty">No STT/ASR data found.</p>';
         html += '</div>';
