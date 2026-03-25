@@ -41,8 +41,64 @@
       display: flex;
       align-items: center;
       gap: 16px;
-      flex-wrap: nowrap;
+      flex-wrap: wrap;
       min-width: 0;
+    }
+
+    .agent-fetch-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 1;
+      min-width: 0;
+    }
+    .agent-id-input {
+      width: min(320px, 42vw);
+      min-width: 180px;
+      padding: 8px 10px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .agent-id-input::placeholder {
+      color: var(--text-muted);
+    }
+    .agent-id-input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px var(--accent-dim);
+    }
+    .agent-env-select {
+      padding: 8px 10px;
+      font-size: 13px;
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      cursor: pointer;
+    }
+    .agent-fetch-btn {
+      padding: 8px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      font-family: var(--font-sans);
+      color: var(--bg);
+      background: var(--success);
+      border: none;
+      border-radius: var(--radius);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: filter 0.15s;
+    }
+    .agent-fetch-btn:hover:not(:disabled) {
+      filter: brightness(1.08);
+    }
+    .agent-fetch-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
     }
 
     .logo {

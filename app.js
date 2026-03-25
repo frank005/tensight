@@ -3323,6 +3323,212 @@
         );
       }
 
+      /** CSTool-compatible fetch: same API as rtsc-tools Log 快速分析 (parse_ten_err → poll → OSS .tgz). */
+      var CSTOOL_ORIGIN = 'https://rtsc-tools.sh3.agoralab.co';
+      var CSTOOL_POLL_MS = 3000;
+      var CSTOOL_MAX_WAIT_MS = 12 * 60 * 1000;
+
+      function cstoolApiRoot() {
+        try {
+          var o = localStorage.getItem('tenLogReader_cstoolOrigin');
+          if (o && /^https?:\/\/.+/i.test(o)) return o.replace(/\/$/, '');
+        } catch (e) {}
+        return CSTOOL_ORIGIN;
+      }
+
+      function readTarField(block, start, len) {
+        var s = '';
+        for (var i = 0; i < len; i++) {
+          var c = block[start + i];
+          if (c === 0) break;
+          s += String.fromCharCode(c);
+        }
+        return s.trim();
+      }
+
+      /**
+       * @param {ArrayBuffer} tarBuf
+       * @returns {{ name: string, data: Uint8Array }[]}
+       */
+      function parseUstarTarEntries(tarBuf) {
+        var arr = new Uint8Array(tarBuf);
+        var len = arr.length;
+        var offset = 0;
+        var out = [];
+        var pendingLongName = null;
+
+        while (offset + 512 <= len) {
+          var header = arr.subarray(offset, offset + 512);
+          if (header.every(function (b) { return b === 0; })) break;
+
+          var type = String.fromCharCode(header[156] || 0);
+          var sizeStr = readTarField(header, 124, 12).replace(/\0/g, '');
+          var size = parseInt(sizeStr, 8) || 0;
+          var shortName = readTarField(header, 0, 100).replace(/\0/g, '').trim();
+          if (shortName.indexOf('./') === 0) shortName = shortName.slice(2);
+
+          offset += 512;
+
+          if (type === 'L') {
+            var nameBytes = arr.subarray(offset, offset + size);
+            pendingLongName = new TextDecoder('utf-8', { fatal: false }).decode(nameBytes).replace(/\0+$/, '').trim();
+            offset += size;
+            offset = Math.ceil(offset / 512) * 512;
+            continue;
+          }
+          if (type === 'K') {
+            offset += Math.ceil(size / 512) * 512;
+            continue;
+          }
+          if (type === '5') {
+            offset += Math.ceil(size / 512) * 512;
+            pendingLongName = null;
+            continue;
+          }
+
+          var data = arr.subarray(offset, offset + size);
+          offset += size;
+          offset = Math.ceil(offset / 512) * 512;
+
+          var reg = type === '0' || type === '\0' || type === '';
+          if (!reg) {
+            pendingLongName = null;
+            continue;
+          }
+
+          var name = pendingLongName || shortName;
+          pendingLongName = null;
+          if (!name) continue;
+          out.push({ name: name, data: data });
+        }
+        return out;
+      }
+
+      function pickErrEntry(entries) {
+        if (!entries || !entries.length) return null;
+        var nonEmpty = entries.filter(function (e) { return e.data && e.data.length; });
+        if (!nonEmpty.length) return null;
+        var candidates = nonEmpty.filter(function (e) {
+          var n = (e.name || '').toLowerCase();
+          return /\.(err|err\.log)$/i.test(n) || n.indexOf('ten.err') !== -1;
+        });
+        if (!candidates.length) candidates = nonEmpty.slice();
+        var ten = candidates.filter(function (e) { return /(^|\/)ten\.err([^/]*)$/i.test(e.name); });
+        if (ten.length) {
+          ten.sort(function (a, b) { return b.data.length - a.data.length; });
+          return ten[0];
+        }
+        candidates.sort(function (a, b) { return b.data.length - a.data.length; });
+        return candidates[0];
+      }
+
+      function gunzipArrayBuffer(buf) {
+        if (typeof DecompressionStream === 'undefined') {
+          return Promise.reject(new Error('This browser cannot decompress .tgz (no DecompressionStream). Try Chrome, Edge, or Safari 16.4+.'));
+        }
+        var ds = new DecompressionStream('gzip');
+        var stream = new Blob([buf]).stream().pipeThrough(ds);
+        return new Response(stream).arrayBuffer();
+      }
+
+      function extractErrTextFromTgz(tgzBytes) {
+        return gunzipArrayBuffer(tgzBytes).then(function (tarBuf) {
+          var entries = parseUstarTarEntries(tarBuf);
+          var picked = pickErrEntry(entries);
+          if (!picked) {
+            var names = entries.map(function (e) { return e.name; }).slice(0, 20);
+            throw new Error('No .err file found in archive. Entries (sample): ' + (names.length ? names.join(', ') : '(empty)'));
+          }
+          return new TextDecoder('utf-8', { fatal: false }).decode(picked.data);
+        });
+      }
+
+      /**
+       * @param {string} agentId
+       * @param {string} environment prod|staging
+       * @param {{ onStatus?: (msg: string) => void }} opts
+       * @returns {Promise<{ text: string, fileName: string }>}
+       */
+      function fetchTenErrViaCstool(agentId, environment, opts) {
+        var onStatus = opts && opts.onStatus ? opts.onStatus : function () {};
+        var root = cstoolApiRoot();
+        var parseUrl = root + '/cstoolconvoai/parse_ten_err';
+        var fd = new FormData();
+        fd.append('agent_id', agentId);
+        fd.append('environment', environment || 'prod');
+
+        return fetch(parseUrl, {
+          method: 'POST',
+          body: fd,
+          credentials: 'omit',
+          mode: 'cors'
+        }).then(function (res) {
+          if (!res.ok) {
+            return res.text().then(function (t) {
+              throw new Error('Start job failed (' + res.status + '). ' + (t ? t.slice(0, 200) : ''));
+            });
+          }
+          return res.json();
+        }).then(function (data) {
+          if (!data || !data.success) {
+            throw new Error((data && data.error) || (data && data.message) || 'Could not start log job.');
+          }
+          var jobId = data.job_id;
+          if (!jobId) throw new Error('No job_id in response.');
+          var statusPath = root + '/cstoolconvoai/api/ten_err_status/' + encodeURIComponent(jobId);
+          var deadline = Date.now() + CSTOOL_MAX_WAIT_MS;
+
+          function pollOnce() {
+            return fetch(statusPath, { credentials: 'omit', mode: 'cors' }).then(function (res) {
+              if (!res.ok) {
+                return res.text().then(function (t) {
+                  throw new Error('Status check failed (' + res.status + '). ' + (t ? t.slice(0, 200) : ''));
+                });
+              }
+              return res.json();
+            }).then(function (st) {
+              if (!st) throw new Error('Empty status response.');
+              var status = st.status != null ? String(st.status).toLowerCase() : '';
+              if (status === 'failed') {
+                throw new Error(st.error || st.message || 'Server failed to prepare log.');
+              }
+              if (status === 'done' && st.download_url) {
+                return st;
+              }
+              if (status === 'done' && !st.download_url) {
+                throw new Error('Job finished but no download_url was returned.');
+              }
+              if (Date.now() > deadline) {
+                throw new Error('Timed out waiting for log (>' + Math.floor(CSTOOL_MAX_WAIT_MS / 60000) + ' min).');
+              }
+              onStatus('Processing on server… (' + (status || '…') + ')');
+              return new Promise(function (resolve) {
+                setTimeout(function () { resolve(pollOnce()); }, CSTOOL_POLL_MS);
+              });
+            });
+          }
+
+          onStatus('Job started; waiting for log package…');
+          return pollOnce();
+        }).then(function (st) {
+          var url = st.download_url;
+          if (!url) throw new Error('No download URL.');
+          onStatus('Downloading log archive…');
+          return fetch(url, { credentials: 'omit', mode: 'cors' }).then(function (res) {
+            if (!res.ok) {
+              throw new Error('Download failed (' + res.status + '). If this is a browser CORS block, open the URL in a tab where you are signed in, or download manually: ' + url);
+            }
+            return res.arrayBuffer();
+          }).then(function (ab) {
+            onStatus('Extracting ten.err…');
+            return extractErrTextFromTgz(ab);
+          }).then(function (text) {
+            var base = (agentId.slice(0, 12) || 'ten') + '-fetched.err';
+            return { text: text, fileName: base };
+          });
+        });
+      }
+
       function setParseOverlay(show, message) {
         var ov = document.getElementById('parseOverlay');
         var msg = document.getElementById('parseOverlayMsg');
@@ -3567,6 +3773,51 @@
         const file = this.files && this.files[0];
         if (file) loadLogFile(file);
       });
+
+      (function initAgentFetch() {
+        var agentInput = document.getElementById('agentIdInput');
+        var envSelect = document.getElementById('agentEnvSelect');
+        var fetchBtn = document.getElementById('agentFetchBtn');
+        if (!agentInput || !envSelect || !fetchBtn) return;
+        try {
+          var savedId = localStorage.getItem('tenLogReader_lastAgentId');
+          if (savedId) agentInput.value = savedId;
+          var savedEnv = localStorage.getItem('tenLogReader_lastAgentEnv');
+          if (savedEnv && (savedEnv === 'prod' || savedEnv === 'staging')) envSelect.value = savedEnv;
+        } catch (err) {}
+
+        fetchBtn.addEventListener('click', function () {
+          var raw = (agentInput.value || '').trim();
+          if (!raw) {
+            alert('Enter an Agent ID.');
+            agentInput.focus();
+            return;
+          }
+          if (!/^[A-Za-z0-9_-]+$/.test(raw) || raw.length < 16) {
+            if (!confirm('Agent ID looks unusual. Continue anyway?')) return;
+          }
+          var environment = envSelect.value || 'prod';
+          fetchBtn.disabled = true;
+          setParseOverlay(true, 'Connecting to log service…');
+          fetchTenErrViaCstool(raw, environment, {
+            onStatus: function (msg) {
+              setParseOverlay(true, msg);
+            }
+          }).then(function (result) {
+            try {
+              localStorage.setItem('tenLogReader_lastAgentId', raw);
+              localStorage.setItem('tenLogReader_lastAgentEnv', environment);
+            } catch (e2) {}
+            onFileLoad(result.text, result.fileName);
+          }).catch(function (err) {
+            console.error(err);
+            setParseOverlay(false);
+            alert(err && err.message ? err.message : String(err));
+          }).finally(function () {
+            fetchBtn.disabled = false;
+          });
+        });
+      })();
 
       const appEl = document.getElementById('app');
       /** DOMStringList (Safari) has .contains; arrays have .includes — avoid throws on GitHub Pages / Safari */

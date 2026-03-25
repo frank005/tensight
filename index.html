@@ -18,6 +18,14 @@
         <input type="file" id="fileInput" accept=".log,.err.log,.err,text/plain" />
         <label for="fileInput">Choose log file</label>
       </div>
+      <div class="agent-fetch-wrap" title="Uses the same CSTool backend as Log 快速分析 (Agent ID + environment)">
+        <input type="text" id="agentIdInput" class="agent-id-input" placeholder="Agent ID" autocomplete="off" spellcheck="false" maxlength="64" />
+        <select id="agentEnvSelect" class="agent-env-select" aria-label="Environment">
+          <option value="prod" selected>Production</option>
+          <option value="staging">Staging</option>
+        </select>
+        <button type="button" id="agentFetchBtn" class="agent-fetch-btn">Fetch log</button>
+      </div>
       <span class="file-name" id="fileName">No file loaded</span>
     </header>
 
