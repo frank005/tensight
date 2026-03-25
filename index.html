@@ -31,7 +31,8 @@
       <span class="file-name" id="fileName">No file loaded</span>
       <details class="agent-proxy-details">
         <summary class="agent-proxy-summary">CSTool proxy (for GitHub Pages)</summary>
-        <p class="agent-proxy-help">This page cannot read CSTool’s cookies or bypass CORS by itself. Deploy the Worker in <code>proxy/cf-worker.mjs</code>: add secret <code>CSTOOL_COOKIE</code> (full <code>Cookie</code> header from DevTools → Network while you are logged into CSTool), set <code>ALLOWED_ORIGIN</code> to your reader URL (e.g. <code>https://frank005.github.io</code>). Paste the Worker origin here — no trailing slash.</p>
+        <p class="agent-proxy-help"><strong>Postman works because it is not a website</strong> — it can send the <code>Cookie</code> header to CSTool. Browsers <strong>forbid</strong> JavaScript on another site (e.g. GitHub Pages) from setting that header on cross-origin requests, so this page cannot do what Postman does. You need a small proxy that runs <strong>outside</strong> the tab and adds the cookie (same as Postman).</p>
+        <p class="agent-proxy-help">Options: (1) Run <code>node proxy/local-server.mjs</code> on your Mac with <code>CSTOOL_COOKIE</code> and <code>ALLOWED_ORIGIN</code> set — paste <code>http://127.0.0.1:8787</code> here. <strong>Note:</strong> HTTPS Pages sometimes block <code>http://127.0.0.1</code> (mixed content); then use <code>ngrok http 8787</code> and paste the <code>https://</code> URL, or use the Cloudflare file <code>proxy/cf-worker.mjs</code> (no Wrangler required if you paste it in the Workers dashboard).</p>
         <input type="url" id="cstoolProxyInput" class="cstool-proxy-input" placeholder="https://your-name.workers.dev" autocomplete="off" spellcheck="false" />
       </details>
     </header>

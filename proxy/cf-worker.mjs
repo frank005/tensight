@@ -2,8 +2,11 @@
  * Cloudflare Worker: CSTool reverse proxy for TEN Log Reader (GitHub Pages, etc.)
  *
  * Why: Browsers do not expose rtsc-tools cookies to github.io and block cross-origin
- * API responses without CORS. This Worker runs on YOUR origin, adds the Cookie
- * server-side, and returns responses with Access-Control-Allow-Origin for your reader.
+ * API responses without CORS. Postman can set Cookie because it is not a web page;
+ * in-page JavaScript cannot (forbidden header). This Worker adds the Cookie server-side,
+ * like Postman — same role as proxy/local-server.mjs but hosted on HTTPS.
+ *
+ * No Wrangler? Use the Cloudflare dashboard → Workers → Create → paste this file.
  *
  * Setup:
  * 1. Create a Worker, paste this file as the module entry.
