@@ -3361,7 +3361,35 @@
           const stopCard = document.getElementById('summaryStopCard');
           if (summary.stopTs != null || summary.stopStatus || summary.stopMessage) {
             stopCard.style.display = 'block';
-            document.getElementById('sumStopTs').textContent = summary.stopTs != null ? String(summary.stopTs) : '—';
+            const stopTsEl = document.getElementById('sumStopTs');
+            const durEl = document.getElementById('sumStopDuration');
+            if (summary.stopTs != null) {
+              const st = Number(summary.stopTs);
+              if (!isNaN(st)) {
+                const utcStr = new Date(st * 1000).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
+                stopTsEl.textContent = st + ' (' + utcStr + ')';
+              } else {
+                stopTsEl.textContent = String(summary.stopTs);
+              }
+            } else stopTsEl.textContent = '—';
+            if (summary.startTs != null && summary.stopTs != null) {
+              const a = Number(summary.startTs);
+              const b = Number(summary.stopTs);
+              if (!isNaN(a) && !isNaN(b)) {
+                const diff = Math.round(b - a);
+                let durText = diff + ' s';
+                if (diff < 0) {
+                  durText += ' (stop before start — check timestamps)';
+                } else if (diff >= 60) {
+                  const h = Math.floor(diff / 3600);
+                  const m = Math.floor((diff % 3600) / 60);
+                  const s = diff % 60;
+                  if (h > 0) durText += ' (' + h + 'h ' + m + 'm ' + s + 's)';
+                  else durText += ' (' + m + 'm ' + s + 's)';
+                }
+                durEl.textContent = durText;
+              } else durEl.textContent = '—';
+            } else durEl.textContent = '—';
             document.getElementById('sumStopStatus').textContent = summary.stopStatus || '—';
             document.getElementById('sumStopMessage').textContent = summary.stopMessage || '—';
           } else stopCard.style.display = 'none';
