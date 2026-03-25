@@ -701,6 +701,29 @@
           const e = entries[i];
           if (!e.msg) continue;
           const msg = e.msg;
+          // E/I key_point lines: tts_error: ... {"module":"tts",...} (ElevenLabs, etc.)
+          if (/\[tts\]/i.test(msg) && (msg.includes('tts_error:') || msg.includes('send_tts_error'))) {
+            const brace = msg.indexOf('{');
+            if (brace >= 0) {
+              const j = tryParseJSON(msg.slice(brace));
+              if (j && typeof j === 'object' && (j.module === 'tts' || msg.includes('receive pcm error'))) {
+                const vi = j.vendor_info && typeof j.vendor_info === 'object' ? j.vendor_info : null;
+                const detailParts = [];
+                if (j.message) detailParts.push(String(j.message));
+                if (vi && vi.vendor) detailParts.push('vendor=' + vi.vendor);
+                if (vi && vi.message && vi.message !== j.message) detailParts.push('vendor_msg=' + vi.message);
+                items.push({
+                  ts: e.ts,
+                  kind: e.level === 'E' ? 'error' : 'warning',
+                  issue: 'tts_vendor_error',
+                  code: j.code != null ? String(j.code) : null,
+                  detail: detailParts.join(' · ').slice(0, 220) || msg.replace(/\s+/g, ' ').trim().slice(0, 220),
+                  entryIndex: i
+                });
+                continue;
+              }
+            }
+          }
           if (/\[tts\]/i.test(msg) && /Websocket internal error|server rejected WebSocket|HTTP\s+\d{3}/i.test(msg)) {
             const httpM = msg.match(/HTTP\s+(\d{3})/);
             items.push({
@@ -783,7 +806,24 @@
               entryIndex: i
             });
           }
-          // Vendor/protocol ASR errors (logged as key_point I-lines): "send asr_error: {...}"
+          // E-level ASR line: vendor_error: code: 400, message: ...
+          const ve = e.msg.match(/vendor_error:\s*code:\s*(\d+),\s*message:\s*(.+)$/i);
+          if (ve && (e.ext === 'asr' || /\[asr\]/i.test(e.msg))) {
+            errors.push({
+              kind: 'asr_error',
+              source: 'vendor_error',
+              ts: e.ts,
+              level: e.level || null,
+              code: parseInt(ve[1], 10),
+              message: String(ve[2] || '').trim().replace(/\.\s*$/, ''),
+              vendor: null,
+              vendor_code: null,
+              vendor_message: null,
+              detail: redactInlineSecrets(e.msg).slice(0, 500),
+              entryIndex: i
+            });
+          }
+          // Vendor/protocol ASR errors (often key_point I-lines): "send asr_error: {...}"
           const asrErrTag = 'send asr_error:';
           const asrErrIdx = e.msg.indexOf(asrErrTag);
           if (asrErrIdx >= 0) {
@@ -793,7 +833,9 @@
               const vi = j.vendor_info && typeof j.vendor_info === 'object' ? j.vendor_info : null;
               errors.push({
                 kind: 'asr_error',
+                source: 'send_asr_error',
                 ts: e.ts,
+                level: e.level || null,
                 code: j.code != null ? j.code : null,
                 message: j.message != null ? String(j.message) : null,
                 vendor: vi && vi.vendor != null ? String(vi.vendor) : null,
@@ -1819,7 +1861,7 @@
 
       function renderEntry(entry, index, isSelected, searchRaw) {
         const isRelevant = entry.msg && (
-          /llm failure|Something went wrong|Request failed|on_request_exception|ncs on_agent_left|Failed too many times|No app certificate provided|TokenManager not initialized|Requested time .* exceeds timeline duration|send asr_error:|Websocket internal error|server rejected WebSocket|HTTP 401|base_dir of 'tts' is missing|500 Internal Server Error|Failed to send message/i.test(entry.msg)
+          /llm failure|Something went wrong|Request failed|on_request_exception|ncs on_agent_left|Failed too many times|No app certificate provided|TokenManager not initialized|Requested time .* exceeds timeline duration|vendor_error:|send asr_error:|tts_error:|send_tts_error|Websocket internal error|server rejected WebSocket|HTTP 401|base_dir of 'tts' is missing|500 Internal Server Error|Failed to send message/i.test(entry.msg)
         );
         const levelClass = entry.level ? `level-${entry.level}` : '';
         const hasPerLineOverride =
@@ -2468,12 +2510,14 @@
               html += '</tbody></table>';
             }
             if (vendorErrs.length) {
-              html += '<p><strong>ASR vendor / protocol errors</strong> <span class="summary-json-hint">(from <code>send asr_error:</code> lines, often logged as <code>I</code>)</span></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Code','Vendor','Message','Vendor detail']) + '</tr></thead><tbody>';
+              html += '<p><strong>ASR vendor / protocol errors</strong> <span class="summary-json-hint">(E-line <code>vendor_error:</code> and/or I-line <code>send asr_error:</code> JSON)</span></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Source','Lvl','Code','Vendor','Message','Vendor detail']) + '</tr></thead><tbody>';
               for (const err of vendorErrs) {
                 const tsAttr = escapeHtml(err.ts || '');
                 const idxAttr = err.entryIndex != null ? ' data-index="' + err.entryIndex + '"' : '';
                 const vm = err.vendor_message || err.message || '';
-                html += `<tr class="llm-row error" data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(err.ts)}</td><td>${err.code != null ? escapeHtml(String(err.code)) : '—'}</td><td>${err.vendor != null ? escapeHtml(String(err.vendor)) : '—'}</td><td>${escapeHtml((err.message || '').slice(0, 120) || '—')}</td><td>${escapeHtml(vm.slice(0, 120) || '—')}</td></tr>`;
+                const src = err.source === 'vendor_error' ? 'vendor_error' : (err.source === 'send_asr_error' ? 'send_asr_error' : '—');
+                const lvl = err.level != null ? escapeHtml(String(err.level)) : '—';
+                html += `<tr class="llm-row error" data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(err.ts)}</td><td>${escapeHtml(src)}</td><td>${lvl}</td><td>${err.code != null ? escapeHtml(String(err.code)) : '—'}</td><td>${err.vendor != null ? escapeHtml(String(err.vendor)) : '—'}</td><td>${escapeHtml((err.message || '').slice(0, 120) || '—')}</td><td>${escapeHtml(vm.slice(0, 120) || '—')}</td></tr>`;
               }
               html += '</tbody></table>';
             }

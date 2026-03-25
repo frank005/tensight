@@ -58,10 +58,10 @@ No backend required.
 | **States / State reports** | State transitions and reporter outputs |
 | **Performance** | Per-turn latency graph/table (ASR/LLM/TTS/VAD/AIVAD/BHVS + totals) |
 | **RTC / Agora** | RTC warnings/errors by category |
-| **STT / ASR metrics** | Transcripts, metrics, timeline errors, and **`send asr_error:`** vendor/protocol errors (often logged as `I`, not `E`) |
+| **STT / ASR metrics** | Transcripts, metrics, timeline errors, **`vendor_error:`** (often `E`) and **`send asr_error:`** JSON (often `I`) |
 | **LLM** | Request/status/error rows, model, and system-prompt preview when available |
 | **MLLM / V2V** | V2V events/transcriptions (strictly gated by `ENABLE_MLLM` when flag exists) |
-| **TTS** | TTS-specific issues and outputs |
+| **TTS** | TTS-specific issues (incl. **`tts_error:`** / `send_tts_error` JSON) and outputs |
 | **Avatar** | Avatar-related config/events |
 | **SIP** | `ENABLE_SIP`, SIP defaults, from/to/campaign/call IDs, sip-manager events |
 | **RTM** | Presence/message/set_presence activity |
