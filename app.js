@@ -3328,7 +3328,7 @@
       var CSTOOL_POLL_MS = 3000;
       var CSTOOL_MAX_WAIT_MS = 12 * 60 * 1000;
 
-      function cstoolApiRoot() {
+      function cstoolDirectRoot() {
         try {
           var o = localStorage.getItem('tenLogReader_cstoolOrigin');
           if (o && /^https?:\/\/.+/i.test(o)) return o.replace(/\/$/, '');
@@ -3336,21 +3336,45 @@
         return CSTOOL_ORIGIN;
       }
 
-      function cstoolOriginMatchesReader() {
+      function cstoolProxyRoot() {
         try {
-          return window.location.origin === new URL(cstoolApiRoot()).origin;
+          var p = localStorage.getItem('tenLogReader_cstoolProxy');
+          if (p && /^https?:\/\/.+/i.test(p)) return p.replace(/\/$/, '');
+        } catch (e2) {}
+        return '';
+      }
+
+      function cstoolFetchRoot() {
+        return cstoolProxyRoot() || cstoolDirectRoot();
+      }
+
+      function cstoolDirectOriginMatchesReader() {
+        try {
+          return window.location.origin === new URL(cstoolDirectRoot()).origin;
         } catch (e) {
           return false;
         }
       }
 
-      /** Use cookies when this app is hosted on the same origin as CSTool (e.g. under rtsc-tools). */
+      function cstoolFetchCanWork() {
+        return !!cstoolProxyRoot() || cstoolDirectOriginMatchesReader();
+      }
+
+      function cstoolFetchOriginMatchesReader() {
+        try {
+          return window.location.origin === new URL(cstoolFetchRoot()).origin;
+        } catch (e) {
+          return false;
+        }
+      }
+
+      /** Send cookies only when this page is same-origin as the URL we fetch (CSTool or your proxy). */
       function cstoolFetchCredentials() {
-        return cstoolOriginMatchesReader() ? 'include' : 'omit';
+        return cstoolFetchOriginMatchesReader() ? 'include' : 'omit';
       }
 
       function getCstoolTenLogPageUrl(agentId, environment) {
-        var root = cstoolApiRoot();
+        var root = cstoolDirectRoot();
         var env = environment || 'prod';
         return (
           root +
@@ -3364,11 +3388,11 @@
 
       /** Does not bypass CORS for cross-origin fetch; may refresh rtsc-tools cookies in some browsers. */
       function maybeWarmCstoolCookieIframe() {
-        if (cstoolOriginMatchesReader()) return;
+        if (cstoolDirectOriginMatchesReader()) return;
         var ifr = document.getElementById('cstoolSessionIframe');
         if (!ifr) return;
         try {
-          ifr.src = cstoolApiRoot() + '/cstoolconvoai/ten_log';
+          ifr.src = cstoolDirectRoot() + '/cstoolconvoai/ten_log';
         } catch (e) {}
       }
 
@@ -3382,8 +3406,24 @@
 
       function shouldShowCorsFetchHelp(err) {
         if (!isLikelyNetworkOrCorsFetchFailure(err)) return false;
-        if (cstoolOriginMatchesReader()) return false;
+        if (cstoolProxyRoot()) return false;
+        if (cstoolDirectOriginMatchesReader()) return false;
         return true;
+      }
+
+      function updateAgentFetchButtonState() {
+        var fetchBtn = document.getElementById('agentFetchBtn');
+        if (!fetchBtn) return;
+        if (cstoolFetchCanWork()) {
+          fetchBtn.disabled = false;
+          fetchBtn.removeAttribute('title');
+        } else {
+          fetchBtn.disabled = true;
+          fetchBtn.setAttribute(
+            'title',
+            'Set a CSTool proxy URL (see “CSTool proxy” below) or host this app on the CSTool site — browsers cannot attach CSTool cookies to requests from github.io.'
+          );
+        }
       }
 
       function openAgentFetchCorsDialog(agentId, environment) {
@@ -3524,7 +3564,8 @@
       function fetchTenErrViaCstool(agentId, environment, opts) {
         var onStatus = opts && opts.onStatus ? opts.onStatus : function () {};
         var cred = cstoolFetchCredentials();
-        var root = cstoolApiRoot();
+        var root = cstoolFetchRoot();
+        var viaProxy = !!cstoolProxyRoot();
         var parseUrl = root + '/cstoolconvoai/parse_ten_err';
         var fd = new FormData();
         fd.append('agent_id', agentId);
@@ -3586,6 +3627,9 @@
         }).then(function (st) {
           var url = st.download_url;
           if (!url) throw new Error('No download URL.');
+          if (viaProxy) {
+            url = root + '/_oss_tunnel?u=' + encodeURIComponent(st.download_url);
+          }
           onStatus('Downloading log archive…');
           return fetch(url, { credentials: 'omit', mode: 'cors' }).then(function (res) {
             if (!res.ok) {
@@ -3854,13 +3898,33 @@
         var openCstoolBtn = document.getElementById('agentOpenCstoolBtn');
         var corsDialog = document.getElementById('agentFetchCorsDialog');
         var corsCloseBtn = document.getElementById('agentFetchCorsCloseBtn');
+        var proxyInput = document.getElementById('cstoolProxyInput');
         if (!agentInput || !envSelect || !fetchBtn) return;
         try {
           var savedId = localStorage.getItem('tenLogReader_lastAgentId');
           if (savedId) agentInput.value = savedId;
           var savedEnv = localStorage.getItem('tenLogReader_lastAgentEnv');
           if (savedEnv && (savedEnv === 'prod' || savedEnv === 'staging')) envSelect.value = savedEnv;
+          var savedProxy = localStorage.getItem('tenLogReader_cstoolProxy');
+          if (savedProxy && proxyInput) proxyInput.value = savedProxy;
         } catch (err) {}
+
+        function persistProxyFromInput() {
+          if (!proxyInput) return;
+          var v = (proxyInput.value || '').trim();
+          try {
+            if (v) localStorage.setItem('tenLogReader_cstoolProxy', v.replace(/\/$/, ''));
+            else localStorage.removeItem('tenLogReader_cstoolProxy');
+          } catch (e3) {}
+          updateAgentFetchButtonState();
+        }
+
+        if (proxyInput) {
+          proxyInput.addEventListener('change', persistProxyFromInput);
+          proxyInput.addEventListener('blur', persistProxyFromInput);
+        }
+
+        updateAgentFetchButtonState();
 
         function openCstoolInNewTab() {
           var raw = (agentInput.value || '').trim();
@@ -3916,7 +3980,7 @@
               alert(err && err.message ? err.message : String(err));
             }
           }).finally(function () {
-            fetchBtn.disabled = false;
+            updateAgentFetchButtonState();
           });
         });
       })();

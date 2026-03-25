@@ -118,6 +118,52 @@
       filter: brightness(1.05);
     }
 
+    .agent-proxy-details {
+      flex-basis: 100%;
+      width: 100%;
+      margin: 0;
+      padding: 10px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .agent-proxy-summary {
+      cursor: pointer;
+      color: var(--text);
+      font-weight: 600;
+      list-style-position: outside;
+    }
+    .agent-proxy-help {
+      margin: 10px 0 8px;
+      line-height: 1.55;
+      max-width: 72ch;
+    }
+    .agent-proxy-help code {
+      font-size: 11px;
+      background: var(--surface);
+      padding: 1px 5px;
+      border-radius: 4px;
+      color: var(--accent);
+    }
+    .cstool-proxy-input {
+      display: block;
+      width: min(560px, 100%);
+      margin-top: 6px;
+      padding: 8px 10px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .cstool-proxy-input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
     .logo {
       font-weight: 700;
       font-size: 1.1rem;

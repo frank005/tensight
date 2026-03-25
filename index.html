@@ -29,6 +29,11 @@
         <button type="button" id="agentOpenCstoolBtn" class="agent-open-cstool-btn" title="Opens CSTool Log 快速分析 in a new tab with this Agent ID (use when Fetch is blocked by CORS)">CSTool</button>
       </div>
       <span class="file-name" id="fileName">No file loaded</span>
+      <details class="agent-proxy-details">
+        <summary class="agent-proxy-summary">CSTool proxy (for GitHub Pages)</summary>
+        <p class="agent-proxy-help">This page cannot read CSTool’s cookies or bypass CORS by itself. Deploy the Worker in <code>proxy/cf-worker.mjs</code>: add secret <code>CSTOOL_COOKIE</code> (full <code>Cookie</code> header from DevTools → Network while you are logged into CSTool), set <code>ALLOWED_ORIGIN</code> to your reader URL (e.g. <code>https://frank005.github.io</code>). Paste the Worker origin here — no trailing slash.</p>
+        <input type="url" id="cstoolProxyInput" class="cstool-proxy-input" placeholder="https://your-name.workers.dev" autocomplete="off" spellcheck="false" />
+      </details>
     </header>
 
     <main class="main">
@@ -232,12 +237,12 @@
         <button type="button" class="modal-close" id="agentFetchCorsCloseBtn" aria-label="Close">×</button>
       </div>
       <div class="modal-body">
-        <p class="cors-dialog-lead">This page cannot read the CSTool API from <code>github.io</code> (or other sites) because the server does not send CORS headers for your origin. <strong>Refreshing cookies or opening CSTool in a hidden iframe does not change that</strong> — the response is still hidden from JavaScript here.</p>
+        <p class="cors-dialog-lead">Browsers never let this page read CSTool’s cookies or see CSTool API responses unless the server sends CORS headers for your origin. <strong>A hidden iframe cannot fix that</strong> — your script still cannot read the API response from another site.</p>
         <p><strong>What works</strong></p>
         <ul class="cors-dialog-list">
-          <li>Host this reader on the <strong>same origin</strong> as CSTool (then Fetch uses your session cookies automatically).</li>
-          <li>Or ask infra to allow <code>Access-Control-Allow-Origin</code> for your Pages URL on the CSTool API paths.</li>
-          <li>Or use <strong>Open CSTool</strong> below, run “Download &amp; Analyze” there, then <strong>Choose log file</strong> here.</li>
+          <li><strong>Proxy (recommended for Pages):</strong> deploy <code>proxy/cf-worker.mjs</code>, put your session in <code>CSTOOL_COOKIE</code> on the Worker, set <code>ALLOWED_ORIGIN</code>, then paste the Worker URL under <strong>CSTool proxy</strong> in the header.</li>
+          <li>Host this reader on the <strong>same origin</strong> as CSTool, or ask infra for CORS on the CSTool API for your Pages URL.</li>
+          <li>Use <strong>Open CSTool</strong> below, run “Download &amp; Analyze” there, then <strong>Choose log file</strong> here.</li>
         </ul>
         <p class="cors-dialog-actions">
           <a id="agentFetchOpenCstoolLink" class="cors-dialog-primary-link" href="#" target="_blank" rel="noopener">Open CSTool Log 快速分析 (prefilled)</a>
