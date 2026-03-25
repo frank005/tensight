@@ -100,6 +100,23 @@
       opacity: 0.45;
       cursor: not-allowed;
     }
+    .agent-open-cstool-btn {
+      padding: 8px 12px;
+      font-size: 13px;
+      font-weight: 500;
+      font-family: var(--font-sans);
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: filter 0.15s, border-color 0.15s;
+    }
+    .agent-open-cstool-btn:hover {
+      border-color: var(--accent);
+      filter: brightness(1.05);
+    }
 
     .logo {
       font-weight: 700;
@@ -310,6 +327,42 @@
       overflow: hidden;
       box-shadow: 0 10px 40px rgba(0,0,0,0.55);
     }
+    .modal-dialog--narrow {
+      width: min(520px, 100%);
+      max-height: min(88vh, 640px);
+    }
+    .cors-dialog-lead {
+      font-size: 14px;
+      line-height: 1.55;
+      margin: 0 0 12px;
+      color: var(--text);
+    }
+    .cors-dialog-lead code {
+      font-size: 12px;
+      background: var(--bg);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .cors-dialog-list {
+      margin: 8px 0 14px;
+      padding-left: 1.25rem;
+      color: var(--text-muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .cors-dialog-list li { margin-bottom: 6px; }
+    .cors-dialog-actions { margin: 0; }
+    .cors-dialog-primary-link {
+      display: inline-flex;
+      align-items: center;
+      padding: 10px 16px;
+      background: var(--accent);
+      color: var(--bg) !important;
+      font-weight: 600;
+      text-decoration: none;
+      border-radius: var(--radius);
+    }
+    .cors-dialog-primary-link:hover { filter: brightness(1.08); }
     .modal-header {
       padding: 12px 14px;
       display: flex;

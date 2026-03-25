@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>TEN Log Reader</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%234361f1'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-size='16' fill='white' font-family='system-ui,sans-serif'%3ET%3C/text%3E%3C/svg%3E" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -25,6 +26,7 @@
           <option value="staging">Staging</option>
         </select>
         <button type="button" id="agentFetchBtn" class="agent-fetch-btn">Fetch log</button>
+        <button type="button" id="agentOpenCstoolBtn" class="agent-open-cstool-btn" title="Opens CSTool Log 快速分析 in a new tab with this Agent ID (use when Fetch is blocked by CORS)">CSTool</button>
       </div>
       <span class="file-name" id="fileName">No file loaded</span>
     </header>
@@ -215,6 +217,33 @@
         </div>
       </div>
     </main>
+  </div>
+
+  <!-- Best-effort session cookie refresh for rtsc-tools; does not bypass CORS for cross-origin fetch. -->
+  <iframe id="cstoolSessionIframe" title="" style="position:absolute;width:0;height:0;border:0;visibility:hidden" src="about:blank"></iframe>
+
+  <div id="agentFetchCorsDialog" class="modal-overlay" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="agentFetchCorsTitle">
+    <div class="modal-dialog modal-dialog--narrow">
+      <div class="modal-header">
+        <div>
+          <div class="modal-title" id="agentFetchCorsTitle">Fetch blocked (cross-origin)</div>
+          <div class="modal-subtitle" id="agentFetchCorsSubtitle">Browser security</div>
+        </div>
+        <button type="button" class="modal-close" id="agentFetchCorsCloseBtn" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="cors-dialog-lead">This page cannot read the CSTool API from <code>github.io</code> (or other sites) because the server does not send CORS headers for your origin. <strong>Refreshing cookies or opening CSTool in a hidden iframe does not change that</strong> — the response is still hidden from JavaScript here.</p>
+        <p><strong>What works</strong></p>
+        <ul class="cors-dialog-list">
+          <li>Host this reader on the <strong>same origin</strong> as CSTool (then Fetch uses your session cookies automatically).</li>
+          <li>Or ask infra to allow <code>Access-Control-Allow-Origin</code> for your Pages URL on the CSTool API paths.</li>
+          <li>Or use <strong>Open CSTool</strong> below, run “Download &amp; Analyze” there, then <strong>Choose log file</strong> here.</li>
+        </ul>
+        <p class="cors-dialog-actions">
+          <a id="agentFetchOpenCstoolLink" class="cors-dialog-primary-link" href="#" target="_blank" rel="noopener">Open CSTool Log 快速分析 (prefilled)</a>
+        </p>
+      </div>
+    </div>
   </div>
 
   <div id="parseOverlay" class="parse-overlay" aria-hidden="true" role="status" aria-live="polite">

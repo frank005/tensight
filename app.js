@@ -3336,6 +3336,78 @@
         return CSTOOL_ORIGIN;
       }
 
+      function cstoolOriginMatchesReader() {
+        try {
+          return window.location.origin === new URL(cstoolApiRoot()).origin;
+        } catch (e) {
+          return false;
+        }
+      }
+
+      /** Use cookies when this app is hosted on the same origin as CSTool (e.g. under rtsc-tools). */
+      function cstoolFetchCredentials() {
+        return cstoolOriginMatchesReader() ? 'include' : 'omit';
+      }
+
+      function getCstoolTenLogPageUrl(agentId, environment) {
+        var root = cstoolApiRoot();
+        var env = environment || 'prod';
+        return (
+          root +
+          '/cstoolconvoai/ten_log?agent_id=' +
+          encodeURIComponent(agentId) +
+          '&environment=' +
+          encodeURIComponent(env) +
+          '&mode=auto'
+        );
+      }
+
+      /** Does not bypass CORS for cross-origin fetch; may refresh rtsc-tools cookies in some browsers. */
+      function maybeWarmCstoolCookieIframe() {
+        if (cstoolOriginMatchesReader()) return;
+        var ifr = document.getElementById('cstoolSessionIframe');
+        if (!ifr) return;
+        try {
+          ifr.src = cstoolApiRoot() + '/cstoolconvoai/ten_log';
+        } catch (e) {}
+      }
+
+      function isLikelyNetworkOrCorsFetchFailure(err) {
+        if (!err) return false;
+        var m = String(err.message != null ? err.message : err);
+        if (err.name === 'TypeError' && /fetch|Failed|network|Load failed/i.test(m)) return true;
+        if (/Failed to fetch|NetworkError|Load failed|networkerror/i.test(m)) return true;
+        return false;
+      }
+
+      function shouldShowCorsFetchHelp(err) {
+        if (!isLikelyNetworkOrCorsFetchFailure(err)) return false;
+        if (cstoolOriginMatchesReader()) return false;
+        return true;
+      }
+
+      function openAgentFetchCorsDialog(agentId, environment) {
+        var a = document.getElementById('agentFetchOpenCstoolLink');
+        var sub = document.getElementById('agentFetchCorsSubtitle');
+        if (a) a.href = getCstoolTenLogPageUrl(agentId, environment);
+        if (sub) sub.textContent = window.location.origin || 'this origin';
+        var overlay = document.getElementById('agentFetchCorsDialog');
+        if (overlay) {
+          overlay.classList.add('visible');
+          overlay.setAttribute('aria-hidden', 'false');
+          document.body.classList.add('modal-open');
+        }
+      }
+
+      function closeAgentFetchCorsDialog() {
+        var overlay = document.getElementById('agentFetchCorsDialog');
+        if (overlay) {
+          overlay.classList.remove('visible');
+          overlay.setAttribute('aria-hidden', 'true');
+        }
+        document.body.classList.remove('modal-open');
+      }
+
       function readTarField(block, start, len) {
         var s = '';
         for (var i = 0; i < len; i++) {
@@ -3451,6 +3523,7 @@
        */
       function fetchTenErrViaCstool(agentId, environment, opts) {
         var onStatus = opts && opts.onStatus ? opts.onStatus : function () {};
+        var cred = cstoolFetchCredentials();
         var root = cstoolApiRoot();
         var parseUrl = root + '/cstoolconvoai/parse_ten_err';
         var fd = new FormData();
@@ -3460,7 +3533,7 @@
         return fetch(parseUrl, {
           method: 'POST',
           body: fd,
-          credentials: 'omit',
+          credentials: cred,
           mode: 'cors'
         }).then(function (res) {
           if (!res.ok) {
@@ -3479,7 +3552,7 @@
           var deadline = Date.now() + CSTOOL_MAX_WAIT_MS;
 
           function pollOnce() {
-            return fetch(statusPath, { credentials: 'omit', mode: 'cors' }).then(function (res) {
+            return fetch(statusPath, { credentials: cred, mode: 'cors' }).then(function (res) {
               if (!res.ok) {
                 return res.text().then(function (t) {
                   throw new Error('Status check failed (' + res.status + '). ' + (t ? t.slice(0, 200) : ''));
@@ -3778,6 +3851,9 @@
         var agentInput = document.getElementById('agentIdInput');
         var envSelect = document.getElementById('agentEnvSelect');
         var fetchBtn = document.getElementById('agentFetchBtn');
+        var openCstoolBtn = document.getElementById('agentOpenCstoolBtn');
+        var corsDialog = document.getElementById('agentFetchCorsDialog');
+        var corsCloseBtn = document.getElementById('agentFetchCorsCloseBtn');
         if (!agentInput || !envSelect || !fetchBtn) return;
         try {
           var savedId = localStorage.getItem('tenLogReader_lastAgentId');
@@ -3785,6 +3861,27 @@
           var savedEnv = localStorage.getItem('tenLogReader_lastAgentEnv');
           if (savedEnv && (savedEnv === 'prod' || savedEnv === 'staging')) envSelect.value = savedEnv;
         } catch (err) {}
+
+        function openCstoolInNewTab() {
+          var raw = (agentInput.value || '').trim();
+          if (!raw) {
+            alert('Enter an Agent ID.');
+            agentInput.focus();
+            return;
+          }
+          window.open(getCstoolTenLogPageUrl(raw, envSelect.value || 'prod'), '_blank', 'noopener,noreferrer');
+        }
+
+        if (openCstoolBtn) {
+          openCstoolBtn.addEventListener('click', openCstoolInNewTab);
+        }
+
+        if (corsDialog && corsCloseBtn) {
+          corsCloseBtn.addEventListener('click', closeAgentFetchCorsDialog);
+          corsDialog.addEventListener('click', function (e) {
+            if (e.target === corsDialog) closeAgentFetchCorsDialog();
+          });
+        }
 
         fetchBtn.addEventListener('click', function () {
           var raw = (agentInput.value || '').trim();
@@ -3797,6 +3894,7 @@
             if (!confirm('Agent ID looks unusual. Continue anyway?')) return;
           }
           var environment = envSelect.value || 'prod';
+          maybeWarmCstoolCookieIframe();
           fetchBtn.disabled = true;
           setParseOverlay(true, 'Connecting to log service…');
           fetchTenErrViaCstool(raw, environment, {
@@ -3812,7 +3910,11 @@
           }).catch(function (err) {
             console.error(err);
             setParseOverlay(false);
-            alert(err && err.message ? err.message : String(err));
+            if (shouldShowCorsFetchHelp(err)) {
+              openAgentFetchCorsDialog(raw, environment);
+            } else {
+              alert(err && err.message ? err.message : String(err));
+            }
           }).finally(function () {
             fetchBtn.disabled = false;
           });
