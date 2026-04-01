@@ -146,6 +146,46 @@
         return out;
       }
 
+      function parseVendorPresets(raw) {
+        if (!raw) return [];
+        let arr = null;
+        if (Array.isArray(raw)) arr = raw;
+        else if (typeof raw === 'string') {
+          try { arr = JSON.parse(raw); } catch (_) { arr = null; }
+        }
+        if (!Array.isArray(arr)) return [];
+        const out = [];
+        for (const item of arr) {
+          if (!item || typeof item !== 'object') continue;
+          const key = Object.keys(item)[0];
+          if (!key) continue;
+          const cfg = item[key] && typeof item[key] === 'object' ? item[key] : {};
+          out.push({
+            preset: String(key),
+            applyMode: cfg.apply_mode != null ? String(cfg.apply_mode) : null,
+            enabled: cfg.enable === true
+          });
+        }
+        return out;
+      }
+
+      function inferProviderSourceBySignals(infoObj, kind, providerObj, presets) {
+        const info = infoObj && typeof infoObj === 'object' ? infoObj : {};
+        const p = providerObj && typeof providerObj === 'object' ? providerObj : {};
+        const upper = String(kind || '').toUpperCase();
+        const src = p.credential_source || p.key_source || p.source || info[upper + '_KEY_SOURCE'] || info[upper + '_SOURCE'] || null;
+        if (src != null && String(src).trim() !== '') return String(src);
+
+        const vendor = (p.vendor || p.vendor_name || info[upper + '_VENDOR'] || '').toString().toLowerCase();
+        if (vendor && Array.isArray(presets) && presets.some(function (x) {
+          const name = (x && x.preset ? String(x.preset) : '').toLowerCase();
+          return name.indexOf(vendor) !== -1;
+        })) {
+          return 'agora_managed';
+        }
+        return null;
+      }
+
       function parseLines(text) {
         const lines = text.split(/\r?\n/);
         const entries = [];
@@ -307,6 +347,7 @@
           sessCtrlVersion: null,
           rtm: null,
           tools: null,
+          providerSource: { llm: null, tts: null, asr: null, presets: [] },
           errors: 0,
           warnings: 0,
           turns: []
@@ -314,6 +355,11 @@
         const seenTurnKeys = new Set();
 
         for (const e of entries) {
+          // Fallback hints from plain-text extension creation lines (works even if graph JSON parse fails).
+          if (!summary.sttModule && e.msg && e.msg.includes('[deepgram_asr_python]')) summary.sttModule = 'deepgram';
+          if (!summary.ttsModule && e.msg && e.msg.includes('[minimax_tts_websocket]')) summary.ttsModule = 'minimax';
+          if (!summary.llmModule && e.msg && e.msg.includes('[glue_python_async]')) summary.llmModule = 'openai';
+
           if (!summary.sessCtrlVersion && e.ext === 'agora_sess_ctrl' && e.msg && e.msg.includes('SESS_CTRL: version:')) {
             const m = e.msg.match(/SESS_CTRL:\s*version:\s*([^\s]+)/);
             if (m) summary.sessCtrlVersion = m[1];
@@ -495,11 +541,28 @@
             if (j && typeof j === 'object' && j.taskInfo && typeof j.taskInfo === 'object' && (j.taskInfo.appId != null || j.taskInfo.taskId != null)) {
               summary.eventStartInfo = j;
               const info = j.taskInfo.info || j.taskInfo;
+              summary.providerSource.presets = parseVendorPresets(info && info['X-VENDOR-PRESETS']);
               if (!summary.sttModule && (info.ASR_VENDOR || info.asr_vendor)) summary.sttModule = info.ASR_VENDOR || info.asr_vendor;
               if (!summary.ttsModule && (info.TTS_VENDOR || info.tts_vendor)) summary.ttsModule = info.TTS_VENDOR || info.tts_vendor;
               if (!summary.llmModel && (info.LLM_MODEL || info.MODEL)) summary.llmModel = info.LLM_MODEL || info.MODEL;
               if (!summary.sipLabels && info && info.LABELS && typeof info.LABELS === 'object') summary.sipLabels = info.LABELS;
             }
+          }
+          // Fallback parse for taskInfo lines that may not be valid JSON/Python dict due nested quoting.
+          if ((!summary.providerSource || !summary.providerSource.presets.length) && e.msg && e.msg.includes('X-VENDOR-PRESETS')) {
+            const m = e.msg.match(/X-VENDOR-PRESETS['"]?\s*:\s*['"](\[[\s\S]*?\])['"]/);
+            if (m && m[1]) {
+              const parsed = parseVendorPresets(m[1]);
+              if (parsed.length) summary.providerSource.presets = parsed;
+            }
+          }
+          if ((!summary.sttModule || summary.sttModule === 'asr') && e.msg && /ASR_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/.test(e.msg)) {
+            const m = e.msg.match(/ASR_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/);
+            if (m && m[1]) summary.sttModule = m[1];
+          }
+          if ((!summary.ttsModule || summary.ttsModule === 'tts') && e.msg && /TTS_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/.test(e.msg)) {
+            const m = e.msg.match(/TTS_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/);
+            if (m && m[1]) summary.ttsModule = m[1];
           }
           if (!summary.createRequestBody && (e.json || e.msg)) {
             let j = e.json || tryParseJSON(e.msg);
@@ -603,6 +666,20 @@
           const hasMcp = summary.tools.is_tool_call_available != null || summary.tools.total_tools != null || hasServers || (summary.tools.mcp_errors && summary.tools.mcp_errors.length);
           if (!hasMcp && !hasCalls) summary.tools = null;
         }
+
+        // Fill provider source hints for both legacy and updated workflows.
+        const info = summary.eventStartInfo && summary.eventStartInfo.taskInfo
+          ? (summary.eventStartInfo.taskInfo.info || summary.eventStartInfo.taskInfo)
+          : {};
+        const props = summary.createRequestBody && summary.createRequestBody.properties
+          ? summary.createRequestBody.properties
+          : {};
+        const presets = summary.providerSource && Array.isArray(summary.providerSource.presets)
+          ? summary.providerSource.presets
+          : [];
+        summary.providerSource.llm = inferProviderSourceBySignals(info, 'llm', props.llm, presets);
+        summary.providerSource.tts = inferProviderSourceBySignals(info, 'tts', props.tts, presets);
+        summary.providerSource.asr = inferProviderSourceBySignals(info, 'asr', props.asr, presets);
 
         return summary;
       }
@@ -2099,6 +2176,7 @@
         const ttsVendor = info.TTS_VENDOR || (props && props.tts && (props.tts.vendor || props.tts.vendor_name)) || summary.ttsModule || '—';
         const llmStr = (props && props.llm && (props.llm.url || props.llm.vendor || (typeof props.llm === 'string' ? props.llm : null))) || summary.llmUrl || summary.llmModule || '—';
         const llmModel = summary.llmModel || (props && props.llm && props.llm.params && props.llm.params.model) || '—';
+        const src = summary.providerSource || {};
         const mllmEnabled = info.ENABLE_MLLM === true;
         const mllmVendor = summary.mllmVendor || '—';
         const mllmModel = summary.mllmModel || '—';
@@ -2120,8 +2198,8 @@
 
         let html = '<div class="summary-pretty-wrap">';
         html += '<div class="summary-pretty-grid">';
-        html += kvCard('ASR', '<span>' + mono(asrVendor) + '</span><span>' + mono(asrLang) + '</span>');
-        html += kvCard('LLM', '<span>' + mono(llmStr) + '</span><span>' + mono(llmModel) + '</span>');
+        html += kvCard('ASR', '<span>' + mono(asrVendor) + '</span><span>' + mono(src.asr || asrLang) + '</span>');
+        html += kvCard('LLM', '<span>' + mono(llmStr) + '</span><span>' + mono(src.llm || llmModel) + '</span>');
         if (mllmEnabled || summary.mllmVendor || summary.mllmModel || summary.mllmUrl) {
           html += kvCard(
             'MLLM / V2V',
@@ -2131,7 +2209,7 @@
             html += kvCard('MLLM URL', '<span>' + mono(mllmUrl) + '</span><span>' + mono('') + '</span>');
           }
         }
-        html += kvCard('TTS', '<span>' + mono(ttsVendor) + '</span><span>' + mono('') + '</span>');
+        html += kvCard('TTS', '<span>' + mono(ttsVendor) + '</span><span>' + mono(src.tts || '') + '</span>');
         html += kvCard('Service', '<span>' + mono(ti && ti.service) + '</span><span>' + mono(ti && ti.apiVersion) + '</span>');
         html += kvCard('GeoLocation', '<span>' + mono(geoStr) + '</span><span>' + mono(geo && geo.continent) + '</span>');
         html += kvCard('Channel', '<span>' + mono((ti && ti.taskLabels && ti.taskLabels.channel) || summary.channel) + '</span><span>' + mono('') + '</span>');
@@ -2199,6 +2277,15 @@
             html += '<p class="summary-json-hint">MCP errors: ' + escapeHtml(String(t.mcp_errors.length)) + ' (see Insights → Tools for details)</p>';
           }
           html += '</div>';
+        }
+
+        if (src && Array.isArray(src.presets) && src.presets.length) {
+          html += '<div class="summary-card summary-json-card"><h3 class="summary-card-title">Vendor presets</h3>';
+          html += '<table class="summary-flag-table"><tbody>';
+          for (const p of src.presets) {
+            html += '<tr><td class="summary-flag-k"><code>' + escapeHtml(String(p.preset || '')) + '</code></td><td class="summary-flag-v">' + ynBadge(!!p.enabled) + (p.applyMode ? ' <code style="margin-left:8px;">' + escapeHtml(p.applyMode) + '</code>' : '') + '</td></tr>';
+          }
+          html += '</tbody></table></div>';
         }
 
         html += '<div class="summary-card summary-json-card"><h3 class="summary-card-title">Raw JSON</h3>';
@@ -3399,9 +3486,10 @@
             argusCh.style.display = 'none';
           }
           document.getElementById('sumGraphId').textContent = summary.graphId || '—';
-          document.getElementById('sumLlm').textContent = summary.llmUrl || summary.llmModule || '—';
-          document.getElementById('sumTts').textContent = summary.ttsModule || '—';
-          document.getElementById('sumStt').textContent = summary.sttModule || '—';
+          const src = summary.providerSource || {};
+          document.getElementById('sumLlm').textContent = (summary.llmUrl || summary.llmModule || '—') + (src.llm ? ' (' + src.llm + ')' : '');
+          document.getElementById('sumTts').textContent = (summary.ttsModule || '—') + (src.tts ? ' (' + src.tts + ')' : '');
+          document.getElementById('sumStt').textContent = (summary.sttModule || '—') + (src.asr ? ' (' + src.asr + ')' : '');
           const stopCard = document.getElementById('summaryStopCard');
           if (summary.stopTs != null || summary.stopStatus || summary.stopMessage) {
             stopCard.style.display = 'block';
@@ -3452,6 +3540,18 @@
             if (ti.template != null) fields.push(['Template', ti.template]);
             if (info.ASR_VENDOR != null) fields.push(['ASR (STT)', info.ASR_VENDOR]);
             if (info.TTS_VENDOR != null) fields.push(['TTS', info.TTS_VENDOR]);
+            if (summary.providerSource && summary.providerSource.asr) fields.push(['ASR source', summary.providerSource.asr]);
+            if (summary.providerSource && summary.providerSource.tts) fields.push(['TTS source', summary.providerSource.tts]);
+            if (summary.providerSource && summary.providerSource.llm) fields.push(['LLM source', summary.providerSource.llm]);
+            if (summary.providerSource && Array.isArray(summary.providerSource.presets) && summary.providerSource.presets.length) {
+              fields.push(['X-VENDOR-PRESETS', summary.providerSource.presets.map(function (p) {
+                const name = p && p.preset ? p.preset : '';
+                const mode = p && p.applyMode ? p.applyMode : '';
+                return name + (mode ? ' (' + mode + ')' : '');
+              }).join(', ')]);
+            } else if (info['X-VENDOR-PRESETS']) {
+              fields.push(['X-VENDOR-PRESETS', String(info['X-VENDOR-PRESETS'])]);
+            }
             if (info.ASR_LANGUAGE != null) fields.push(['ASR language', info.ASR_LANGUAGE]);
             if (ti.createTs != null) fields.push(['Create TS', String(ti.createTs)]);
             if (ti.service != null) fields.push(['Service', ti.service]);
