@@ -341,6 +341,8 @@
           mllmVendor: null, mllmModel: null, mllmUrl: null,
           ttsModule: null,
           sttModule: null,
+          avatarVendor: null,
+          avatarId: null,
           eventStartInfo: null,
           createRequestBody: null,
           sipLabels: null,
@@ -348,6 +350,7 @@
           rtm: null,
           tools: null,
           providerSource: { llm: null, tts: null, asr: null, presets: [] },
+          geoLocation: null,
           errors: 0,
           warnings: 0,
           turns: []
@@ -359,6 +362,7 @@
           if (!summary.sttModule && e.msg && e.msg.includes('[deepgram_asr_python]')) summary.sttModule = 'deepgram';
           if (!summary.ttsModule && e.msg && e.msg.includes('[minimax_tts_websocket]')) summary.ttsModule = 'minimax';
           if (!summary.llmModule && e.msg && e.msg.includes('[glue_python_async]')) summary.llmModule = 'openai';
+          if (!summary.avatarVendor && (e.msg.includes('[heygen_avatar_python]') || e.msg.includes('[avatar]'))) summary.avatarVendor = 'heygen';
 
           if (!summary.sessCtrlVersion && e.ext === 'agora_sess_ctrl' && e.msg && e.msg.includes('SESS_CTRL: version:')) {
             const m = e.msg.match(/SESS_CTRL:\s*version:\s*([^\s]+)/);
@@ -423,6 +427,7 @@
               });
               const ttsNode = j.nodes.find(n => n.name === 'tts');
               const asrNode = j.nodes.find(n => n.name === 'asr');
+              const avatarNode = j.nodes.find(n => n.name === 'avatar');
               if (llmNode) {
                 summary.llmModule = llmNode.addon || llmNode.name || null;
                 if (llmNode.property && llmNode.property.url) summary.llmUrl = llmNode.property.url;
@@ -444,6 +449,11 @@
               }
               if (ttsNode) summary.ttsModule = ttsNode.addon || ttsNode.name || null;
               if (asrNode) summary.sttModule = asrNode.addon || asrNode.name || null;
+              if (avatarNode) {
+                if (!summary.avatarVendor) summary.avatarVendor = (avatarNode.addon || avatarNode.name || null);
+                const p = avatarNode.property && avatarNode.property.params ? avatarNode.property.params : null;
+                if (p && !summary.avatarId && p.avatar_id) summary.avatarId = p.avatar_id;
+              }
             }
             if (j.graph_id) summary.graphId = j.graph_id;
             if (j.app_base_dir !== undefined && j.graph_id) summary.graphId = j.graph_id;
@@ -541,11 +551,16 @@
             if (j && typeof j === 'object' && j.taskInfo && typeof j.taskInfo === 'object' && (j.taskInfo.appId != null || j.taskInfo.taskId != null)) {
               summary.eventStartInfo = j;
               const info = j.taskInfo.info || j.taskInfo;
+              if (!summary.geoLocation && j.taskInfo.geoLocation && typeof j.taskInfo.geoLocation === 'object') {
+                summary.geoLocation = j.taskInfo.geoLocation;
+              }
               summary.providerSource.presets = parseVendorPresets(info && info['X-VENDOR-PRESETS']);
               if (!summary.sttModule && (info.ASR_VENDOR || info.asr_vendor)) summary.sttModule = info.ASR_VENDOR || info.asr_vendor;
               if (!summary.ttsModule && (info.TTS_VENDOR || info.tts_vendor)) summary.ttsModule = info.TTS_VENDOR || info.tts_vendor;
               if (!summary.llmModel && (info.LLM_MODEL || info.MODEL)) summary.llmModel = info.LLM_MODEL || info.MODEL;
               if (!summary.sipLabels && info && info.LABELS && typeof info.LABELS === 'object') summary.sipLabels = info.LABELS;
+              if (!summary.avatarVendor && (info.AVATAR_VENDOR || info.avatar_vendor)) summary.avatarVendor = info.AVATAR_VENDOR || info.avatar_vendor;
+              if (!summary.avatarId && (info.AVATAR_ID || info.avatar_id)) summary.avatarId = info.AVATAR_ID || info.avatar_id;
             }
           }
           // Fallback parse for taskInfo lines that may not be valid JSON/Python dict due nested quoting.
@@ -563,6 +578,24 @@
           if ((!summary.ttsModule || summary.ttsModule === 'tts') && e.msg && /TTS_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/.test(e.msg)) {
             const m = e.msg.match(/TTS_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/);
             if (m && m[1]) summary.ttsModule = m[1];
+          }
+          if (!summary.avatarVendor && e.msg && /AVATAR_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/.test(e.msg)) {
+            const m = e.msg.match(/AVATAR_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/);
+            if (m && m[1]) summary.avatarVendor = m[1];
+          }
+          if (!summary.avatarId && e.msg && /AVATAR_ID['"]?\s*:\s*['"]([^'"]+)['"]/.test(e.msg)) {
+            const m = e.msg.match(/AVATAR_ID['"]?\s*:\s*['"]([^'"]+)['"]/);
+            if (m && m[1]) summary.avatarId = m[1];
+          }
+          // Fallback extraction for geoLocation in plain task_info lines.
+          if (!summary.geoLocation && e.msg && e.msg.includes('geoLocation')) {
+            const city = (e.msg.match(/geoLocation[^}]*['"]city['"]\s*:\s*['"]([^'"]+)['"]/) || [])[1] || null;
+            const country = (e.msg.match(/geoLocation[^}]*['"]country['"]\s*:\s*['"]([^'"]+)['"]/) || [])[1] || null;
+            const region = (e.msg.match(/geoLocation[^}]*['"]region['"]\s*:\s*['"]([^'"]+)['"]/) || [])[1] || null;
+            const continent = (e.msg.match(/geoLocation[^}]*['"]continent['"]\s*:\s*['"]([^'"]+)['"]/) || [])[1] || null;
+            if (city || country || region || continent) {
+              summary.geoLocation = { city, country, region, continent };
+            }
           }
           if (!summary.createRequestBody && (e.json || e.msg)) {
             let j = e.json || tryParseJSON(e.msg);
@@ -2143,7 +2176,7 @@
         const ev = summary.eventStartInfo && summary.eventStartInfo.taskInfo ? summary.eventStartInfo : null;
         const ti = ev ? ev.taskInfo : null;
         const info = ti && ti.info && typeof ti.info === 'object' ? ti.info : {};
-        const geo = ti && ti.geoLocation && typeof ti.geoLocation === 'object' ? ti.geoLocation : null;
+        const geo = (ti && ti.geoLocation && typeof ti.geoLocation === 'object' ? ti.geoLocation : null) || summary.geoLocation || null;
         const createReq = summary.createRequestBody && summary.createRequestBody.properties ? summary.createRequestBody : null;
         const props = createReq ? createReq.properties : null;
 
@@ -2182,8 +2215,8 @@
         const mllmModel = summary.mllmModel || '—';
         const mllmUrl = summary.mllmUrl || '—';
         const geoStr = geo ? [geo.city, geo.country, geo.region].filter(Boolean).join(' / ') : '—';
-        const avatarVendor = info.AVATAR_VENDOR || '—';
-        const avatarId = info.AVATAR_ID || '—';
+        const avatarVendor = info.AVATAR_VENDOR || summary.avatarVendor || '—';
+        const avatarId = info.AVATAR_ID || summary.avatarId || '—';
         const bvcUrl = info.BVC_URL || '—';
 
         const flagKeys = Object.keys(info || {}).filter(function (k) { return /^ENABLE_/.test(k); }).sort();
@@ -2213,9 +2246,7 @@
         html += kvCard('Service', '<span>' + mono(ti && ti.service) + '</span><span>' + mono(ti && ti.apiVersion) + '</span>');
         html += kvCard('GeoLocation', '<span>' + mono(geoStr) + '</span><span>' + mono(geo && geo.continent) + '</span>');
         html += kvCard('Channel', '<span>' + mono((ti && ti.taskLabels && ti.taskLabels.channel) || summary.channel) + '</span><span>' + mono('') + '</span>');
-        if (info.AVATAR_VENDOR || info.AVATAR_ID) {
-          html += kvCard('Avatar', '<span>' + mono(avatarVendor) + '</span><span>' + mono(avatarId) + '</span>');
-        }
+        html += kvCard('Avatar', '<span>' + mono(avatarVendor) + '</span><span>' + mono(avatarId) + '</span>');
         if (info.BVC_URL) {
           html += kvCard('BVC', '<span>' + mono(bvcUrl) + '</span><span>' + mono('') + '</span>');
         }
@@ -3490,6 +3521,7 @@
           document.getElementById('sumLlm').textContent = (summary.llmUrl || summary.llmModule || '—') + (src.llm ? ' (' + src.llm + ')' : '');
           document.getElementById('sumTts').textContent = (summary.ttsModule || '—') + (src.tts ? ' (' + src.tts + ')' : '');
           document.getElementById('sumStt').textContent = (summary.sttModule || '—') + (src.asr ? ' (' + src.asr + ')' : '');
+          document.getElementById('sumAvatar').textContent = [summary.avatarVendor || '—', summary.avatarId ? ('id=' + summary.avatarId) : ''].filter(Boolean).join(' ');
           const stopCard = document.getElementById('summaryStopCard');
           if (summary.stopTs != null || summary.stopStatus || summary.stopMessage) {
             stopCard.style.display = 'block';
@@ -3555,6 +3587,9 @@
             if (info.ASR_LANGUAGE != null) fields.push(['ASR language', info.ASR_LANGUAGE]);
             if (ti.createTs != null) fields.push(['Create TS', String(ti.createTs)]);
             if (ti.service != null) fields.push(['Service', ti.service]);
+            if (geo && (geo.city || geo.country || geo.region || geo.continent)) {
+              fields.push(['Geo', [geo.city, geo.country, geo.region, geo.continent].filter(Boolean).join(' / ')]);
+            }
             document.getElementById('sumEventStartFields').innerHTML = '<dl>' + fields.map(([k, v]) => '<dt>' + escapeHtml(k) + '</dt><dd>' + escapeHtml(String(v)) + '</dd>').join('') + '</dl>';
             document.getElementById('sumEventStartJson').textContent = JSON.stringify(summary.eventStartInfo, null, 2);
           } else eventStartCard.style.display = 'none';
