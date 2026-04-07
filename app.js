@@ -2117,13 +2117,13 @@
         pre.innerHTML = jsonSyntaxHighlight(text || '');
         overlay.classList.add('visible');
         overlay.setAttribute('aria-hidden', 'false');
-        document.body.classList.add('modal-open');
+        syncModalOpenClass();
       }
       function closeJsonModal() {
         const overlay = document.getElementById('jsonModal');
         overlay.classList.remove('visible');
         overlay.setAttribute('aria-hidden', 'true');
-        document.body.classList.remove('modal-open');
+        syncModalOpenClass();
         jsonModalCurrentText = '';
       }
 
@@ -3441,6 +3441,573 @@
         );
       }
 
+      /** CSTool: parse_ten_err → poll → OSS .tgz (same as rtsc-tools Log 快速分析). */
+      const CSTOOL_ORIGIN = 'https://rtsc-tools.sh3.agoralab.co';
+      const CSTOOL_POLL_MS = 3000;
+      const CSTOOL_MAX_WAIT_MS = 12 * 60 * 1000;
+
+      function cstoolDirectRoot() {
+        try {
+          const o = localStorage.getItem('tenLogReader_cstoolOrigin');
+          if (o && /^https?:\/\/.+/i.test(o)) return o.replace(/\/$/, '');
+        } catch (e) {}
+        return CSTOOL_ORIGIN;
+      }
+
+      function cstoolProxyRoot() {
+        try {
+          const p = localStorage.getItem('tenLogReader_cstoolProxy');
+          if (p && /^https?:\/\/.+/i.test(p)) return p.replace(/\/$/, '');
+          if (window.__TEN_LOG_READER_BUILTIN_CSTOOL__) {
+            return window.location.origin.replace(/\/$/, '');
+          }
+        } catch (e2) {}
+        return '';
+      }
+
+      function cstoolFetchRoot() {
+        return cstoolProxyRoot() || cstoolDirectRoot();
+      }
+
+      function cstoolDirectOriginMatchesReader() {
+        try {
+          return window.location.origin === new URL(cstoolDirectRoot()).origin;
+        } catch (e) {
+          return false;
+        }
+      }
+
+      function cstoolFetchCanWork() {
+        return !!cstoolProxyRoot() || cstoolDirectOriginMatchesReader();
+      }
+
+      function cstoolFetchOriginMatchesReader() {
+        try {
+          return window.location.origin === new URL(cstoolFetchRoot()).origin;
+        } catch (e) {
+          return false;
+        }
+      }
+
+      function cstoolFetchCredentials() {
+        return cstoolFetchOriginMatchesReader() ? 'include' : 'omit';
+      }
+
+      /** True when this app is served from rtsc-tools and no separate proxy URL is set — browser sends cookies via credentials. */
+      function cstoolUsesBrowserSessionOnly() {
+        return cstoolDirectOriginMatchesReader() && !cstoolProxyRoot();
+      }
+
+      /** Heuristic: clipboard text plausibly from a Cookie request header (not a guarantee). */
+      function looksLikeCookieHeader(text) {
+        const s = String(text || '').trim();
+        if (s.length < 24) return false;
+        if (!/=/.test(s)) return false;
+        if (/^https?:\/\//i.test(s)) return false;
+        if (/^\s*\{/m.test(s)) return false;
+        return /HCIAuthToken|accessToken|_streamlit|session|csrf|xsrf|_ga=/i.test(s);
+      }
+
+      /** Pasted cookie is sent to your proxy as X-CSTOOL-Cookie (browser cannot set Cookie on rtsc-tools cross-origin). */
+      function cstoolClientHeaders() {
+        try {
+          if (!cstoolProxyRoot()) return null;
+          const c = sessionStorage.getItem('tenLogReader_cstoolCookie');
+          if (c && String(c).trim()) {
+            return { 'X-CSTOOL-Cookie': String(c).trim() };
+          }
+        } catch (e) {}
+        return null;
+      }
+
+      /**
+       * DevTools sometimes copies Set-Cookie text with ;Domain=…;HttpOnly — strip attributes so the proxy can forward a valid Cookie header.
+       */
+      function normalizePastedCstoolCookie(s) {
+        if (!s || typeof s !== 'string') return s;
+        let t = s.trim();
+        const cut = t.search(/;\s*(Domain|Path|Max-Age|Expires|HttpOnly|Secure|SameSite)\s*=/i);
+        if (cut > 0) t = t.slice(0, cut).trim();
+        return t;
+      }
+
+      /** python -m http.server does not implement POST to /cstoolconvoai/ — returns 501 HTML. */
+      function getCstoolProxySameAsReaderError() {
+        try {
+          if (window.__TEN_LOG_READER_BUILTIN_CSTOOL__) return null;
+          const p = cstoolProxyRoot();
+          if (!p || window.location.protocol === 'file:') return null;
+          const readerOrigin = window.location.origin;
+          const proxyOrigin = new URL(p).origin;
+          if (readerOrigin === proxyOrigin) {
+            return (
+              'CSTool proxy URL must be a different origin than this page (e.g. http://127.0.0.1:8787 for local Node proxy), unless you deployed the built-in Vercel proxy (same site, no URL needed).'
+            );
+          }
+        } catch (e) {}
+        return null;
+      }
+
+      /** file:// has no normal origin — CORS with the proxy usually fails with "Failed to fetch". */
+      function getCstoolFileProtocolError() {
+        try {
+          if (window.location.protocol === 'file:') {
+            return (
+              'This page was opened as a local file (file://…). Browsers do not give it a real web origin, so fetch to your CSTool proxy usually fails.\n\n' +
+              'From the project folder run:\n  python3 -m http.server 8080\n' +
+              'then open:\n  http://127.0.0.1:8080/index.html\n\n' +
+              'On the proxy, set ALLOWED_ORIGIN=http://127.0.0.1:8080 (or use ALLOWED_ORIGIN=* only for local testing).'
+            );
+          }
+        } catch (e) {}
+        return null;
+      }
+
+      /** HTTPS reader pages cannot fetch http://127.0.0.1 (mixed content) — browser reports opaque "Failed to fetch". */
+      function getCstoolMixedContentProxyError() {
+        try {
+          if (window.location.protocol !== 'https:') return null;
+          const p = cstoolProxyRoot();
+          if (!p) return null;
+          const u = new URL(p);
+          if (u.protocol === 'http:') {
+            return (
+              'This page is loaded over HTTPS, but your CSTool proxy URL is HTTP (' +
+              p +
+              '). The browser blocks that (mixed content), so you only see “Failed to fetch”. ' +
+              'Fix: expose the proxy over HTTPS (e.g. cloudflared tunnel, ngrok) and paste that https:// URL, or deploy proxy/cf-worker.mjs and use the Worker URL.'
+            );
+          }
+        } catch (e) {}
+        return null;
+      }
+
+      function getCstoolTenLogPageUrl(agentId, environment) {
+        const root = cstoolDirectRoot();
+        const env = environment || 'prod';
+        return (
+          root +
+          '/cstoolconvoai/ten_log?agent_id=' +
+          encodeURIComponent(agentId) +
+          '&environment=' +
+          encodeURIComponent(env) +
+          '&mode=auto'
+        );
+      }
+
+      function maybeWarmCstoolCookieIframe() {
+        if (cstoolDirectOriginMatchesReader()) return;
+        const ifr = document.getElementById('cstoolSessionIframe');
+        if (!ifr) return;
+        try {
+          ifr.src = cstoolDirectRoot() + '/cstoolconvoai/ten_log';
+        } catch (e) {}
+      }
+
+      function isLikelyNetworkOrCorsFetchFailure(err) {
+        if (!err) return false;
+        const m = String(err.message != null ? err.message : err);
+        if (err.name === 'TypeError' && /fetch|Failed|network|Load failed/i.test(m)) return true;
+        if (/Failed to fetch|NetworkError|Load failed|networkerror/i.test(m)) return true;
+        return false;
+      }
+
+      function shouldShowCorsFetchHelp(err) {
+        if (!isLikelyNetworkOrCorsFetchFailure(err)) return false;
+        if (cstoolProxyRoot()) return false;
+        if (cstoolDirectOriginMatchesReader()) return false;
+        return true;
+      }
+
+      function updateAgentFetchButtonState() {
+        const fetchBtn = document.getElementById('agentFetchBtn');
+        if (!fetchBtn) return;
+        if (cstoolFetchCanWork()) {
+          fetchBtn.disabled = false;
+          fetchBtn.removeAttribute('title');
+        } else {
+          fetchBtn.disabled = true;
+          fetchBtn.setAttribute(
+            'title',
+            'Set a CSTool proxy URL, use a Vercel deploy with the built-in /api proxy, or host on the CSTool site.'
+          );
+        }
+      }
+
+      /** Hide “CSTool proxy” when this deployment already provides a proxy or browser session is enough. */
+      function updateCstoolProxyDetailsVisibility() {
+        const details = document.getElementById('cstoolProxyDetails');
+        const hint = document.getElementById('cstoolProxyOverrideHint');
+        if (!details && !hint) return;
+        let hide =
+          !!(window.__TEN_LOG_READER_BUILTIN_CSTOOL__ || cstoolUsesBrowserSessionOnly());
+        try {
+          const saved = localStorage.getItem('tenLogReader_cstoolProxy');
+          if (saved && String(saved).trim()) hide = false;
+        } catch (e) {}
+        if (details) details.style.display = hide ? 'none' : '';
+        if (hint) hint.style.display = hide ? 'block' : 'none';
+      }
+
+      function syncModalOpenClass() {
+        const any = document.querySelector('.modal-overlay.visible');
+        document.body.classList.toggle('modal-open', !!any);
+      }
+
+      function setCstoolClipboardStatus(msg) {
+        const st = document.getElementById('cstoolClipboardStatus');
+        if (st) st.textContent = msg || '';
+      }
+
+      function refreshCstoolAuthModalMode() {
+        const same = cstoolUsesBrowserSessionOnly();
+        const banner = document.getElementById('cstoolSameOriginBanner');
+        const section = document.getElementById('cstoolCookieSection');
+        const hint = document.getElementById('cstoolAuthHint');
+        const sub = document.getElementById('cstoolAuthSubtitle');
+        const mAgent = document.getElementById('cstoolModalAgentId');
+        const mEnv = document.getElementById('cstoolModalEnv');
+        const link = document.getElementById('cstoolOpenForCookieLink');
+        const pasteBtn = document.getElementById('cstoolPasteClipboardBtn');
+        if (banner) banner.style.display = same ? 'block' : 'none';
+        if (section) section.style.display = same ? 'none' : 'block';
+        if (hint) hint.style.display = same ? 'none' : 'block';
+        if (sub) sub.textContent = same ? 'Using your CSTool browser session' : 'Cookie for the proxy';
+        if (pasteBtn) pasteBtn.style.display = same ? 'none' : '';
+        if (link) {
+          const raw = (mAgent && mAgent.value ? mAgent.value : '').trim();
+          const env = (mEnv && mEnv.value) || 'prod';
+          link.href = raw
+            ? getCstoolTenLogPageUrl(raw, env)
+            : cstoolDirectRoot() + '/cstoolconvoai/ten_log';
+        }
+      }
+
+      function tryAutofillCstoolCookieFromClipboard() {
+        setCstoolClipboardStatus('');
+        if (cstoolUsesBrowserSessionOnly()) return;
+        const ta = document.getElementById('cstoolCookieInput');
+        if (!ta || (ta.value || '').trim()) return;
+        if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
+          setCstoolClipboardStatus('Clipboard API unavailable here — paste manually or click “Fill from clipboard” after copying.');
+          return;
+        }
+        navigator.clipboard
+          .readText()
+          .then(function (text) {
+            const t = (text || '').trim();
+            if (!t || !looksLikeCookieHeader(t)) {
+              setCstoolClipboardStatus(
+                'Clipboard did not look like a Cookie header — copy from DevTools → Network → Request Headers → Cookie, then paste or use the button.'
+              );
+              return;
+            }
+            ta.value = normalizePastedCstoolCookie(t);
+            try {
+              sessionStorage.setItem('tenLogReader_cstoolCookie', ta.value);
+            } catch (e) {}
+            setCstoolClipboardStatus('Filled from clipboard.');
+          })
+          .catch(function () {
+            setCstoolClipboardStatus(
+              'Could not read clipboard automatically (browser permission). Copy Cookie in DevTools, then click “Fill from clipboard” or paste here.'
+            );
+          });
+      }
+
+      function fillCstoolCookieFromClipboardButton() {
+        setCstoolClipboardStatus('');
+        const ta = document.getElementById('cstoolCookieInput');
+        if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
+          alert('Clipboard read is not available. Paste the Cookie line into the box (Ctrl/Cmd+V).');
+          if (ta) ta.focus();
+          return;
+        }
+        navigator.clipboard
+          .readText()
+          .then(function (text) {
+            const t = (text || '').trim();
+            if (!t) {
+              setCstoolClipboardStatus('Clipboard was empty. Copy the Cookie header in DevTools first.');
+              if (ta) ta.focus();
+              return;
+            }
+            if (!looksLikeCookieHeader(t)) {
+              if (
+                !confirm(
+                  'Clipboard does not look like a Cookie header. Paste it into the box anyway?'
+                )
+              ) {
+                if (ta) ta.focus();
+                return;
+              }
+            }
+            const norm = normalizePastedCstoolCookie(t);
+            if (ta) ta.value = norm;
+            try {
+              sessionStorage.setItem('tenLogReader_cstoolCookie', norm);
+            } catch (e) {}
+            setCstoolClipboardStatus('Filled from clipboard.');
+          })
+          .catch(function () {
+            alert('Could not read clipboard. Paste the Cookie line manually into the box.');
+            if (ta) ta.focus();
+          });
+      }
+
+      function openCstoolAuthModal() {
+        const overlay = document.getElementById('cstoolAuthModal');
+        const agentInput = document.getElementById('agentIdInput');
+        const envSelect = document.getElementById('agentEnvSelect');
+        const mAgent = document.getElementById('cstoolModalAgentId');
+        const mEnv = document.getElementById('cstoolModalEnv');
+        const mCookie = document.getElementById('cstoolCookieInput');
+        if (mAgent && agentInput) mAgent.value = agentInput.value || '';
+        if (mEnv && envSelect) mEnv.value = envSelect.value || 'prod';
+        try {
+          if (mCookie) mCookie.value = sessionStorage.getItem('tenLogReader_cstoolCookie') || '';
+        } catch (e) {}
+        refreshCstoolAuthModalMode();
+        tryAutofillCstoolCookieFromClipboard();
+        if (overlay) {
+          overlay.classList.add('visible');
+          overlay.setAttribute('aria-hidden', 'false');
+          syncModalOpenClass();
+          if (mAgent) mAgent.focus();
+        }
+      }
+
+      function closeCstoolAuthModal() {
+        setCstoolClipboardStatus('');
+        const overlay = document.getElementById('cstoolAuthModal');
+        if (overlay) {
+          overlay.classList.remove('visible');
+          overlay.setAttribute('aria-hidden', 'true');
+        }
+        syncModalOpenClass();
+      }
+
+      function openAgentFetchCorsDialog(agentId, environment) {
+        const a = document.getElementById('agentFetchOpenCstoolLink');
+        const sub = document.getElementById('agentFetchCorsSubtitle');
+        if (a) a.href = getCstoolTenLogPageUrl(agentId, environment);
+        if (sub) sub.textContent = window.location.origin || 'this origin';
+        const overlay = document.getElementById('agentFetchCorsDialog');
+        if (overlay) {
+          overlay.classList.add('visible');
+          overlay.setAttribute('aria-hidden', 'false');
+          syncModalOpenClass();
+        }
+      }
+
+      function closeAgentFetchCorsDialog() {
+        const overlay = document.getElementById('agentFetchCorsDialog');
+        if (overlay) {
+          overlay.classList.remove('visible');
+          overlay.setAttribute('aria-hidden', 'true');
+        }
+        syncModalOpenClass();
+      }
+
+      function readTarField(block, start, len) {
+        let s = '';
+        for (let i = 0; i < len; i++) {
+          const c = block[start + i];
+          if (c === 0) break;
+          s += String.fromCharCode(c);
+        }
+        return s.trim();
+      }
+
+      function parseUstarTarEntries(tarBuf) {
+        const arr = new Uint8Array(tarBuf);
+        const len = arr.length;
+        let offset = 0;
+        const out = [];
+        let pendingLongName = null;
+
+        while (offset + 512 <= len) {
+          const header = arr.subarray(offset, offset + 512);
+          if (header.every((b) => b === 0)) break;
+
+          const type = String.fromCharCode(header[156] || 0);
+          const sizeStr = readTarField(header, 124, 12).replace(/\0/g, '');
+          const size = parseInt(sizeStr, 8) || 0;
+          let shortName = readTarField(header, 0, 100).replace(/\0/g, '').trim();
+          if (shortName.indexOf('./') === 0) shortName = shortName.slice(2);
+
+          offset += 512;
+
+          if (type === 'L') {
+            const nameBytes = arr.subarray(offset, offset + size);
+            pendingLongName = new TextDecoder('utf-8', { fatal: false }).decode(nameBytes).replace(/\0+$/, '').trim();
+            offset += size;
+            offset = Math.ceil(offset / 512) * 512;
+            continue;
+          }
+          if (type === 'K') {
+            offset += Math.ceil(size / 512) * 512;
+            continue;
+          }
+          if (type === '5') {
+            offset += Math.ceil(size / 512) * 512;
+            pendingLongName = null;
+            continue;
+          }
+
+          const data = arr.subarray(offset, offset + size);
+          offset += size;
+          offset = Math.ceil(offset / 512) * 512;
+
+          const reg = type === '0' || type === '\0' || type === '';
+          if (!reg) {
+            pendingLongName = null;
+            continue;
+          }
+
+          let name = pendingLongName || shortName;
+          pendingLongName = null;
+          if (!name) continue;
+          out.push({ name, data });
+        }
+        return out;
+      }
+
+      function pickErrEntry(entries) {
+        if (!entries || !entries.length) return null;
+        const nonEmpty = entries.filter((e) => e.data && e.data.length);
+        if (!nonEmpty.length) return null;
+        let candidates = nonEmpty.filter((e) => {
+          const n = (e.name || '').toLowerCase();
+          return /\.(err|err\.log)$/i.test(n) || n.indexOf('ten.err') !== -1;
+        });
+        if (!candidates.length) candidates = nonEmpty.slice();
+        const ten = candidates.filter((e) => /(^|\/)ten\.err([^/]*)$/i.test(e.name));
+        if (ten.length) {
+          ten.sort((a, b) => b.data.length - a.data.length);
+          return ten[0];
+        }
+        candidates.sort((a, b) => b.data.length - a.data.length);
+        return candidates[0];
+      }
+
+      function gunzipArrayBuffer(buf) {
+        if (typeof DecompressionStream === 'undefined') {
+          return Promise.reject(new Error('This browser cannot decompress .tgz (no DecompressionStream). Try Chrome, Edge, or Safari 16.4+.'));
+        }
+        const ds = new DecompressionStream('gzip');
+        const stream = new Blob([buf]).stream().pipeThrough(ds);
+        return new Response(stream).arrayBuffer();
+      }
+
+      function extractErrTextFromTgz(tgzBytes) {
+        return gunzipArrayBuffer(tgzBytes).then((tarBuf) => {
+          const entries = parseUstarTarEntries(tarBuf);
+          const picked = pickErrEntry(entries);
+          if (!picked) {
+            const names = entries.map((e) => e.name).slice(0, 20);
+            throw new Error('No .err file found in archive. Entries (sample): ' + (names.length ? names.join(', ') : '(empty)'));
+          }
+          return new TextDecoder('utf-8', { fatal: false }).decode(picked.data);
+        });
+      }
+
+      function fetchTenErrViaCstool(agentId, environment, opts) {
+        const onStatus = opts && opts.onStatus ? opts.onStatus : () => {};
+        const cred = cstoolFetchCredentials();
+        const root = cstoolFetchRoot();
+        const viaProxy = !!cstoolProxyRoot();
+        const fileErr = getCstoolFileProtocolError();
+        if (fileErr) return Promise.reject(new Error(fileErr));
+        const sameOriginErr = getCstoolProxySameAsReaderError();
+        if (sameOriginErr) return Promise.reject(new Error(sameOriginErr));
+        const mixed = getCstoolMixedContentProxyError();
+        if (mixed) return Promise.reject(new Error(mixed));
+        const parseUrl = root + '/cstoolconvoai/parse_ten_err';
+        const fd = new FormData();
+        fd.append('agent_id', agentId);
+        fd.append('environment', environment || 'prod');
+
+        const postInit = { method: 'POST', body: fd, credentials: cred, mode: 'cors' };
+        const ph = cstoolClientHeaders();
+        if (ph) postInit.headers = ph;
+
+        return fetch(parseUrl, postInit)
+          .then((res) => {
+            if (!res.ok) {
+              return res.text().then((t) => {
+                throw new Error('Start job failed (' + res.status + '). ' + (t ? t.slice(0, 200) : ''));
+              });
+            }
+            return res.json();
+          })
+          .then((data) => {
+            if (!data || !data.success) {
+              throw new Error((data && data.error) || (data && data.message) || 'Could not start log job.');
+            }
+            const jobId = data.job_id;
+            if (!jobId) throw new Error('No job_id in response.');
+            const statusPath = root + '/cstoolconvoai/api/ten_err_status/' + encodeURIComponent(jobId);
+            const deadline = Date.now() + CSTOOL_MAX_WAIT_MS;
+
+            function pollOnce() {
+              const pollInit = { credentials: cred, mode: 'cors' };
+              const h2 = cstoolClientHeaders();
+              if (h2) pollInit.headers = h2;
+              return fetch(statusPath, pollInit).then((res) => {
+                if (!res.ok) {
+                  return res.text().then((t) => {
+                    throw new Error('Status check failed (' + res.status + '). ' + (t ? t.slice(0, 200) : ''));
+                  });
+                }
+                return res.json();
+              }).then((st) => {
+                if (!st) throw new Error('Empty status response.');
+                const status = st.status != null ? String(st.status).toLowerCase() : '';
+                if (status === 'failed') {
+                  throw new Error(st.error || st.message || 'Server failed to prepare log.');
+                }
+                if (status === 'done' && st.download_url) {
+                  return st;
+                }
+                if (status === 'done' && !st.download_url) {
+                  throw new Error('Job finished but no download_url was returned.');
+                }
+                if (Date.now() > deadline) {
+                  throw new Error('Timed out waiting for log (>' + Math.floor(CSTOOL_MAX_WAIT_MS / 60000) + ' min).');
+                }
+                onStatus('Processing on server… (' + (status || '…') + ')');
+                return new Promise((resolve) => {
+                  setTimeout(() => resolve(pollOnce()), CSTOOL_POLL_MS);
+                });
+              });
+            }
+
+            onStatus('Job started; waiting for log package…');
+            return pollOnce();
+          })
+          .then((st) => {
+            let url = st.download_url;
+            if (!url) throw new Error('No download URL.');
+            if (viaProxy) {
+              url = root + '/_oss_tunnel?u=' + encodeURIComponent(st.download_url);
+            }
+            onStatus('Downloading log archive…');
+            return fetch(url, { credentials: 'omit', mode: 'cors' }).then((res) => {
+              if (!res.ok) {
+                throw new Error('Download failed (' + res.status + '). If this is a browser CORS block, open the URL in a tab, or download manually: ' + url);
+              }
+              return res.arrayBuffer();
+            }).then((ab) => {
+              onStatus('Extracting ten.err…');
+              return extractErrTextFromTgz(ab);
+            }).then((text) => {
+              const base = (agentId.slice(0, 12) || 'ten') + '-fetched.err';
+              return { text, fileName: base };
+            });
+          });
+      }
+
       function setParseOverlay(show, message) {
         var ov = document.getElementById('parseOverlay');
         var msg = document.getElementById('parseOverlayMsg');
@@ -3702,6 +4269,190 @@
         const file = this.files && this.files[0];
         if (file) loadLogFile(file);
       });
+
+      (function initAgentFetch() {
+        const agentInput = document.getElementById('agentIdInput');
+        const envSelect = document.getElementById('agentEnvSelect');
+        const fetchBtn = document.getElementById('agentFetchBtn');
+        const openCstoolBtn = document.getElementById('agentOpenCstoolBtn');
+        const authModal = document.getElementById('cstoolAuthModal');
+        const cstoolAuthCloseBtn = document.getElementById('cstoolAuthCloseBtn');
+        const cstoolAuthCancelBtn = document.getElementById('cstoolAuthCancelBtn');
+        const cstoolAuthRunBtn = document.getElementById('cstoolAuthRunBtn');
+        const corsDialog = document.getElementById('agentFetchCorsDialog');
+        const corsCloseBtn = document.getElementById('agentFetchCorsCloseBtn');
+        const proxyInput = document.getElementById('cstoolProxyInput');
+        if (!agentInput || !envSelect || !fetchBtn) return;
+
+        fetch('/api/cstool-proxy-status', { method: 'GET', credentials: 'omit' })
+          .then(function (r) {
+            if (r.ok) window.__TEN_LOG_READER_BUILTIN_CSTOOL__ = true;
+          })
+          .catch(function () {})
+          .finally(function () {
+            updateAgentFetchButtonState();
+            updateCstoolProxyDetailsVisibility();
+          });
+
+        try {
+          const savedId = localStorage.getItem('tenLogReader_lastAgentId');
+          if (savedId) agentInput.value = savedId;
+          const savedEnv = localStorage.getItem('tenLogReader_lastAgentEnv');
+          if (savedEnv && (savedEnv === 'prod' || savedEnv === 'staging')) envSelect.value = savedEnv;
+          const savedProxy = localStorage.getItem('tenLogReader_cstoolProxy');
+          if (savedProxy && proxyInput) proxyInput.value = savedProxy;
+        } catch (err) {}
+
+        function persistProxyFromInput() {
+          if (!proxyInput) return;
+          const v = (proxyInput.value || '').trim();
+          try {
+            if (v) localStorage.setItem('tenLogReader_cstoolProxy', v.replace(/\/$/, ''));
+            else localStorage.removeItem('tenLogReader_cstoolProxy');
+          } catch (e3) {}
+          updateAgentFetchButtonState();
+          updateCstoolProxyDetailsVisibility();
+        }
+
+        if (proxyInput) {
+          proxyInput.addEventListener('change', persistProxyFromInput);
+          proxyInput.addEventListener('blur', persistProxyFromInput);
+        }
+
+        const cstoolProxyOverrideBtn = document.getElementById('cstoolProxyOverrideBtn');
+        if (cstoolProxyOverrideBtn) {
+          cstoolProxyOverrideBtn.addEventListener('click', function () {
+            const d = document.getElementById('cstoolProxyDetails');
+            const h = document.getElementById('cstoolProxyOverrideHint');
+            if (d) {
+              d.style.display = '';
+              d.open = true;
+            }
+            if (h) h.style.display = 'none';
+            if (proxyInput) proxyInput.focus();
+          });
+        }
+
+        updateAgentFetchButtonState();
+        updateCstoolProxyDetailsVisibility();
+
+        function openCstoolInNewTab() {
+          const raw = (agentInput.value || '').trim();
+          if (!raw) {
+            alert('Enter an Agent ID.');
+            agentInput.focus();
+            return;
+          }
+          window.open(getCstoolTenLogPageUrl(raw, envSelect.value || 'prod'), '_blank', 'noopener,noreferrer');
+        }
+
+        if (openCstoolBtn) {
+          openCstoolBtn.addEventListener('click', openCstoolInNewTab);
+        }
+
+        function runCstoolFetchFromUi() {
+          const mAgent = document.getElementById('cstoolModalAgentId');
+          const mEnv = document.getElementById('cstoolModalEnv');
+          const mCookie = document.getElementById('cstoolCookieInput');
+          const raw = (mAgent && mAgent.value ? mAgent.value : agentInput.value || '').trim();
+          if (!raw) {
+            alert('Enter an Agent ID.');
+            if (mAgent) mAgent.focus();
+            return;
+          }
+          if (!/^[A-Za-z0-9_-]+$/.test(raw) || raw.length < 16) {
+            if (!confirm('Agent ID looks unusual. Continue anyway?')) return;
+          }
+          const environment = (mEnv && mEnv.value) || envSelect.value || 'prod';
+          try {
+            if (cstoolUsesBrowserSessionOnly()) {
+              sessionStorage.removeItem('tenLogReader_cstoolCookie');
+            } else {
+              const rawCk = mCookie && mCookie.value ? String(mCookie.value).trim() : '';
+              const ck = rawCk ? normalizePastedCstoolCookie(rawCk) : '';
+              if (ck) sessionStorage.setItem('tenLogReader_cstoolCookie', ck);
+              else sessionStorage.removeItem('tenLogReader_cstoolCookie');
+            }
+          } catch (e) {}
+          agentInput.value = raw;
+          envSelect.value = environment;
+          closeCstoolAuthModal();
+          maybeWarmCstoolCookieIframe();
+          fetchBtn.disabled = true;
+          setParseOverlay(true, 'Connecting to log service…');
+          fetchTenErrViaCstool(raw, environment, {
+            onStatus: function (msg) {
+              setParseOverlay(true, msg);
+            }
+          }).then(function (result) {
+            try {
+              localStorage.setItem('tenLogReader_lastAgentId', raw);
+              localStorage.setItem('tenLogReader_lastAgentEnv', environment);
+            } catch (e2) {}
+            onFileLoad(result.text, result.fileName);
+          }).catch(function (err) {
+            console.error(err);
+            setParseOverlay(false);
+            if (isLikelyNetworkOrCorsFetchFailure(err) && cstoolProxyRoot()) {
+              alert(
+                (err && err.message ? err.message : 'Failed to fetch') +
+                  '\n\nCheck: (1) Proxy running: node proxy/local-server.mjs on port 8787\n' +
+                  '(2) ALLOWED_ORIGIN matches this page exactly: ' +
+                  (window.location.origin || '(unknown)') +
+                  '\n   For local dev you can use: ALLOWED_ORIGIN=*\n' +
+                  '(3) Restart the proxy after updating it (Chrome may need a preflight header).\n\n' +
+                  'Paste the Cookie request header, not Set-Cookie (no ;Domain= / HttpOnly).'
+              );
+              return;
+            }
+            if (shouldShowCorsFetchHelp(err)) {
+              openAgentFetchCorsDialog(raw, environment);
+            } else {
+              alert(err && err.message ? err.message : String(err));
+            }
+          }).finally(function () {
+            updateAgentFetchButtonState();
+          });
+        }
+
+        if (cstoolAuthCloseBtn) cstoolAuthCloseBtn.addEventListener('click', closeCstoolAuthModal);
+        if (cstoolAuthCancelBtn) cstoolAuthCancelBtn.addEventListener('click', closeCstoolAuthModal);
+        if (cstoolAuthRunBtn) cstoolAuthRunBtn.addEventListener('click', runCstoolFetchFromUi);
+        const cstoolPasteClipboardBtn = document.getElementById('cstoolPasteClipboardBtn');
+        if (cstoolPasteClipboardBtn) {
+          cstoolPasteClipboardBtn.addEventListener('click', fillCstoolCookieFromClipboardButton);
+        }
+        const cstoolModalAgentIdEl = document.getElementById('cstoolModalAgentId');
+        const cstoolModalEnvEl = document.getElementById('cstoolModalEnv');
+        function onCstoolModalFieldChange() {
+          const ov = document.getElementById('cstoolAuthModal');
+          if (ov && ov.classList.contains('visible')) refreshCstoolAuthModalMode();
+        }
+        if (cstoolModalAgentIdEl) cstoolModalAgentIdEl.addEventListener('input', onCstoolModalFieldChange);
+        if (cstoolModalEnvEl) cstoolModalEnvEl.addEventListener('change', onCstoolModalFieldChange);
+
+        if (authModal) {
+          authModal.addEventListener('click', function (e) {
+            if (e.target === authModal) closeCstoolAuthModal();
+          });
+        }
+
+        if (corsDialog && corsCloseBtn) {
+          corsCloseBtn.addEventListener('click', closeAgentFetchCorsDialog);
+          corsDialog.addEventListener('click', function (e) {
+            if (e.target === corsDialog) closeAgentFetchCorsDialog();
+          });
+        }
+
+        fetchBtn.addEventListener('click', function () {
+          if (!cstoolFetchCanWork()) {
+            alert('Set a CSTool proxy URL under “CSTool proxy” (or host this app on the CSTool site), then try again.');
+            if (proxyInput) proxyInput.focus();
+            return;
+          }
+          openCstoolAuthModal();
+        });
+      })();
 
       const appEl = document.getElementById('app');
       /** DOMStringList (Safari) has .contains; arrays have .includes — avoid throws on GitHub Pages / Safari */
@@ -4181,7 +4932,18 @@
         if (e.target && e.target.id === 'jsonModal') closeJsonModal();
       });
       document.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape') closeJsonModal();
+        if (e.key !== 'Escape') return;
+        const auth = document.getElementById('cstoolAuthModal');
+        if (auth && auth.classList.contains('visible')) {
+          closeCstoolAuthModal();
+          return;
+        }
+        const cors = document.getElementById('agentFetchCorsDialog');
+        if (cors && cors.classList.contains('visible')) {
+          closeAgentFetchCorsDialog();
+          return;
+        }
+        closeJsonModal();
       });
 
       document.getElementById('badgeErrors').addEventListener('click', function () {

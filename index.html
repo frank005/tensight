@@ -18,7 +18,24 @@
         <input type="file" id="fileInput" accept=".log,.err.log,.err,text/plain" />
         <label for="fileInput">Choose log file</label>
       </div>
+      <div class="agent-fetch-wrap" title="Uses the same CSTool backend as Log 快速分析 (Agent ID + environment)">
+        <input type="text" id="agentIdInput" class="agent-id-input" placeholder="Agent ID" autocomplete="off" spellcheck="false" maxlength="64" />
+        <select id="agentEnvSelect" class="agent-env-select" aria-label="Environment">
+          <option value="prod" selected>Production</option>
+          <option value="staging">Staging</option>
+        </select>
+        <button type="button" id="agentFetchBtn" class="agent-fetch-btn">Fetch log</button>
+        <button type="button" id="agentOpenCstoolBtn" class="agent-open-cstool-btn" title="Opens CSTool Log 快速分析 in a new tab with this Agent ID">CSTool</button>
+      </div>
       <span class="file-name" id="fileName">No file loaded</span>
+      <details class="agent-proxy-details" id="cstoolProxyDetails">
+        <summary class="agent-proxy-summary">CSTool proxy (for GitHub Pages)</summary>
+        <p class="agent-proxy-help"><strong>Vercel:</strong> Deploy this repo; set env <code>CSTOOL_COOKIE</code> (optional if you paste in the dialog) and optionally <code>ALLOWED_ORIGIN</code> (comma-separated; if unset, <code>https://$VERCEL_URL</code> is allowed). The app auto-detects the built-in proxy — leave this field empty unless you override. <strong>Local:</strong> use two ports — <code>python3 -m http.server 8080</code> for the app and <code>node proxy/local-server.mjs</code> on <code>8787</code>; paste <code>http://127.0.0.1:8787</code> here. Do not use <code>file://…</code> for Fetch log.</p>
+        <input type="url" id="cstoolProxyInput" class="cstool-proxy-input" placeholder="http://127.0.0.1:8787 or https://….workers.dev" autocomplete="off" spellcheck="false" />
+      </details>
+      <p class="cstool-proxy-override-hint" id="cstoolProxyOverrideHint" style="display: none;">
+        <button type="button" class="cstool-proxy-override-btn" id="cstoolProxyOverrideBtn">Use external CSTool proxy URL…</button>
+      </p>
     </header>
 
     <main class="main">
@@ -215,6 +232,76 @@
     <div class="parse-overlay-spinner" aria-hidden="true"></div>
     <p class="parse-overlay-msg" id="parseOverlayMsg">Parsing log…</p>
     <p class="parse-overlay-hint">Large logs are parsed in your browser; this can take a moment.</p>
+  </div>
+
+  <iframe id="cstoolSessionIframe" title="" style="position:absolute;width:0;height:0;border:0;visibility:hidden" src="about:blank"></iframe>
+
+  <div id="cstoolAuthModal" class="modal-overlay" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="cstoolAuthTitle">
+    <div class="modal-dialog modal-dialog--narrow" role="document">
+      <div class="modal-header">
+        <div>
+          <div class="modal-title" id="cstoolAuthTitle">Fetch log from CSTool</div>
+          <div class="modal-subtitle" id="cstoolAuthSubtitle">Session for CSTool</div>
+        </div>
+        <button type="button" class="modal-close" id="cstoolAuthCloseBtn" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="cstool-auth-hint" id="cstoolAuthHint">
+          This page <strong>cannot</strong> read cookies from <code>rtsc-tools</code> (cross-origin and usually <code>HttpOnly</code>). We try your <strong>clipboard</strong> once when this opens; if that fails, paste the <strong>Cookie</strong> <em>request</em> header from DevTools → Network (same as curl <code>-b</code>). Not <strong>Set-Cookie</strong> (no <code>;Domain=</code>). Stored in <code>sessionStorage</code> for this tab; sent only to your proxy.
+        </p>
+        <div id="cstoolSameOriginBanner" class="cstool-same-origin-banner" style="display: none;" role="status">
+          You are on the same site as CSTool — your normal browser session is used. No cookie paste needed unless something fails.
+        </div>
+        <div class="cstool-auth-field">
+          <label for="cstoolModalAgentId">Agent ID</label>
+          <input type="text" id="cstoolModalAgentId" class="agent-id-input" style="width:100%;box-sizing:border-box;" autocomplete="off" spellcheck="false" maxlength="64" />
+        </div>
+        <div class="cstool-auth-field">
+          <label for="cstoolModalEnv">Environment</label>
+          <select id="cstoolModalEnv" class="agent-env-select">
+            <option value="prod" selected>Production</option>
+            <option value="staging">Staging</option>
+          </select>
+        </div>
+        <div id="cstoolCookieSection" class="cstool-cookie-section">
+          <div class="cstool-auth-field">
+            <label for="cstoolCookieInput">Cookie string</label>
+            <textarea id="cstoolCookieInput" class="cstool-cookie-textarea" placeholder="_ga=…; HCIAuthToken=…" spellcheck="false"></textarea>
+          </div>
+          <div class="cstool-clipboard-row">
+            <button type="button" class="secondary" id="cstoolPasteClipboardBtn">Fill from clipboard</button>
+            <a id="cstoolOpenForCookieLink" class="cstool-open-cstool-link" href="#" target="_blank" rel="noopener">Open CSTool (sign in, then copy Cookie in DevTools → Network)</a>
+          </div>
+          <p id="cstoolClipboardStatus" class="cstool-clipboard-status" aria-live="polite"></p>
+        </div>
+        <div class="cstool-auth-actions">
+          <button type="button" class="secondary" id="cstoolAuthCancelBtn">Cancel</button>
+          <button type="button" class="primary" id="cstoolAuthRunBtn">Fetch</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="agentFetchCorsDialog" class="modal-overlay" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="agentFetchCorsTitle">
+    <div class="modal-dialog modal-dialog--narrow" role="document">
+      <div class="modal-header">
+        <div>
+          <div class="modal-title" id="agentFetchCorsTitle">Fetch blocked (cross-origin)</div>
+          <div class="modal-subtitle" id="agentFetchCorsSubtitle">Browser security</div>
+        </div>
+        <button type="button" class="modal-close" id="agentFetchCorsCloseBtn" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="cors-dialog-lead">This origin cannot read CSTool API responses unless the server sends CORS for your site, or you use a proxy.</p>
+        <ul class="cors-dialog-list">
+          <li><strong>Proxy:</strong> run <code>proxy/local-server.mjs</code>, set <code>ALLOWED_ORIGIN</code>, paste the proxy URL under <strong>CSTool proxy</strong>, then use <strong>Fetch log</strong> with your cookie in the dialog.</li>
+          <li>Open <strong>CSTool</strong>, download there, then <strong>Choose log file</strong> here.</li>
+        </ul>
+        <p class="cors-dialog-actions">
+          <a id="agentFetchOpenCstoolLink" class="cors-dialog-primary-link" href="#" target="_blank" rel="noopener">Open CSTool (prefilled)</a>
+        </p>
+      </div>
+    </div>
   </div>
 
   <div id="jsonModal" class="modal-overlay" aria-hidden="true">

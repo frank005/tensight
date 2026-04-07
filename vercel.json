@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/cstoolconvoai/:path*",
+      "destination": "/api/cstool/:path*"
+    },
+    {
+      "source": "/_oss_tunnel",
+      "destination": "/api/oss-tunnel"
+    }
+  ]
+}

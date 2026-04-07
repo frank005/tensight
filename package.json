@@ -1,0 +1,5 @@
+{
+  "name": "ten-log-reader",
+  "private": true,
+  "description": "Static TEN log viewer + optional Vercel CSTool proxy under /api"
+}
