@@ -1,8 +1,16 @@
 {
   "rewrites": [
     {
+      "source": "/cstoolconvoai/ten_err_status/:jobId",
+      "destination": "/api/cstool-poll?job=:jobId"
+    },
+    {
       "source": "/cstoolconvoai/api/ten_err_status/:jobId",
-      "destination": "/api/cstoolconvoai/poll-ten-err/:jobId"
+      "destination": "/api/cstool-poll?job=:jobId"
+    },
+    {
+      "source": "/cstoolconvoai/poll-ten-err/:jobId",
+      "destination": "/api/cstool-poll?job=:jobId"
     },
     {
       "source": "/cstoolconvoai/:path*",

@@ -27,11 +27,11 @@
 
 const DEFAULT_UPSTREAM = 'https://rtsc-tools.sh3.agoralab.co';
 
-/** Match Vercel/local proxy: poll-ten-err/:jobId → upstream api/ten_err_status/:jobId */
+/** poll-ten-err/:jobId → upstream ten_err_status/:jobId (same as CSTool status_url). */
 function cstoolUpstreamSuffixFromPublicSegments(segments) {
   if (!segments || !segments.length) return '';
   if (segments[0] === 'poll-ten-err' && segments.length >= 2) {
-    return ['api', 'ten_err_status'].concat(segments.slice(1)).join('/');
+    return ['ten_err_status'].concat(segments.slice(1)).join('/');
   }
   return segments.join('/');
 }
