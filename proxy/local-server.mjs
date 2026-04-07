@@ -17,7 +17,11 @@
  */
 
 import http from 'http';
+import { createRequire } from 'module';
 import { URL } from 'url';
+
+const require = createRequire(import.meta.url);
+const { cstoolUpstreamSuffixFromPublicSegments } = require('../lib/cstoolProxyCore.js');
 
 const PORT = Number(process.env.PORT) || 8787;
 const UPSTREAM = (process.env.UPSTREAM || 'https://rtsc-tools.sh3.agoralab.co').replace(/\/$/, '');
@@ -162,7 +166,15 @@ http
       return;
     }
 
-    const target = UPSTREAM + url.pathname + url.search;
+    const rest = url.pathname.slice('/cstoolconvoai/'.length);
+    const segments = rest.split('/').filter(Boolean);
+    const suffix = cstoolUpstreamSuffixFromPublicSegments(segments);
+    if (!suffix) {
+      res.writeHead(404, { 'Content-Type': 'text/plain', ...corsHeaders(allow, req, {}) });
+      res.end('missing path');
+      return;
+    }
+    const target = `${UPSTREAM}/cstoolconvoai/${suffix}${url.search}`;
 
     const headers = {
       cookie,

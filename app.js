@@ -4033,7 +4033,10 @@
             }
             const jobId = data.job_id;
             if (!jobId) throw new Error('No job_id in response.');
-            const statusPath = root + '/cstoolconvoai/api/ten_err_status/' + encodeURIComponent(jobId);
+            const statusPath =
+              root +
+              (viaProxy ? '/cstoolconvoai/poll-ten-err/' : '/cstoolconvoai/api/ten_err_status/') +
+              encodeURIComponent(jobId);
             const deadline = Date.now() + CSTOOL_MAX_WAIT_MS;
 
             function pollOnce() {

@@ -3,7 +3,8 @@ const {
   applyCorsToRes,
   effectiveCookie,
   upstreamBase,
-  readBodyBuffer
+  readBodyBuffer,
+  cstoolUpstreamSuffixFromPublicSegments
 } = require('../../lib/cstoolProxyCore');
 
 const CSTOOL_API_PREFIX = '/api/cstool';
@@ -60,7 +61,7 @@ module.exports = async (req, res) => {
   }
 
   const segments = pathSegments(req);
-  const suffix = segments.join('/');
+  const suffix = cstoolUpstreamSuffixFromPublicSegments(segments);
   if (!suffix) {
     applyCorsToRes(res, allow, req, false);
     res.statusCode = 404;

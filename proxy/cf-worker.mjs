@@ -27,6 +27,15 @@
 
 const DEFAULT_UPSTREAM = 'https://rtsc-tools.sh3.agoralab.co';
 
+/** Match Vercel/local proxy: poll-ten-err/:jobId → upstream api/ten_err_status/:jobId */
+function cstoolUpstreamSuffixFromPublicSegments(segments) {
+  if (!segments || !segments.length) return '';
+  if (segments[0] === 'poll-ten-err' && segments.length >= 2) {
+    return ['api', 'ten_err_status'].concat(segments.slice(1)).join('/');
+  }
+  return segments.join('/');
+}
+
 function pickAllowOrigin(env, request) {
   const origin = request.headers.get('Origin') || '';
   const raw = (env.ALLOWED_ORIGIN != null ? String(env.ALLOWED_ORIGIN) : '*').trim();
@@ -105,7 +114,13 @@ export default {
       );
     }
 
-    const target = upstreamOrigin + url.pathname + url.search;
+    const rest = url.pathname.slice('/cstoolconvoai/'.length);
+    const segments = rest.split('/').filter(Boolean);
+    const suffix = cstoolUpstreamSuffixFromPublicSegments(segments);
+    if (!suffix) {
+      return new Response('missing path', { status: 404, headers: corsPreflight });
+    }
+    const target = `${upstreamOrigin}/cstoolconvoai/${suffix}${url.search}`;
     const headers = new Headers(request.headers);
     const upHost = new URL(upstreamOrigin).host;
     headers.set('Host', upHost);
