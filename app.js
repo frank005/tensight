@@ -9,6 +9,22 @@
       const TAB_LINE = /^(\d{4}-\d{2}-\d{2}T[^\t]+)\t(\w+)\t(.+)$/;
       const EXTENSION_TAG = /\[([^\]]+)\]/g;
 
+      /** GitHub Pages (*.github.io): keep UI file-only; CSTool fetch lives on Vercel/other hosts. */
+      function isGitHubPagesHost() {
+        try {
+          const h = (window.location && window.location.hostname) || '';
+          return /\.github\.io$/i.test(h);
+        } catch (e) {
+          return false;
+        }
+      }
+
+      try {
+        if (isGitHubPagesHost() && document.body) {
+          document.body.classList.add('tenlr-host-github-pages');
+        }
+      } catch (e) {}
+
       function extractExtension(msg) {
         const m = msg.match(/\[([^\]]+)\]/);
         if (!m) return null;
@@ -4271,6 +4287,7 @@
       });
 
       (function initAgentFetch() {
+        if (isGitHubPagesHost()) return;
         const agentInput = document.getElementById('agentIdInput');
         const envSelect = document.getElementById('agentEnvSelect');
         const fetchBtn = document.getElementById('agentFetchBtn');
