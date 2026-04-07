@@ -146,6 +146,46 @@
         return out;
       }
 
+      function parseVendorPresets(raw) {
+        if (!raw) return [];
+        let arr = null;
+        if (Array.isArray(raw)) arr = raw;
+        else if (typeof raw === 'string') {
+          try { arr = JSON.parse(raw); } catch (_) { arr = null; }
+        }
+        if (!Array.isArray(arr)) return [];
+        const out = [];
+        for (const item of arr) {
+          if (!item || typeof item !== 'object') continue;
+          const key = Object.keys(item)[0];
+          if (!key) continue;
+          const cfg = item[key] && typeof item[key] === 'object' ? item[key] : {};
+          out.push({
+            preset: String(key),
+            applyMode: cfg.apply_mode != null ? String(cfg.apply_mode) : null,
+            enabled: cfg.enable === true
+          });
+        }
+        return out;
+      }
+
+      function inferProviderSourceBySignals(infoObj, kind, providerObj, presets) {
+        const info = infoObj && typeof infoObj === 'object' ? infoObj : {};
+        const p = providerObj && typeof providerObj === 'object' ? providerObj : {};
+        const upper = String(kind || '').toUpperCase();
+        const src = p.credential_source || p.key_source || p.source || info[upper + '_KEY_SOURCE'] || info[upper + '_SOURCE'] || null;
+        if (src != null && String(src).trim() !== '') return String(src);
+
+        const vendor = (p.vendor || p.vendor_name || info[upper + '_VENDOR'] || '').toString().toLowerCase();
+        if (vendor && Array.isArray(presets) && presets.some(function (x) {
+          const name = (x && x.preset ? String(x.preset) : '').toLowerCase();
+          return name.indexOf(vendor) !== -1;
+        })) {
+          return 'agora_managed';
+        }
+        return null;
+      }
+
       function parseLines(text) {
         const lines = text.split(/\r?\n/);
         const entries = [];
@@ -301,12 +341,16 @@
           mllmVendor: null, mllmModel: null, mllmUrl: null,
           ttsModule: null,
           sttModule: null,
+          avatarVendor: null,
+          avatarId: null,
           eventStartInfo: null,
           createRequestBody: null,
           sipLabels: null,
           sessCtrlVersion: null,
           rtm: null,
           tools: null,
+          providerSource: { llm: null, tts: null, asr: null, presets: [] },
+          geoLocation: null,
           errors: 0,
           warnings: 0,
           turns: []
@@ -314,6 +358,12 @@
         const seenTurnKeys = new Set();
 
         for (const e of entries) {
+          // Fallback hints from plain-text extension creation lines (works even if graph JSON parse fails).
+          if (!summary.sttModule && e.msg && e.msg.includes('[deepgram_asr_python]')) summary.sttModule = 'deepgram';
+          if (!summary.ttsModule && e.msg && e.msg.includes('[minimax_tts_websocket]')) summary.ttsModule = 'minimax';
+          if (!summary.llmModule && e.msg && e.msg.includes('[glue_python_async]')) summary.llmModule = 'openai';
+          if (!summary.avatarVendor && (e.msg.includes('[heygen_avatar_python]') || e.msg.includes('[avatar]'))) summary.avatarVendor = 'heygen';
+
           if (!summary.sessCtrlVersion && e.ext === 'agora_sess_ctrl' && e.msg && e.msg.includes('SESS_CTRL: version:')) {
             const m = e.msg.match(/SESS_CTRL:\s*version:\s*([^\s]+)/);
             if (m) summary.sessCtrlVersion = m[1];
@@ -377,6 +427,7 @@
               });
               const ttsNode = j.nodes.find(n => n.name === 'tts');
               const asrNode = j.nodes.find(n => n.name === 'asr');
+              const avatarNode = j.nodes.find(n => n.name === 'avatar');
               if (llmNode) {
                 summary.llmModule = llmNode.addon || llmNode.name || null;
                 if (llmNode.property && llmNode.property.url) summary.llmUrl = llmNode.property.url;
@@ -398,6 +449,11 @@
               }
               if (ttsNode) summary.ttsModule = ttsNode.addon || ttsNode.name || null;
               if (asrNode) summary.sttModule = asrNode.addon || asrNode.name || null;
+              if (avatarNode) {
+                if (!summary.avatarVendor) summary.avatarVendor = (avatarNode.addon || avatarNode.name || null);
+                const p = avatarNode.property && avatarNode.property.params ? avatarNode.property.params : null;
+                if (p && !summary.avatarId && p.avatar_id) summary.avatarId = p.avatar_id;
+              }
             }
             if (j.graph_id) summary.graphId = j.graph_id;
             if (j.app_base_dir !== undefined && j.graph_id) summary.graphId = j.graph_id;
@@ -495,10 +551,50 @@
             if (j && typeof j === 'object' && j.taskInfo && typeof j.taskInfo === 'object' && (j.taskInfo.appId != null || j.taskInfo.taskId != null)) {
               summary.eventStartInfo = j;
               const info = j.taskInfo.info || j.taskInfo;
+              if (!summary.geoLocation && j.taskInfo.geoLocation && typeof j.taskInfo.geoLocation === 'object') {
+                summary.geoLocation = j.taskInfo.geoLocation;
+              }
+              summary.providerSource.presets = parseVendorPresets(info && info['X-VENDOR-PRESETS']);
               if (!summary.sttModule && (info.ASR_VENDOR || info.asr_vendor)) summary.sttModule = info.ASR_VENDOR || info.asr_vendor;
               if (!summary.ttsModule && (info.TTS_VENDOR || info.tts_vendor)) summary.ttsModule = info.TTS_VENDOR || info.tts_vendor;
               if (!summary.llmModel && (info.LLM_MODEL || info.MODEL)) summary.llmModel = info.LLM_MODEL || info.MODEL;
               if (!summary.sipLabels && info && info.LABELS && typeof info.LABELS === 'object') summary.sipLabels = info.LABELS;
+              if (!summary.avatarVendor && (info.AVATAR_VENDOR || info.avatar_vendor)) summary.avatarVendor = info.AVATAR_VENDOR || info.avatar_vendor;
+              if (!summary.avatarId && (info.AVATAR_ID || info.avatar_id)) summary.avatarId = info.AVATAR_ID || info.avatar_id;
+            }
+          }
+          // Fallback parse for taskInfo lines that may not be valid JSON/Python dict due nested quoting.
+          if ((!summary.providerSource || !summary.providerSource.presets.length) && e.msg && e.msg.includes('X-VENDOR-PRESETS')) {
+            const m = e.msg.match(/X-VENDOR-PRESETS['"]?\s*:\s*['"](\[[\s\S]*?\])['"]/);
+            if (m && m[1]) {
+              const parsed = parseVendorPresets(m[1]);
+              if (parsed.length) summary.providerSource.presets = parsed;
+            }
+          }
+          if ((!summary.sttModule || summary.sttModule === 'asr') && e.msg && /ASR_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/.test(e.msg)) {
+            const m = e.msg.match(/ASR_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/);
+            if (m && m[1]) summary.sttModule = m[1];
+          }
+          if ((!summary.ttsModule || summary.ttsModule === 'tts') && e.msg && /TTS_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/.test(e.msg)) {
+            const m = e.msg.match(/TTS_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/);
+            if (m && m[1]) summary.ttsModule = m[1];
+          }
+          if (!summary.avatarVendor && e.msg && /AVATAR_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/.test(e.msg)) {
+            const m = e.msg.match(/AVATAR_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/);
+            if (m && m[1]) summary.avatarVendor = m[1];
+          }
+          if (!summary.avatarId && e.msg && /AVATAR_ID['"]?\s*:\s*['"]([^'"]+)['"]/.test(e.msg)) {
+            const m = e.msg.match(/AVATAR_ID['"]?\s*:\s*['"]([^'"]+)['"]/);
+            if (m && m[1]) summary.avatarId = m[1];
+          }
+          // Fallback extraction for geoLocation in plain task_info lines.
+          if (!summary.geoLocation && e.msg && e.msg.includes('geoLocation')) {
+            const city = (e.msg.match(/geoLocation[^}]*['"]city['"]\s*:\s*['"]([^'"]+)['"]/) || [])[1] || null;
+            const country = (e.msg.match(/geoLocation[^}]*['"]country['"]\s*:\s*['"]([^'"]+)['"]/) || [])[1] || null;
+            const region = (e.msg.match(/geoLocation[^}]*['"]region['"]\s*:\s*['"]([^'"]+)['"]/) || [])[1] || null;
+            const continent = (e.msg.match(/geoLocation[^}]*['"]continent['"]\s*:\s*['"]([^'"]+)['"]/) || [])[1] || null;
+            if (city || country || region || continent) {
+              summary.geoLocation = { city, country, region, continent };
             }
           }
           if (!summary.createRequestBody && (e.json || e.msg)) {
@@ -603,6 +699,20 @@
           const hasMcp = summary.tools.is_tool_call_available != null || summary.tools.total_tools != null || hasServers || (summary.tools.mcp_errors && summary.tools.mcp_errors.length);
           if (!hasMcp && !hasCalls) summary.tools = null;
         }
+
+        // Fill provider source hints for both legacy and updated workflows.
+        const info = summary.eventStartInfo && summary.eventStartInfo.taskInfo
+          ? (summary.eventStartInfo.taskInfo.info || summary.eventStartInfo.taskInfo)
+          : {};
+        const props = summary.createRequestBody && summary.createRequestBody.properties
+          ? summary.createRequestBody.properties
+          : {};
+        const presets = summary.providerSource && Array.isArray(summary.providerSource.presets)
+          ? summary.providerSource.presets
+          : [];
+        summary.providerSource.llm = inferProviderSourceBySignals(info, 'llm', props.llm, presets);
+        summary.providerSource.tts = inferProviderSourceBySignals(info, 'tts', props.tts, presets);
+        summary.providerSource.asr = inferProviderSourceBySignals(info, 'asr', props.asr, presets);
 
         return summary;
       }
@@ -2007,13 +2117,13 @@
         pre.innerHTML = jsonSyntaxHighlight(text || '');
         overlay.classList.add('visible');
         overlay.setAttribute('aria-hidden', 'false');
-        document.body.classList.add('modal-open');
+        syncModalOpenClass();
       }
       function closeJsonModal() {
         const overlay = document.getElementById('jsonModal');
         overlay.classList.remove('visible');
         overlay.setAttribute('aria-hidden', 'true');
-        document.body.classList.remove('modal-open');
+        syncModalOpenClass();
         jsonModalCurrentText = '';
       }
 
@@ -2066,7 +2176,7 @@
         const ev = summary.eventStartInfo && summary.eventStartInfo.taskInfo ? summary.eventStartInfo : null;
         const ti = ev ? ev.taskInfo : null;
         const info = ti && ti.info && typeof ti.info === 'object' ? ti.info : {};
-        const geo = ti && ti.geoLocation && typeof ti.geoLocation === 'object' ? ti.geoLocation : null;
+        const geo = (ti && ti.geoLocation && typeof ti.geoLocation === 'object' ? ti.geoLocation : null) || summary.geoLocation || null;
         const createReq = summary.createRequestBody && summary.createRequestBody.properties ? summary.createRequestBody : null;
         const props = createReq ? createReq.properties : null;
 
@@ -2099,13 +2209,14 @@
         const ttsVendor = info.TTS_VENDOR || (props && props.tts && (props.tts.vendor || props.tts.vendor_name)) || summary.ttsModule || '—';
         const llmStr = (props && props.llm && (props.llm.url || props.llm.vendor || (typeof props.llm === 'string' ? props.llm : null))) || summary.llmUrl || summary.llmModule || '—';
         const llmModel = summary.llmModel || (props && props.llm && props.llm.params && props.llm.params.model) || '—';
+        const src = summary.providerSource || {};
         const mllmEnabled = info.ENABLE_MLLM === true;
         const mllmVendor = summary.mllmVendor || '—';
         const mllmModel = summary.mllmModel || '—';
         const mllmUrl = summary.mllmUrl || '—';
         const geoStr = geo ? [geo.city, geo.country, geo.region].filter(Boolean).join(' / ') : '—';
-        const avatarVendor = info.AVATAR_VENDOR || '—';
-        const avatarId = info.AVATAR_ID || '—';
+        const avatarVendor = info.AVATAR_VENDOR || summary.avatarVendor || '—';
+        const avatarId = info.AVATAR_ID || summary.avatarId || '—';
         const bvcUrl = info.BVC_URL || '—';
 
         const flagKeys = Object.keys(info || {}).filter(function (k) { return /^ENABLE_/.test(k); }).sort();
@@ -2120,8 +2231,8 @@
 
         let html = '<div class="summary-pretty-wrap">';
         html += '<div class="summary-pretty-grid">';
-        html += kvCard('ASR', '<span>' + mono(asrVendor) + '</span><span>' + mono(asrLang) + '</span>');
-        html += kvCard('LLM', '<span>' + mono(llmStr) + '</span><span>' + mono(llmModel) + '</span>');
+        html += kvCard('ASR', '<span>' + mono(asrVendor) + '</span><span>' + mono(src.asr || asrLang) + '</span>');
+        html += kvCard('LLM', '<span>' + mono(llmStr) + '</span><span>' + mono(src.llm || llmModel) + '</span>');
         if (mllmEnabled || summary.mllmVendor || summary.mllmModel || summary.mllmUrl) {
           html += kvCard(
             'MLLM / V2V',
@@ -2131,13 +2242,11 @@
             html += kvCard('MLLM URL', '<span>' + mono(mllmUrl) + '</span><span>' + mono('') + '</span>');
           }
         }
-        html += kvCard('TTS', '<span>' + mono(ttsVendor) + '</span><span>' + mono('') + '</span>');
+        html += kvCard('TTS', '<span>' + mono(ttsVendor) + '</span><span>' + mono(src.tts || '') + '</span>');
         html += kvCard('Service', '<span>' + mono(ti && ti.service) + '</span><span>' + mono(ti && ti.apiVersion) + '</span>');
         html += kvCard('GeoLocation', '<span>' + mono(geoStr) + '</span><span>' + mono(geo && geo.continent) + '</span>');
         html += kvCard('Channel', '<span>' + mono((ti && ti.taskLabels && ti.taskLabels.channel) || summary.channel) + '</span><span>' + mono('') + '</span>');
-        if (info.AVATAR_VENDOR || info.AVATAR_ID) {
-          html += kvCard('Avatar', '<span>' + mono(avatarVendor) + '</span><span>' + mono(avatarId) + '</span>');
-        }
+        html += kvCard('Avatar', '<span>' + mono(avatarVendor) + '</span><span>' + mono(avatarId) + '</span>');
         if (info.BVC_URL) {
           html += kvCard('BVC', '<span>' + mono(bvcUrl) + '</span><span>' + mono('') + '</span>');
         }
@@ -2199,6 +2308,15 @@
             html += '<p class="summary-json-hint">MCP errors: ' + escapeHtml(String(t.mcp_errors.length)) + ' (see Insights → Tools for details)</p>';
           }
           html += '</div>';
+        }
+
+        if (src && Array.isArray(src.presets) && src.presets.length) {
+          html += '<div class="summary-card summary-json-card"><h3 class="summary-card-title">Vendor presets</h3>';
+          html += '<table class="summary-flag-table"><tbody>';
+          for (const p of src.presets) {
+            html += '<tr><td class="summary-flag-k"><code>' + escapeHtml(String(p.preset || '')) + '</code></td><td class="summary-flag-v">' + ynBadge(!!p.enabled) + (p.applyMode ? ' <code style="margin-left:8px;">' + escapeHtml(p.applyMode) + '</code>' : '') + '</td></tr>';
+          }
+          html += '</tbody></table></div>';
         }
 
         html += '<div class="summary-card summary-json-card"><h3 class="summary-card-title">Raw JSON</h3>';
@@ -3323,14 +3441,14 @@
         );
       }
 
-      /** CSTool-compatible fetch: same API as rtsc-tools Log 快速分析 (parse_ten_err → poll → OSS .tgz). */
-      var CSTOOL_ORIGIN = 'https://rtsc-tools.sh3.agoralab.co';
-      var CSTOOL_POLL_MS = 3000;
-      var CSTOOL_MAX_WAIT_MS = 12 * 60 * 1000;
+      /** CSTool: parse_ten_err → poll → OSS .tgz (same as rtsc-tools Log 快速分析). */
+      const CSTOOL_ORIGIN = 'https://rtsc-tools.sh3.agoralab.co';
+      const CSTOOL_POLL_MS = 3000;
+      const CSTOOL_MAX_WAIT_MS = 12 * 60 * 1000;
 
       function cstoolDirectRoot() {
         try {
-          var o = localStorage.getItem('tenLogReader_cstoolOrigin');
+          const o = localStorage.getItem('tenLogReader_cstoolOrigin');
           if (o && /^https?:\/\/.+/i.test(o)) return o.replace(/\/$/, '');
         } catch (e) {}
         return CSTOOL_ORIGIN;
@@ -3338,8 +3456,11 @@
 
       function cstoolProxyRoot() {
         try {
-          var p = localStorage.getItem('tenLogReader_cstoolProxy');
+          const p = localStorage.getItem('tenLogReader_cstoolProxy');
           if (p && /^https?:\/\/.+/i.test(p)) return p.replace(/\/$/, '');
+          if (window.__TEN_LOG_READER_BUILTIN_CSTOOL__) {
+            return window.location.origin.replace(/\/$/, '');
+          }
         } catch (e2) {}
         return '';
       }
@@ -3368,14 +3489,102 @@
         }
       }
 
-      /** Send cookies only when this page is same-origin as the URL we fetch (CSTool or your proxy). */
       function cstoolFetchCredentials() {
         return cstoolFetchOriginMatchesReader() ? 'include' : 'omit';
       }
 
+      /** True when this app is served from rtsc-tools and no separate proxy URL is set — browser sends cookies via credentials. */
+      function cstoolUsesBrowserSessionOnly() {
+        return cstoolDirectOriginMatchesReader() && !cstoolProxyRoot();
+      }
+
+      /** Heuristic: clipboard text plausibly from a Cookie request header (not a guarantee). */
+      function looksLikeCookieHeader(text) {
+        const s = String(text || '').trim();
+        if (s.length < 24) return false;
+        if (!/=/.test(s)) return false;
+        if (/^https?:\/\//i.test(s)) return false;
+        if (/^\s*\{/m.test(s)) return false;
+        return /HCIAuthToken|accessToken|_streamlit|session|csrf|xsrf|_ga=/i.test(s);
+      }
+
+      /** Pasted cookie is sent to your proxy as X-CSTOOL-Cookie (browser cannot set Cookie on rtsc-tools cross-origin). */
+      function cstoolClientHeaders() {
+        try {
+          if (!cstoolProxyRoot()) return null;
+          const c = sessionStorage.getItem('tenLogReader_cstoolCookie');
+          if (c && String(c).trim()) {
+            return { 'X-CSTOOL-Cookie': String(c).trim() };
+          }
+        } catch (e) {}
+        return null;
+      }
+
+      /**
+       * DevTools sometimes copies Set-Cookie text with ;Domain=…;HttpOnly — strip attributes so the proxy can forward a valid Cookie header.
+       */
+      function normalizePastedCstoolCookie(s) {
+        if (!s || typeof s !== 'string') return s;
+        let t = s.trim();
+        const cut = t.search(/;\s*(Domain|Path|Max-Age|Expires|HttpOnly|Secure|SameSite)\s*=/i);
+        if (cut > 0) t = t.slice(0, cut).trim();
+        return t;
+      }
+
+      /** python -m http.server does not implement POST to /cstoolconvoai/ — returns 501 HTML. */
+      function getCstoolProxySameAsReaderError() {
+        try {
+          if (window.__TEN_LOG_READER_BUILTIN_CSTOOL__) return null;
+          const p = cstoolProxyRoot();
+          if (!p || window.location.protocol === 'file:') return null;
+          const readerOrigin = window.location.origin;
+          const proxyOrigin = new URL(p).origin;
+          if (readerOrigin === proxyOrigin) {
+            return (
+              'CSTool proxy URL must be a different origin than this page (e.g. http://127.0.0.1:8787 for local Node proxy), unless you deployed the built-in Vercel proxy (same site, no URL needed).'
+            );
+          }
+        } catch (e) {}
+        return null;
+      }
+
+      /** file:// has no normal origin — CORS with the proxy usually fails with "Failed to fetch". */
+      function getCstoolFileProtocolError() {
+        try {
+          if (window.location.protocol === 'file:') {
+            return (
+              'This page was opened as a local file (file://…). Browsers do not give it a real web origin, so fetch to your CSTool proxy usually fails.\n\n' +
+              'From the project folder run:\n  python3 -m http.server 8080\n' +
+              'then open:\n  http://127.0.0.1:8080/index.html\n\n' +
+              'On the proxy, set ALLOWED_ORIGIN=http://127.0.0.1:8080 (or use ALLOWED_ORIGIN=* only for local testing).'
+            );
+          }
+        } catch (e) {}
+        return null;
+      }
+
+      /** HTTPS reader pages cannot fetch http://127.0.0.1 (mixed content) — browser reports opaque "Failed to fetch". */
+      function getCstoolMixedContentProxyError() {
+        try {
+          if (window.location.protocol !== 'https:') return null;
+          const p = cstoolProxyRoot();
+          if (!p) return null;
+          const u = new URL(p);
+          if (u.protocol === 'http:') {
+            return (
+              'This page is loaded over HTTPS, but your CSTool proxy URL is HTTP (' +
+              p +
+              '). The browser blocks that (mixed content), so you only see “Failed to fetch”. ' +
+              'Fix: expose the proxy over HTTPS (e.g. cloudflared tunnel, ngrok) and paste that https:// URL, or deploy proxy/cf-worker.mjs and use the Worker URL.'
+            );
+          }
+        } catch (e) {}
+        return null;
+      }
+
       function getCstoolTenLogPageUrl(agentId, environment) {
-        var root = cstoolDirectRoot();
-        var env = environment || 'prod';
+        const root = cstoolDirectRoot();
+        const env = environment || 'prod';
         return (
           root +
           '/cstoolconvoai/ten_log?agent_id=' +
@@ -3386,10 +3595,9 @@
         );
       }
 
-      /** Does not bypass CORS for cross-origin fetch; may refresh rtsc-tools cookies in some browsers. */
       function maybeWarmCstoolCookieIframe() {
         if (cstoolDirectOriginMatchesReader()) return;
-        var ifr = document.getElementById('cstoolSessionIframe');
+        const ifr = document.getElementById('cstoolSessionIframe');
         if (!ifr) return;
         try {
           ifr.src = cstoolDirectRoot() + '/cstoolconvoai/ten_log';
@@ -3398,7 +3606,7 @@
 
       function isLikelyNetworkOrCorsFetchFailure(err) {
         if (!err) return false;
-        var m = String(err.message != null ? err.message : err);
+        const m = String(err.message != null ? err.message : err);
         if (err.name === 'TypeError' && /fetch|Failed|network|Load failed/i.test(m)) return true;
         if (/Failed to fetch|NetworkError|Load failed|networkerror/i.test(m)) return true;
         return false;
@@ -3412,7 +3620,7 @@
       }
 
       function updateAgentFetchButtonState() {
-        var fetchBtn = document.getElementById('agentFetchBtn');
+        const fetchBtn = document.getElementById('agentFetchBtn');
         if (!fetchBtn) return;
         if (cstoolFetchCanWork()) {
           fetchBtn.disabled = false;
@@ -3421,68 +3629,217 @@
           fetchBtn.disabled = true;
           fetchBtn.setAttribute(
             'title',
-            'Set a CSTool proxy URL (see “CSTool proxy” below) or host this app on the CSTool site — browsers cannot attach CSTool cookies to requests from github.io.'
+            'Set a CSTool proxy URL, use a Vercel deploy with the built-in /api proxy, or host on the CSTool site.'
           );
         }
       }
 
-      function openAgentFetchCorsDialog(agentId, environment) {
-        var a = document.getElementById('agentFetchOpenCstoolLink');
-        var sub = document.getElementById('agentFetchCorsSubtitle');
-        if (a) a.href = getCstoolTenLogPageUrl(agentId, environment);
-        if (sub) sub.textContent = window.location.origin || 'this origin';
-        var overlay = document.getElementById('agentFetchCorsDialog');
-        if (overlay) {
-          overlay.classList.add('visible');
-          overlay.setAttribute('aria-hidden', 'false');
-          document.body.classList.add('modal-open');
+      /** Hide “CSTool proxy” when this deployment already provides a proxy or browser session is enough. */
+      function updateCstoolProxyDetailsVisibility() {
+        const details = document.getElementById('cstoolProxyDetails');
+        const hint = document.getElementById('cstoolProxyOverrideHint');
+        if (!details && !hint) return;
+        let hide =
+          !!(window.__TEN_LOG_READER_BUILTIN_CSTOOL__ || cstoolUsesBrowserSessionOnly());
+        try {
+          const saved = localStorage.getItem('tenLogReader_cstoolProxy');
+          if (saved && String(saved).trim()) hide = false;
+        } catch (e) {}
+        if (details) details.style.display = hide ? 'none' : '';
+        if (hint) hint.style.display = hide ? 'block' : 'none';
+      }
+
+      function syncModalOpenClass() {
+        const any = document.querySelector('.modal-overlay.visible');
+        document.body.classList.toggle('modal-open', !!any);
+      }
+
+      function setCstoolClipboardStatus(msg) {
+        const st = document.getElementById('cstoolClipboardStatus');
+        if (st) st.textContent = msg || '';
+      }
+
+      function refreshCstoolAuthModalMode() {
+        const same = cstoolUsesBrowserSessionOnly();
+        const banner = document.getElementById('cstoolSameOriginBanner');
+        const section = document.getElementById('cstoolCookieSection');
+        const hint = document.getElementById('cstoolAuthHint');
+        const sub = document.getElementById('cstoolAuthSubtitle');
+        const mAgent = document.getElementById('cstoolModalAgentId');
+        const mEnv = document.getElementById('cstoolModalEnv');
+        const link = document.getElementById('cstoolOpenForCookieLink');
+        const pasteBtn = document.getElementById('cstoolPasteClipboardBtn');
+        if (banner) banner.style.display = same ? 'block' : 'none';
+        if (section) section.style.display = same ? 'none' : 'block';
+        if (hint) hint.style.display = same ? 'none' : 'block';
+        if (sub) sub.textContent = same ? 'Using your CSTool browser session' : 'Cookie for the proxy';
+        if (pasteBtn) pasteBtn.style.display = same ? 'none' : '';
+        if (link) {
+          const raw = (mAgent && mAgent.value ? mAgent.value : '').trim();
+          const env = (mEnv && mEnv.value) || 'prod';
+          link.href = raw
+            ? getCstoolTenLogPageUrl(raw, env)
+            : cstoolDirectRoot() + '/cstoolconvoai/ten_log';
         }
       }
 
-      function closeAgentFetchCorsDialog() {
-        var overlay = document.getElementById('agentFetchCorsDialog');
+      function tryAutofillCstoolCookieFromClipboard() {
+        setCstoolClipboardStatus('');
+        if (cstoolUsesBrowserSessionOnly()) return;
+        const ta = document.getElementById('cstoolCookieInput');
+        if (!ta || (ta.value || '').trim()) return;
+        if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
+          setCstoolClipboardStatus('Clipboard API unavailable here — paste manually or click “Fill from clipboard” after copying.');
+          return;
+        }
+        navigator.clipboard
+          .readText()
+          .then(function (text) {
+            const t = (text || '').trim();
+            if (!t || !looksLikeCookieHeader(t)) {
+              setCstoolClipboardStatus(
+                'Clipboard did not look like a Cookie header — copy from DevTools → Network → Request Headers → Cookie, then paste or use the button.'
+              );
+              return;
+            }
+            ta.value = normalizePastedCstoolCookie(t);
+            try {
+              sessionStorage.setItem('tenLogReader_cstoolCookie', ta.value);
+            } catch (e) {}
+            setCstoolClipboardStatus('Filled from clipboard.');
+          })
+          .catch(function () {
+            setCstoolClipboardStatus(
+              'Could not read clipboard automatically (browser permission). Copy Cookie in DevTools, then click “Fill from clipboard” or paste here.'
+            );
+          });
+      }
+
+      function fillCstoolCookieFromClipboardButton() {
+        setCstoolClipboardStatus('');
+        const ta = document.getElementById('cstoolCookieInput');
+        if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
+          alert('Clipboard read is not available. Paste the Cookie line into the box (Ctrl/Cmd+V).');
+          if (ta) ta.focus();
+          return;
+        }
+        navigator.clipboard
+          .readText()
+          .then(function (text) {
+            const t = (text || '').trim();
+            if (!t) {
+              setCstoolClipboardStatus('Clipboard was empty. Copy the Cookie header in DevTools first.');
+              if (ta) ta.focus();
+              return;
+            }
+            if (!looksLikeCookieHeader(t)) {
+              if (
+                !confirm(
+                  'Clipboard does not look like a Cookie header. Paste it into the box anyway?'
+                )
+              ) {
+                if (ta) ta.focus();
+                return;
+              }
+            }
+            const norm = normalizePastedCstoolCookie(t);
+            if (ta) ta.value = norm;
+            try {
+              sessionStorage.setItem('tenLogReader_cstoolCookie', norm);
+            } catch (e) {}
+            setCstoolClipboardStatus('Filled from clipboard.');
+          })
+          .catch(function () {
+            alert('Could not read clipboard. Paste the Cookie line manually into the box.');
+            if (ta) ta.focus();
+          });
+      }
+
+      function openCstoolAuthModal() {
+        const overlay = document.getElementById('cstoolAuthModal');
+        const agentInput = document.getElementById('agentIdInput');
+        const envSelect = document.getElementById('agentEnvSelect');
+        const mAgent = document.getElementById('cstoolModalAgentId');
+        const mEnv = document.getElementById('cstoolModalEnv');
+        const mCookie = document.getElementById('cstoolCookieInput');
+        if (mAgent && agentInput) mAgent.value = agentInput.value || '';
+        if (mEnv && envSelect) mEnv.value = envSelect.value || 'prod';
+        try {
+          if (mCookie) mCookie.value = sessionStorage.getItem('tenLogReader_cstoolCookie') || '';
+        } catch (e) {}
+        refreshCstoolAuthModalMode();
+        tryAutofillCstoolCookieFromClipboard();
+        if (overlay) {
+          overlay.classList.add('visible');
+          overlay.setAttribute('aria-hidden', 'false');
+          syncModalOpenClass();
+          if (mAgent) mAgent.focus();
+        }
+      }
+
+      function closeCstoolAuthModal() {
+        setCstoolClipboardStatus('');
+        const overlay = document.getElementById('cstoolAuthModal');
         if (overlay) {
           overlay.classList.remove('visible');
           overlay.setAttribute('aria-hidden', 'true');
         }
-        document.body.classList.remove('modal-open');
+        syncModalOpenClass();
+      }
+
+      function openAgentFetchCorsDialog(agentId, environment) {
+        const a = document.getElementById('agentFetchOpenCstoolLink');
+        const sub = document.getElementById('agentFetchCorsSubtitle');
+        if (a) a.href = getCstoolTenLogPageUrl(agentId, environment);
+        if (sub) sub.textContent = window.location.origin || 'this origin';
+        const overlay = document.getElementById('agentFetchCorsDialog');
+        if (overlay) {
+          overlay.classList.add('visible');
+          overlay.setAttribute('aria-hidden', 'false');
+          syncModalOpenClass();
+        }
+      }
+
+      function closeAgentFetchCorsDialog() {
+        const overlay = document.getElementById('agentFetchCorsDialog');
+        if (overlay) {
+          overlay.classList.remove('visible');
+          overlay.setAttribute('aria-hidden', 'true');
+        }
+        syncModalOpenClass();
       }
 
       function readTarField(block, start, len) {
-        var s = '';
-        for (var i = 0; i < len; i++) {
-          var c = block[start + i];
+        let s = '';
+        for (let i = 0; i < len; i++) {
+          const c = block[start + i];
           if (c === 0) break;
           s += String.fromCharCode(c);
         }
         return s.trim();
       }
 
-      /**
-       * @param {ArrayBuffer} tarBuf
-       * @returns {{ name: string, data: Uint8Array }[]}
-       */
       function parseUstarTarEntries(tarBuf) {
-        var arr = new Uint8Array(tarBuf);
-        var len = arr.length;
-        var offset = 0;
-        var out = [];
-        var pendingLongName = null;
+        const arr = new Uint8Array(tarBuf);
+        const len = arr.length;
+        let offset = 0;
+        const out = [];
+        let pendingLongName = null;
 
         while (offset + 512 <= len) {
-          var header = arr.subarray(offset, offset + 512);
-          if (header.every(function (b) { return b === 0; })) break;
+          const header = arr.subarray(offset, offset + 512);
+          if (header.every((b) => b === 0)) break;
 
-          var type = String.fromCharCode(header[156] || 0);
-          var sizeStr = readTarField(header, 124, 12).replace(/\0/g, '');
-          var size = parseInt(sizeStr, 8) || 0;
-          var shortName = readTarField(header, 0, 100).replace(/\0/g, '').trim();
+          const type = String.fromCharCode(header[156] || 0);
+          const sizeStr = readTarField(header, 124, 12).replace(/\0/g, '');
+          const size = parseInt(sizeStr, 8) || 0;
+          let shortName = readTarField(header, 0, 100).replace(/\0/g, '').trim();
           if (shortName.indexOf('./') === 0) shortName = shortName.slice(2);
 
           offset += 512;
 
           if (type === 'L') {
-            var nameBytes = arr.subarray(offset, offset + size);
+            const nameBytes = arr.subarray(offset, offset + size);
             pendingLongName = new TextDecoder('utf-8', { fatal: false }).decode(nameBytes).replace(/\0+$/, '').trim();
             offset += size;
             offset = Math.ceil(offset / 512) * 512;
@@ -3498,39 +3855,39 @@
             continue;
           }
 
-          var data = arr.subarray(offset, offset + size);
+          const data = arr.subarray(offset, offset + size);
           offset += size;
           offset = Math.ceil(offset / 512) * 512;
 
-          var reg = type === '0' || type === '\0' || type === '';
+          const reg = type === '0' || type === '\0' || type === '';
           if (!reg) {
             pendingLongName = null;
             continue;
           }
 
-          var name = pendingLongName || shortName;
+          let name = pendingLongName || shortName;
           pendingLongName = null;
           if (!name) continue;
-          out.push({ name: name, data: data });
+          out.push({ name, data });
         }
         return out;
       }
 
       function pickErrEntry(entries) {
         if (!entries || !entries.length) return null;
-        var nonEmpty = entries.filter(function (e) { return e.data && e.data.length; });
+        const nonEmpty = entries.filter((e) => e.data && e.data.length);
         if (!nonEmpty.length) return null;
-        var candidates = nonEmpty.filter(function (e) {
-          var n = (e.name || '').toLowerCase();
+        let candidates = nonEmpty.filter((e) => {
+          const n = (e.name || '').toLowerCase();
           return /\.(err|err\.log)$/i.test(n) || n.indexOf('ten.err') !== -1;
         });
         if (!candidates.length) candidates = nonEmpty.slice();
-        var ten = candidates.filter(function (e) { return /(^|\/)ten\.err([^/]*)$/i.test(e.name); });
+        const ten = candidates.filter((e) => /(^|\/)ten\.err([^/]*)$/i.test(e.name));
         if (ten.length) {
-          ten.sort(function (a, b) { return b.data.length - a.data.length; });
+          ten.sort((a, b) => b.data.length - a.data.length);
           return ten[0];
         }
-        candidates.sort(function (a, b) { return b.data.length - a.data.length; });
+        candidates.sort((a, b) => b.data.length - a.data.length);
         return candidates[0];
       }
 
@@ -3538,112 +3895,117 @@
         if (typeof DecompressionStream === 'undefined') {
           return Promise.reject(new Error('This browser cannot decompress .tgz (no DecompressionStream). Try Chrome, Edge, or Safari 16.4+.'));
         }
-        var ds = new DecompressionStream('gzip');
-        var stream = new Blob([buf]).stream().pipeThrough(ds);
+        const ds = new DecompressionStream('gzip');
+        const stream = new Blob([buf]).stream().pipeThrough(ds);
         return new Response(stream).arrayBuffer();
       }
 
       function extractErrTextFromTgz(tgzBytes) {
-        return gunzipArrayBuffer(tgzBytes).then(function (tarBuf) {
-          var entries = parseUstarTarEntries(tarBuf);
-          var picked = pickErrEntry(entries);
+        return gunzipArrayBuffer(tgzBytes).then((tarBuf) => {
+          const entries = parseUstarTarEntries(tarBuf);
+          const picked = pickErrEntry(entries);
           if (!picked) {
-            var names = entries.map(function (e) { return e.name; }).slice(0, 20);
+            const names = entries.map((e) => e.name).slice(0, 20);
             throw new Error('No .err file found in archive. Entries (sample): ' + (names.length ? names.join(', ') : '(empty)'));
           }
           return new TextDecoder('utf-8', { fatal: false }).decode(picked.data);
         });
       }
 
-      /**
-       * @param {string} agentId
-       * @param {string} environment prod|staging
-       * @param {{ onStatus?: (msg: string) => void }} opts
-       * @returns {Promise<{ text: string, fileName: string }>}
-       */
       function fetchTenErrViaCstool(agentId, environment, opts) {
-        var onStatus = opts && opts.onStatus ? opts.onStatus : function () {};
-        var cred = cstoolFetchCredentials();
-        var root = cstoolFetchRoot();
-        var viaProxy = !!cstoolProxyRoot();
-        var parseUrl = root + '/cstoolconvoai/parse_ten_err';
-        var fd = new FormData();
+        const onStatus = opts && opts.onStatus ? opts.onStatus : () => {};
+        const cred = cstoolFetchCredentials();
+        const root = cstoolFetchRoot();
+        const viaProxy = !!cstoolProxyRoot();
+        const fileErr = getCstoolFileProtocolError();
+        if (fileErr) return Promise.reject(new Error(fileErr));
+        const sameOriginErr = getCstoolProxySameAsReaderError();
+        if (sameOriginErr) return Promise.reject(new Error(sameOriginErr));
+        const mixed = getCstoolMixedContentProxyError();
+        if (mixed) return Promise.reject(new Error(mixed));
+        const parseUrl = root + '/cstoolconvoai/parse_ten_err';
+        const fd = new FormData();
         fd.append('agent_id', agentId);
         fd.append('environment', environment || 'prod');
 
-        return fetch(parseUrl, {
-          method: 'POST',
-          body: fd,
-          credentials: cred,
-          mode: 'cors'
-        }).then(function (res) {
-          if (!res.ok) {
-            return res.text().then(function (t) {
-              throw new Error('Start job failed (' + res.status + '). ' + (t ? t.slice(0, 200) : ''));
-            });
-          }
-          return res.json();
-        }).then(function (data) {
-          if (!data || !data.success) {
-            throw new Error((data && data.error) || (data && data.message) || 'Could not start log job.');
-          }
-          var jobId = data.job_id;
-          if (!jobId) throw new Error('No job_id in response.');
-          var statusPath = root + '/cstoolconvoai/api/ten_err_status/' + encodeURIComponent(jobId);
-          var deadline = Date.now() + CSTOOL_MAX_WAIT_MS;
+        const postInit = { method: 'POST', body: fd, credentials: cred, mode: 'cors' };
+        const ph = cstoolClientHeaders();
+        if (ph) postInit.headers = ph;
 
-          function pollOnce() {
-            return fetch(statusPath, { credentials: cred, mode: 'cors' }).then(function (res) {
-              if (!res.ok) {
-                return res.text().then(function (t) {
-                  throw new Error('Status check failed (' + res.status + '). ' + (t ? t.slice(0, 200) : ''));
-                });
-              }
-              return res.json();
-            }).then(function (st) {
-              if (!st) throw new Error('Empty status response.');
-              var status = st.status != null ? String(st.status).toLowerCase() : '';
-              if (status === 'failed') {
-                throw new Error(st.error || st.message || 'Server failed to prepare log.');
-              }
-              if (status === 'done' && st.download_url) {
-                return st;
-              }
-              if (status === 'done' && !st.download_url) {
-                throw new Error('Job finished but no download_url was returned.');
-              }
-              if (Date.now() > deadline) {
-                throw new Error('Timed out waiting for log (>' + Math.floor(CSTOOL_MAX_WAIT_MS / 60000) + ' min).');
-              }
-              onStatus('Processing on server… (' + (status || '…') + ')');
-              return new Promise(function (resolve) {
-                setTimeout(function () { resolve(pollOnce()); }, CSTOOL_POLL_MS);
-              });
-            });
-          }
-
-          onStatus('Job started; waiting for log package…');
-          return pollOnce();
-        }).then(function (st) {
-          var url = st.download_url;
-          if (!url) throw new Error('No download URL.');
-          if (viaProxy) {
-            url = root + '/_oss_tunnel?u=' + encodeURIComponent(st.download_url);
-          }
-          onStatus('Downloading log archive…');
-          return fetch(url, { credentials: 'omit', mode: 'cors' }).then(function (res) {
+        return fetch(parseUrl, postInit)
+          .then((res) => {
             if (!res.ok) {
-              throw new Error('Download failed (' + res.status + '). If this is a browser CORS block, open the URL in a tab where you are signed in, or download manually: ' + url);
+              return res.text().then((t) => {
+                throw new Error('Start job failed (' + res.status + '). ' + (t ? t.slice(0, 200) : ''));
+              });
             }
-            return res.arrayBuffer();
-          }).then(function (ab) {
-            onStatus('Extracting ten.err…');
-            return extractErrTextFromTgz(ab);
-          }).then(function (text) {
-            var base = (agentId.slice(0, 12) || 'ten') + '-fetched.err';
-            return { text: text, fileName: base };
+            return res.json();
+          })
+          .then((data) => {
+            if (!data || !data.success) {
+              throw new Error((data && data.error) || (data && data.message) || 'Could not start log job.');
+            }
+            const jobId = data.job_id;
+            if (!jobId) throw new Error('No job_id in response.');
+            const statusPath = root + '/cstoolconvoai/api/ten_err_status/' + encodeURIComponent(jobId);
+            const deadline = Date.now() + CSTOOL_MAX_WAIT_MS;
+
+            function pollOnce() {
+              const pollInit = { credentials: cred, mode: 'cors' };
+              const h2 = cstoolClientHeaders();
+              if (h2) pollInit.headers = h2;
+              return fetch(statusPath, pollInit).then((res) => {
+                if (!res.ok) {
+                  return res.text().then((t) => {
+                    throw new Error('Status check failed (' + res.status + '). ' + (t ? t.slice(0, 200) : ''));
+                  });
+                }
+                return res.json();
+              }).then((st) => {
+                if (!st) throw new Error('Empty status response.');
+                const status = st.status != null ? String(st.status).toLowerCase() : '';
+                if (status === 'failed') {
+                  throw new Error(st.error || st.message || 'Server failed to prepare log.');
+                }
+                if (status === 'done' && st.download_url) {
+                  return st;
+                }
+                if (status === 'done' && !st.download_url) {
+                  throw new Error('Job finished but no download_url was returned.');
+                }
+                if (Date.now() > deadline) {
+                  throw new Error('Timed out waiting for log (>' + Math.floor(CSTOOL_MAX_WAIT_MS / 60000) + ' min).');
+                }
+                onStatus('Processing on server… (' + (status || '…') + ')');
+                return new Promise((resolve) => {
+                  setTimeout(() => resolve(pollOnce()), CSTOOL_POLL_MS);
+                });
+              });
+            }
+
+            onStatus('Job started; waiting for log package…');
+            return pollOnce();
+          })
+          .then((st) => {
+            let url = st.download_url;
+            if (!url) throw new Error('No download URL.');
+            if (viaProxy) {
+              url = root + '/_oss_tunnel?u=' + encodeURIComponent(st.download_url);
+            }
+            onStatus('Downloading log archive…');
+            return fetch(url, { credentials: 'omit', mode: 'cors' }).then((res) => {
+              if (!res.ok) {
+                throw new Error('Download failed (' + res.status + '). If this is a browser CORS block, open the URL in a tab, or download manually: ' + url);
+              }
+              return res.arrayBuffer();
+            }).then((ab) => {
+              onStatus('Extracting ten.err…');
+              return extractErrTextFromTgz(ab);
+            }).then((text) => {
+              const base = (agentId.slice(0, 12) || 'ten') + '-fetched.err';
+              return { text, fileName: base };
+            });
           });
-        });
       }
 
       function setParseOverlay(show, message) {
@@ -3722,9 +4084,11 @@
             argusCh.style.display = 'none';
           }
           document.getElementById('sumGraphId').textContent = summary.graphId || '—';
-          document.getElementById('sumLlm').textContent = summary.llmUrl || summary.llmModule || '—';
-          document.getElementById('sumTts').textContent = summary.ttsModule || '—';
-          document.getElementById('sumStt').textContent = summary.sttModule || '—';
+          const src = summary.providerSource || {};
+          document.getElementById('sumLlm').textContent = (summary.llmUrl || summary.llmModule || '—') + (src.llm ? ' (' + src.llm + ')' : '');
+          document.getElementById('sumTts').textContent = (summary.ttsModule || '—') + (src.tts ? ' (' + src.tts + ')' : '');
+          document.getElementById('sumStt').textContent = (summary.sttModule || '—') + (src.asr ? ' (' + src.asr + ')' : '');
+          document.getElementById('sumAvatar').textContent = [summary.avatarVendor || '—', summary.avatarId ? ('id=' + summary.avatarId) : ''].filter(Boolean).join(' ');
           const stopCard = document.getElementById('summaryStopCard');
           if (summary.stopTs != null || summary.stopStatus || summary.stopMessage) {
             stopCard.style.display = 'block';
@@ -3775,9 +4139,24 @@
             if (ti.template != null) fields.push(['Template', ti.template]);
             if (info.ASR_VENDOR != null) fields.push(['ASR (STT)', info.ASR_VENDOR]);
             if (info.TTS_VENDOR != null) fields.push(['TTS', info.TTS_VENDOR]);
+            if (summary.providerSource && summary.providerSource.asr) fields.push(['ASR source', summary.providerSource.asr]);
+            if (summary.providerSource && summary.providerSource.tts) fields.push(['TTS source', summary.providerSource.tts]);
+            if (summary.providerSource && summary.providerSource.llm) fields.push(['LLM source', summary.providerSource.llm]);
+            if (summary.providerSource && Array.isArray(summary.providerSource.presets) && summary.providerSource.presets.length) {
+              fields.push(['X-VENDOR-PRESETS', summary.providerSource.presets.map(function (p) {
+                const name = p && p.preset ? p.preset : '';
+                const mode = p && p.applyMode ? p.applyMode : '';
+                return name + (mode ? ' (' + mode + ')' : '');
+              }).join(', ')]);
+            } else if (info['X-VENDOR-PRESETS']) {
+              fields.push(['X-VENDOR-PRESETS', String(info['X-VENDOR-PRESETS'])]);
+            }
             if (info.ASR_LANGUAGE != null) fields.push(['ASR language', info.ASR_LANGUAGE]);
             if (ti.createTs != null) fields.push(['Create TS', String(ti.createTs)]);
             if (ti.service != null) fields.push(['Service', ti.service]);
+            if (geo && (geo.city || geo.country || geo.region || geo.continent)) {
+              fields.push(['Geo', [geo.city, geo.country, geo.region, geo.continent].filter(Boolean).join(' / ')]);
+            }
             document.getElementById('sumEventStartFields').innerHTML = '<dl>' + fields.map(([k, v]) => '<dt>' + escapeHtml(k) + '</dt><dd>' + escapeHtml(String(v)) + '</dd>').join('') + '</dl>';
             document.getElementById('sumEventStartJson').textContent = JSON.stringify(summary.eventStartInfo, null, 2);
           } else eventStartCard.style.display = 'none';
@@ -3892,31 +4271,47 @@
       });
 
       (function initAgentFetch() {
-        var agentInput = document.getElementById('agentIdInput');
-        var envSelect = document.getElementById('agentEnvSelect');
-        var fetchBtn = document.getElementById('agentFetchBtn');
-        var openCstoolBtn = document.getElementById('agentOpenCstoolBtn');
-        var corsDialog = document.getElementById('agentFetchCorsDialog');
-        var corsCloseBtn = document.getElementById('agentFetchCorsCloseBtn');
-        var proxyInput = document.getElementById('cstoolProxyInput');
+        const agentInput = document.getElementById('agentIdInput');
+        const envSelect = document.getElementById('agentEnvSelect');
+        const fetchBtn = document.getElementById('agentFetchBtn');
+        const openCstoolBtn = document.getElementById('agentOpenCstoolBtn');
+        const authModal = document.getElementById('cstoolAuthModal');
+        const cstoolAuthCloseBtn = document.getElementById('cstoolAuthCloseBtn');
+        const cstoolAuthCancelBtn = document.getElementById('cstoolAuthCancelBtn');
+        const cstoolAuthRunBtn = document.getElementById('cstoolAuthRunBtn');
+        const corsDialog = document.getElementById('agentFetchCorsDialog');
+        const corsCloseBtn = document.getElementById('agentFetchCorsCloseBtn');
+        const proxyInput = document.getElementById('cstoolProxyInput');
         if (!agentInput || !envSelect || !fetchBtn) return;
+
+        fetch('/api/cstool-proxy-status', { method: 'GET', credentials: 'omit' })
+          .then(function (r) {
+            if (r.ok) window.__TEN_LOG_READER_BUILTIN_CSTOOL__ = true;
+          })
+          .catch(function () {})
+          .finally(function () {
+            updateAgentFetchButtonState();
+            updateCstoolProxyDetailsVisibility();
+          });
+
         try {
-          var savedId = localStorage.getItem('tenLogReader_lastAgentId');
+          const savedId = localStorage.getItem('tenLogReader_lastAgentId');
           if (savedId) agentInput.value = savedId;
-          var savedEnv = localStorage.getItem('tenLogReader_lastAgentEnv');
+          const savedEnv = localStorage.getItem('tenLogReader_lastAgentEnv');
           if (savedEnv && (savedEnv === 'prod' || savedEnv === 'staging')) envSelect.value = savedEnv;
-          var savedProxy = localStorage.getItem('tenLogReader_cstoolProxy');
+          const savedProxy = localStorage.getItem('tenLogReader_cstoolProxy');
           if (savedProxy && proxyInput) proxyInput.value = savedProxy;
         } catch (err) {}
 
         function persistProxyFromInput() {
           if (!proxyInput) return;
-          var v = (proxyInput.value || '').trim();
+          const v = (proxyInput.value || '').trim();
           try {
             if (v) localStorage.setItem('tenLogReader_cstoolProxy', v.replace(/\/$/, ''));
             else localStorage.removeItem('tenLogReader_cstoolProxy');
           } catch (e3) {}
           updateAgentFetchButtonState();
+          updateCstoolProxyDetailsVisibility();
         }
 
         if (proxyInput) {
@@ -3924,10 +4319,25 @@
           proxyInput.addEventListener('blur', persistProxyFromInput);
         }
 
+        const cstoolProxyOverrideBtn = document.getElementById('cstoolProxyOverrideBtn');
+        if (cstoolProxyOverrideBtn) {
+          cstoolProxyOverrideBtn.addEventListener('click', function () {
+            const d = document.getElementById('cstoolProxyDetails');
+            const h = document.getElementById('cstoolProxyOverrideHint');
+            if (d) {
+              d.style.display = '';
+              d.open = true;
+            }
+            if (h) h.style.display = 'none';
+            if (proxyInput) proxyInput.focus();
+          });
+        }
+
         updateAgentFetchButtonState();
+        updateCstoolProxyDetailsVisibility();
 
         function openCstoolInNewTab() {
-          var raw = (agentInput.value || '').trim();
+          const raw = (agentInput.value || '').trim();
           if (!raw) {
             alert('Enter an Agent ID.');
             agentInput.focus();
@@ -3940,24 +4350,33 @@
           openCstoolBtn.addEventListener('click', openCstoolInNewTab);
         }
 
-        if (corsDialog && corsCloseBtn) {
-          corsCloseBtn.addEventListener('click', closeAgentFetchCorsDialog);
-          corsDialog.addEventListener('click', function (e) {
-            if (e.target === corsDialog) closeAgentFetchCorsDialog();
-          });
-        }
-
-        fetchBtn.addEventListener('click', function () {
-          var raw = (agentInput.value || '').trim();
+        function runCstoolFetchFromUi() {
+          const mAgent = document.getElementById('cstoolModalAgentId');
+          const mEnv = document.getElementById('cstoolModalEnv');
+          const mCookie = document.getElementById('cstoolCookieInput');
+          const raw = (mAgent && mAgent.value ? mAgent.value : agentInput.value || '').trim();
           if (!raw) {
             alert('Enter an Agent ID.');
-            agentInput.focus();
+            if (mAgent) mAgent.focus();
             return;
           }
           if (!/^[A-Za-z0-9_-]+$/.test(raw) || raw.length < 16) {
             if (!confirm('Agent ID looks unusual. Continue anyway?')) return;
           }
-          var environment = envSelect.value || 'prod';
+          const environment = (mEnv && mEnv.value) || envSelect.value || 'prod';
+          try {
+            if (cstoolUsesBrowserSessionOnly()) {
+              sessionStorage.removeItem('tenLogReader_cstoolCookie');
+            } else {
+              const rawCk = mCookie && mCookie.value ? String(mCookie.value).trim() : '';
+              const ck = rawCk ? normalizePastedCstoolCookie(rawCk) : '';
+              if (ck) sessionStorage.setItem('tenLogReader_cstoolCookie', ck);
+              else sessionStorage.removeItem('tenLogReader_cstoolCookie');
+            }
+          } catch (e) {}
+          agentInput.value = raw;
+          envSelect.value = environment;
+          closeCstoolAuthModal();
           maybeWarmCstoolCookieIframe();
           fetchBtn.disabled = true;
           setParseOverlay(true, 'Connecting to log service…');
@@ -3974,6 +4393,18 @@
           }).catch(function (err) {
             console.error(err);
             setParseOverlay(false);
+            if (isLikelyNetworkOrCorsFetchFailure(err) && cstoolProxyRoot()) {
+              alert(
+                (err && err.message ? err.message : 'Failed to fetch') +
+                  '\n\nCheck: (1) Proxy running: node proxy/local-server.mjs on port 8787\n' +
+                  '(2) ALLOWED_ORIGIN matches this page exactly: ' +
+                  (window.location.origin || '(unknown)') +
+                  '\n   For local dev you can use: ALLOWED_ORIGIN=*\n' +
+                  '(3) Restart the proxy after updating it (Chrome may need a preflight header).\n\n' +
+                  'Paste the Cookie request header, not Set-Cookie (no ;Domain= / HttpOnly).'
+              );
+              return;
+            }
             if (shouldShowCorsFetchHelp(err)) {
               openAgentFetchCorsDialog(raw, environment);
             } else {
@@ -3982,6 +4413,44 @@
           }).finally(function () {
             updateAgentFetchButtonState();
           });
+        }
+
+        if (cstoolAuthCloseBtn) cstoolAuthCloseBtn.addEventListener('click', closeCstoolAuthModal);
+        if (cstoolAuthCancelBtn) cstoolAuthCancelBtn.addEventListener('click', closeCstoolAuthModal);
+        if (cstoolAuthRunBtn) cstoolAuthRunBtn.addEventListener('click', runCstoolFetchFromUi);
+        const cstoolPasteClipboardBtn = document.getElementById('cstoolPasteClipboardBtn');
+        if (cstoolPasteClipboardBtn) {
+          cstoolPasteClipboardBtn.addEventListener('click', fillCstoolCookieFromClipboardButton);
+        }
+        const cstoolModalAgentIdEl = document.getElementById('cstoolModalAgentId');
+        const cstoolModalEnvEl = document.getElementById('cstoolModalEnv');
+        function onCstoolModalFieldChange() {
+          const ov = document.getElementById('cstoolAuthModal');
+          if (ov && ov.classList.contains('visible')) refreshCstoolAuthModalMode();
+        }
+        if (cstoolModalAgentIdEl) cstoolModalAgentIdEl.addEventListener('input', onCstoolModalFieldChange);
+        if (cstoolModalEnvEl) cstoolModalEnvEl.addEventListener('change', onCstoolModalFieldChange);
+
+        if (authModal) {
+          authModal.addEventListener('click', function (e) {
+            if (e.target === authModal) closeCstoolAuthModal();
+          });
+        }
+
+        if (corsDialog && corsCloseBtn) {
+          corsCloseBtn.addEventListener('click', closeAgentFetchCorsDialog);
+          corsDialog.addEventListener('click', function (e) {
+            if (e.target === corsDialog) closeAgentFetchCorsDialog();
+          });
+        }
+
+        fetchBtn.addEventListener('click', function () {
+          if (!cstoolFetchCanWork()) {
+            alert('Set a CSTool proxy URL under “CSTool proxy” (or host this app on the CSTool site), then try again.');
+            if (proxyInput) proxyInput.focus();
+            return;
+          }
+          openCstoolAuthModal();
         });
       })();
 
@@ -4463,7 +4932,18 @@
         if (e.target && e.target.id === 'jsonModal') closeJsonModal();
       });
       document.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape') closeJsonModal();
+        if (e.key !== 'Escape') return;
+        const auth = document.getElementById('cstoolAuthModal');
+        if (auth && auth.classList.contains('visible')) {
+          closeCstoolAuthModal();
+          return;
+        }
+        const cors = document.getElementById('agentFetchCorsDialog');
+        if (cors && cors.classList.contains('visible')) {
+          closeAgentFetchCorsDialog();
+          return;
+        }
+        closeJsonModal();
       });
 
       document.getElementById('badgeErrors').addEventListener('click', function () {

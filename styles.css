@@ -118,6 +118,26 @@
       filter: brightness(1.05);
     }
 
+    .cstool-proxy-override-hint {
+      flex-basis: 100%;
+      width: 100%;
+      margin: 0;
+      padding: 0 4px;
+    }
+    .cstool-proxy-override-btn {
+      background: none;
+      border: none;
+      padding: 0;
+      font: inherit;
+      font-size: 12px;
+      color: var(--accent);
+      cursor: pointer;
+      text-decoration: underline;
+    }
+    .cstool-proxy-override-btn:hover {
+      filter: brightness(1.08);
+    }
+
     .agent-proxy-details {
       flex-basis: 100%;
       width: 100%;
@@ -163,6 +183,132 @@
       outline: none;
       border-color: var(--accent);
     }
+
+    .cstool-auth-field {
+      margin-bottom: 12px;
+    }
+    .cstool-auth-field label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+    .cstool-cookie-textarea {
+      width: 100%;
+      min-height: 88px;
+      padding: 8px 10px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.4;
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      resize: vertical;
+      box-sizing: border-box;
+    }
+    .cstool-cookie-textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .cstool-same-origin-banner {
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text);
+      background: color-mix(in srgb, var(--success) 18%, transparent);
+      border: 1px solid color-mix(in srgb, var(--success) 45%, var(--border));
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      margin-bottom: 12px;
+    }
+    .cstool-clipboard-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px 14px;
+      margin-bottom: 8px;
+    }
+    .cstool-open-cstool-link {
+      font-size: 12px;
+      color: var(--accent);
+      text-decoration: underline;
+    }
+    .cstool-open-cstool-link:hover {
+      filter: brightness(1.1);
+    }
+    .cstool-clipboard-status {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin: 0 0 8px;
+      min-height: 1.2em;
+    }
+    .cstool-auth-hint {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.5;
+      margin: 0 0 12px;
+    }
+    .cstool-auth-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+    .cstool-auth-actions .secondary {
+      padding: 8px 14px;
+      font-size: 13px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .cstool-auth-actions .primary {
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: var(--radius);
+      border: none;
+      background: var(--success);
+      color: var(--bg);
+      cursor: pointer;
+    }
+    .cstool-auth-actions .primary:hover { filter: brightness(1.06); }
+
+    .cors-dialog-lead {
+      font-size: 14px;
+      line-height: 1.55;
+      margin: 0 0 12px;
+      color: var(--text);
+    }
+    .cors-dialog-lead code {
+      font-size: 12px;
+      background: var(--bg);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .cors-dialog-list {
+      margin: 8px 0 14px;
+      padding-left: 1.25rem;
+      color: var(--text-muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .cors-dialog-list li { margin-bottom: 6px; }
+    .cors-dialog-actions { margin: 0; }
+    .cors-dialog-primary-link {
+      display: inline-flex;
+      align-items: center;
+      padding: 10px 16px;
+      background: var(--accent);
+      color: var(--bg) !important;
+      font-weight: 600;
+      text-decoration: none;
+      border-radius: var(--radius);
+    }
+    .cors-dialog-primary-link:hover { filter: brightness(1.08); }
 
     .logo {
       font-weight: 700;
@@ -377,38 +523,6 @@
       width: min(520px, 100%);
       max-height: min(88vh, 640px);
     }
-    .cors-dialog-lead {
-      font-size: 14px;
-      line-height: 1.55;
-      margin: 0 0 12px;
-      color: var(--text);
-    }
-    .cors-dialog-lead code {
-      font-size: 12px;
-      background: var(--bg);
-      padding: 2px 6px;
-      border-radius: 4px;
-    }
-    .cors-dialog-list {
-      margin: 8px 0 14px;
-      padding-left: 1.25rem;
-      color: var(--text-muted);
-      font-size: 13px;
-      line-height: 1.5;
-    }
-    .cors-dialog-list li { margin-bottom: 6px; }
-    .cors-dialog-actions { margin: 0; }
-    .cors-dialog-primary-link {
-      display: inline-flex;
-      align-items: center;
-      padding: 10px 16px;
-      background: var(--accent);
-      color: var(--bg) !important;
-      font-weight: 600;
-      text-decoration: none;
-      border-radius: var(--radius);
-    }
-    .cors-dialog-primary-link:hover { filter: brightness(1.08); }
     .modal-header {
       padding: 12px 14px;
       display: flex;

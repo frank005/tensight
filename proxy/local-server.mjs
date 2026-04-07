@@ -1,24 +1,19 @@
 #!/usr/bin/env node
 /**
- * Local CSTool proxy — same idea as Postman: your machine adds the Cookie header.
+ * Local CSTool proxy — adds the Cookie header server-side (like curl/Postman).
  *
- * Why not in the browser? JavaScript on github.io is NOT allowed to set the "Cookie"
- * header on requests to rtsc-tools (forbidden header list). Postman is not a web page,
- * so it has no such restriction.
+ * Optional: TEN Log Reader can send X-CSTOOL-Cookie per request (browser cannot set
+ * Cookie on rtsc-tools cross-origin). If absent, CSTOOL_COOKIE env is used.
  *
  * Usage (Node 18+):
- *   export CSTOOL_COOKIE='paste full Cookie header value from DevTools → Network'
- *   export ALLOWED_ORIGIN='https://frank005.github.io'
+ *   export ALLOWED_ORIGIN='https://your-id.github.io'
+ *   export CSTOOL_COOKIE='…'   # optional if the app sends X-CSTOOL-Cookie
  *   node proxy/local-server.mjs
  *
- * Then in TEN Log Reader → "CSTool proxy", paste:  http://127.0.0.1:8787
- * Keep this terminal open while you use Fetch log.
+ * Then paste http://127.0.0.1:8787 into the reader’s “CSTool proxy” field.
  *
- * Env:
- *   CSTOOL_COOKIE  (required) — same string you’d use in Postman
- *   ALLOWED_ORIGIN (required for Pages) — your reader origin, e.g. https://frank005.github.io
- *   PORT           (optional) — default 8787
- *   UPSTREAM       (optional) — default https://rtsc-tools.sh3.agoralab.co
+ * Do not open the reader as file:// — use http://127.0.0.1:PORT (e.g. python3 -m http.server)
+ * and set ALLOWED_ORIGIN to that origin, or ALLOWED_ORIGIN=* for local-only testing.
  */
 
 import http from 'http';
@@ -32,19 +27,41 @@ const ALLOWED_RAW = process.env.ALLOWED_ORIGIN || '*';
 function pickAllowOrigin(req) {
   const origin = req.headers.origin || '';
   const raw = String(ALLOWED_RAW).trim();
-  if (raw === '*' || raw === '') return origin || '*';
+  if (raw === '*' || raw === '') {
+    if (origin === 'null' || origin === '') return '*';
+    return origin;
+  }
   const list = raw.split(',').map((s) => s.trim()).filter(Boolean);
   if (list.includes(origin)) return origin;
-  return list[0] || origin || '*';
+  if (origin === 'null' && list.includes('null')) return 'null';
+  return list[0] || '*';
 }
 
-function corsHeaders(allow) {
-  return {
+/**
+ * @param {import('http').IncomingMessage} req
+ * @param {{ preflight?: boolean }} opts
+ */
+function corsHeaders(allow, req, opts) {
+  const preflight = !!(opts && opts.preflight);
+  const h = {
     'Access-Control-Allow-Origin': allow,
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD',
     'Access-Control-Max-Age': '86400'
   };
+  const arh = req && req.headers['access-control-request-headers'];
+  if (preflight && arh) {
+    h['Access-Control-Allow-Headers'] = arh;
+  } else {
+    h['Access-Control-Allow-Headers'] = 'Content-Type, X-CSTOOL-Cookie';
+  }
+  if (
+    preflight &&
+    req &&
+    String(req.headers['access-control-request-private-network'] || '').toLowerCase() === 'true'
+  ) {
+    h['Access-Control-Allow-Private-Network'] = 'true';
+  }
+  return h;
 }
 
 function collectBody(req) {
@@ -56,23 +73,29 @@ function collectBody(req) {
   });
 }
 
-async function handleOssTunnel(u, res, allow) {
+function effectiveCookie(req) {
+  const xh = req.headers['x-cstool-cookie'];
+  if (typeof xh === 'string' && xh.trim()) return xh.trim();
+  return COOKIE;
+}
+
+async function handleOssTunnel(u, res, allow, req) {
   let parsed;
   try {
     parsed = new URL(u);
   } catch {
-    res.writeHead(400, { 'Content-Type': 'text/plain', ...corsHeaders(allow) });
+    res.writeHead(400, { 'Content-Type': 'text/plain', ...corsHeaders(allow, req, {}) });
     res.end('bad url');
     return;
   }
   if (parsed.protocol !== 'https:') {
-    res.writeHead(403, { 'Content-Type': 'text/plain', ...corsHeaders(allow) });
+    res.writeHead(403, { 'Content-Type': 'text/plain', ...corsHeaders(allow, req, {}) });
     res.end('https only');
     return;
   }
   const host = parsed.hostname.toLowerCase();
   if (!host.endsWith('.aliyuncs.com') && !host.endsWith('.aliyun.com')) {
-    res.writeHead(403, { 'Content-Type': 'text/plain', ...corsHeaders(allow) });
+    res.writeHead(403, { 'Content-Type': 'text/plain', ...corsHeaders(allow, req, {}) });
     res.end('forbidden host');
     return;
   }
@@ -85,7 +108,7 @@ async function handleOssTunnel(u, res, allow) {
   res.writeHead(r.status, {
     'Content-Type': ct,
     'Content-Length': buf.length,
-    ...corsHeaders(allow)
+    ...corsHeaders(allow, req, {})
   });
   res.end(buf);
 }
@@ -95,7 +118,7 @@ http
     const allow = pickAllowOrigin(req);
 
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, corsHeaders(allow));
+      res.writeHead(204, corsHeaders(allow, req, { preflight: true }));
       res.end();
       return;
     }
@@ -105,7 +128,7 @@ http
     try {
       url = new URL(req.url || '/', `http://${host}`);
     } catch {
-      res.writeHead(400, corsHeaders(allow));
+      res.writeHead(400, { 'Content-Type': 'text/plain', ...corsHeaders(allow, req, {}) });
       res.end('bad request');
       return;
     }
@@ -113,35 +136,36 @@ http
     if (url.pathname === '/_oss_tunnel' && req.method === 'GET') {
       const u = url.searchParams.get('u');
       if (!u) {
-        res.writeHead(400, { 'Content-Type': 'text/plain', ...corsHeaders(allow) });
+        res.writeHead(400, { 'Content-Type': 'text/plain', ...corsHeaders(allow, req, {}) });
         res.end('missing u');
         return;
       }
       try {
-        await handleOssTunnel(u, res, allow);
+        await handleOssTunnel(u, res, allow, req);
       } catch (e) {
-        res.writeHead(502, { 'Content-Type': 'text/plain', ...corsHeaders(allow) });
+        res.writeHead(502, { 'Content-Type': 'text/plain', ...corsHeaders(allow, req, {}) });
         res.end(String(e && e.message ? e.message : e));
       }
       return;
     }
 
     if (!url.pathname.startsWith('/cstoolconvoai/')) {
-      res.writeHead(404, { 'Content-Type': 'text/plain', ...corsHeaders(allow) });
+      res.writeHead(404, { 'Content-Type': 'text/plain', ...corsHeaders(allow, req, {}) });
       res.end('Use /cstoolconvoai/... or /_oss_tunnel?u=');
       return;
     }
 
-    if (!COOKIE) {
-      res.writeHead(500, { 'Content-Type': 'text/plain', ...corsHeaders(allow) });
-      res.end('Set CSTOOL_COOKIE env var (same as Postman)');
+    const cookie = effectiveCookie(req);
+    if (!cookie) {
+      res.writeHead(500, { 'Content-Type': 'text/plain', ...corsHeaders(allow, req, {}) });
+      res.end('Set CSTOOL_COOKIE env and/or paste Cookie in the reader dialog (sent as X-CSTOOL-Cookie).');
       return;
     }
 
     const target = UPSTREAM + url.pathname + url.search;
 
     const headers = {
-      cookie: COOKIE,
+      cookie,
       'user-agent': 'ten-log-reader-local-proxy/1'
     };
     if (req.headers['content-type']) headers['content-type'] = req.headers['content-type'];
@@ -157,19 +181,19 @@ http
     try {
       r = await fetch(target, {
         method: req.method,
-        headers: headers,
+        headers,
         body: body && body.length ? body : undefined,
         redirect: 'follow'
       });
     } catch (e) {
-      res.writeHead(502, { 'Content-Type': 'text/plain', ...corsHeaders(allow) });
+      res.writeHead(502, { 'Content-Type': 'text/plain', ...corsHeaders(allow, req, {}) });
       res.end(String(e && e.message ? e.message : e));
       return;
     }
 
     const out = Buffer.from(await r.arrayBuffer());
     const outHeaders = {
-      ...corsHeaders(allow),
+      ...corsHeaders(allow, req, {}),
       'Content-Type': r.headers.get('content-type') || 'application/octet-stream',
       'Content-Length': out.length
     };
@@ -180,5 +204,7 @@ http
     console.error(
       `CSTool proxy listening on http://127.0.0.1:${PORT}\nPaste that URL into TEN Log Reader → CSTool proxy.\nALLOWED_ORIGIN=${ALLOWED_RAW}`
     );
-    if (!COOKIE) console.error('WARNING: CSTOOL_COOKIE is empty — set it like in Postman.');
+    if (!COOKIE) {
+      console.error('Note: CSTOOL_COOKIE is empty — use Cookie paste in the reader, or set the env var.');
+    }
   });
