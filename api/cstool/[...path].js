@@ -7,11 +7,27 @@ const {
 } = require('../../lib/cstoolProxyCore');
 
 const CSTOOL_API_PREFIX = '/api/cstool';
+/** Public path used by the browser; vercel.json rewrites here but req.url often stays on this prefix in Node. */
+const CSTOOL_REWRITE_PREFIX = '/cstoolconvoai';
+
+function pathnameFromReq(req) {
+  try {
+    const raw = req.url || '/';
+    const u = /^https?:\/\//i.test(raw)
+      ? new URL(raw)
+      : new URL(raw, `http://${req.headers.host || 'localhost'}`);
+    const p = u.pathname || '/';
+    return p.replace(/\/+/g, '/') || '/';
+  } catch {
+    const p = (req.url || '').split('?')[0] || '/';
+    return p.replace(/\/+/g, '/') || '/';
+  }
+}
 
 /**
- * Catch-all segments from the URL. Vercel usually sets req.query.path for
- * api/cstool/[...path].js, but rewrites and some Node runtimes leave it empty;
- * pathname on req.url is reliable (e.g. /api/cstool/parse_ten_err).
+ * Catch-all segments from the URL. Prefer req.query.path when set. Otherwise
+ * parse req.url: after a vercel.json rewrite, Node often still reports the
+ * *original* pathname (/cstoolconvoai/...) rather than /api/cstool/...
  */
 function pathSegments(req) {
   const q = req.query && req.query.path;
@@ -19,20 +35,18 @@ function pathSegments(req) {
     const fromQuery = Array.isArray(q) ? q.filter(Boolean) : [q].filter(Boolean);
     if (fromQuery.length) return fromQuery;
   }
-  let pathname = '';
-  try {
-    const raw = req.url || '/';
-    const u = /^https?:\/\//i.test(raw)
-      ? new URL(raw)
-      : new URL(raw, `http://${req.headers.host || 'localhost'}`);
-    pathname = u.pathname || '';
-  } catch {
-    pathname = (req.url || '').split('?')[0] || '';
+  const pathname = pathnameFromReq(req);
+  const prefixes = [CSTOOL_API_PREFIX, CSTOOL_REWRITE_PREFIX];
+  for (let i = 0; i < prefixes.length; i++) {
+    const p = prefixes[i];
+    if (pathname === p || pathname === p + '/') continue;
+    if (pathname.startsWith(p + '/')) {
+      const rest = pathname.slice(p.length + 1);
+      if (!rest) return [];
+      return rest.split('/').filter(Boolean);
+    }
   }
-  if (!pathname.startsWith(CSTOOL_API_PREFIX)) return [];
-  const rest = pathname.slice(CSTOOL_API_PREFIX.length).replace(/^\/+/, '');
-  if (!rest) return [];
-  return rest.split('/').filter(Boolean);
+  return [];
 }
 
 module.exports = async (req, res) => {
