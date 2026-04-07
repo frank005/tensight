@@ -24,7 +24,8 @@
           <option value="prod" selected>Production</option>
           <option value="staging">Staging</option>
         </select>
-        <button type="button" id="agentFetchBtn" class="agent-fetch-btn">Fetch log</button>
+        <button type="button" id="agentFetchBtn" class="agent-fetch-btn" title="Fetches immediately when signed in to CSTool on this site or when a cookie is saved; opens options only if that fails">Fetch log</button>
+        <button type="button" id="agentCstoolOptionsBtn" class="agent-cstool-options-btn" title="Open cookie / session options">⋯</button>
         <button type="button" id="agentOpenCstoolBtn" class="agent-open-cstool-btn" title="Opens CSTool Log 快速分析 in a new tab with this Agent ID">CSTool</button>
       </div>
       <span class="file-name" id="fileName">No file loaded</span>
@@ -246,6 +247,7 @@
         <button type="button" class="modal-close" id="cstoolAuthCloseBtn" aria-label="Close">×</button>
       </div>
       <div class="modal-body">
+        <p id="cstoolAuthRetryBanner" class="cstool-auth-retry-banner" style="display: none;" role="status"></p>
         <p class="cstool-auth-hint" id="cstoolAuthHint">
           This page <strong>cannot</strong> read cookies from <code>rtsc-tools</code> (cross-origin and usually <code>HttpOnly</code>). We try your <strong>clipboard</strong> once when this opens; if that fails, paste the <strong>Cookie</strong> <em>request</em> header from DevTools → Network (same as curl <code>-b</code>). Not <strong>Set-Cookie</strong> (no <code>;Domain=</code>). Stored in <code>sessionStorage</code> for this tab; sent only to your proxy.
         </p>
@@ -269,7 +271,7 @@
             <textarea id="cstoolCookieInput" class="cstool-cookie-textarea" placeholder="_ga=…; HCIAuthToken=…" spellcheck="false"></textarea>
           </div>
           <div class="cstool-clipboard-row">
-            <button type="button" class="secondary" id="cstoolPasteClipboardBtn">Fill from clipboard</button>
+            <button type="button" class="cstool-paste-btn" id="cstoolPasteClipboardBtn">Fill from clipboard</button>
             <a id="cstoolOpenForCookieLink" class="cstool-open-cstool-link" href="#" target="_blank" rel="noopener">Open CSTool (sign in, then copy Cookie in DevTools → Network)</a>
           </div>
           <p id="cstoolClipboardStatus" class="cstool-clipboard-status" aria-live="polite"></p>

@@ -3547,6 +3547,46 @@
         return t;
       }
 
+      function getStoredCstoolCookie() {
+        try {
+          const c = sessionStorage.getItem('tenLogReader_cstoolCookie');
+          return c && String(c).trim() ? String(c).trim() : '';
+        } catch (e) {
+          return '';
+        }
+      }
+
+      /** For one-click Fetch: read clipboard without opening the modal (no UI permission prompt in some browsers until gesture — still part of same click). */
+      function trySilentClipboardCookieForCstool() {
+        return new Promise(function (resolve) {
+          if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
+            resolve({ ok: false, reason: 'unavailable' });
+            return;
+          }
+          navigator.clipboard
+            .readText()
+            .then(function (text) {
+              const t = (text || '').trim();
+              if (!t) {
+                resolve({ ok: false, reason: 'empty' });
+                return;
+              }
+              if (!looksLikeCookieHeader(t)) {
+                resolve({ ok: false, reason: 'not_cookie' });
+                return;
+              }
+              const norm = normalizePastedCstoolCookie(t);
+              try {
+                sessionStorage.setItem('tenLogReader_cstoolCookie', norm);
+              } catch (e2) {}
+              resolve({ ok: true });
+            })
+            .catch(function () {
+              resolve({ ok: false, reason: 'denied' });
+            });
+        });
+      }
+
       /** python -m http.server does not implement POST to /cstoolconvoai/ — returns 501 HTML. */
       function getCstoolProxySameAsReaderError() {
         try {
@@ -3771,20 +3811,45 @@
           });
       }
 
-      function openCstoolAuthModal() {
+      function openCstoolAuthModal(opts) {
+        opts = opts || {};
         const overlay = document.getElementById('cstoolAuthModal');
+        const retryBanner = document.getElementById('cstoolAuthRetryBanner');
         const agentInput = document.getElementById('agentIdInput');
         const envSelect = document.getElementById('agentEnvSelect');
         const mAgent = document.getElementById('cstoolModalAgentId');
         const mEnv = document.getElementById('cstoolModalEnv');
         const mCookie = document.getElementById('cstoolCookieInput');
+        if (retryBanner) {
+          const r = opts.retryReason;
+          if (r === 'session_failed') {
+            retryBanner.textContent =
+              'Could not fetch with your browser session. Confirm you are signed in to CSTool on this site, then press Fetch again.';
+            retryBanner.style.display = 'block';
+          } else if (r === 'cookie_fetch_failed') {
+            retryBanner.textContent =
+              'Fetch failed with the saved cookie (it may be expired). Paste a fresh Cookie request header from DevTools → Network, then press Fetch again.';
+            retryBanner.style.display = 'block';
+          } else if (r === 'clipboard_failed') {
+            retryBanner.textContent =
+              'Could not use the clipboard as a Cookie automatically. Paste the Cookie request header below, then press Fetch.';
+            retryBanner.style.display = 'block';
+          } else {
+            retryBanner.textContent = '';
+            retryBanner.style.display = 'none';
+          }
+        }
         if (mAgent && agentInput) mAgent.value = agentInput.value || '';
         if (mEnv && envSelect) mEnv.value = envSelect.value || 'prod';
         try {
           if (mCookie) mCookie.value = sessionStorage.getItem('tenLogReader_cstoolCookie') || '';
         } catch (e) {}
         refreshCstoolAuthModalMode();
-        tryAutofillCstoolCookieFromClipboard();
+        if (opts.skipClipboardAutofill) {
+          setCstoolClipboardStatus('');
+        } else {
+          tryAutofillCstoolCookieFromClipboard();
+        }
         if (overlay) {
           overlay.classList.add('visible');
           overlay.setAttribute('aria-hidden', 'false');
@@ -3795,6 +3860,11 @@
 
       function closeCstoolAuthModal() {
         setCstoolClipboardStatus('');
+        const retryBanner = document.getElementById('cstoolAuthRetryBanner');
+        if (retryBanner) {
+          retryBanner.textContent = '';
+          retryBanner.style.display = 'none';
+        }
         const overlay = document.getElementById('cstoolAuthModal');
         if (overlay) {
           overlay.classList.remove('visible');
@@ -4367,6 +4437,65 @@
           openCstoolBtn.addEventListener('click', openCstoolInNewTab);
         }
 
+        function handleCstoolFetchError(err, raw, environment, pipelineOpts) {
+          console.error(err);
+          setParseOverlay(false);
+          if (isLikelyNetworkOrCorsFetchFailure(err) && cstoolProxyRoot()) {
+            alert(
+              (err && err.message ? err.message : 'Failed to fetch') +
+                '\n\nCheck: (1) Proxy running: node proxy/local-server.mjs on port 8787\n' +
+                '(2) ALLOWED_ORIGIN matches this page exactly: ' +
+                (window.location.origin || '(unknown)') +
+                '\n   For local dev you can use: ALLOWED_ORIGIN=*\n' +
+                '(3) Restart the proxy after updating it (Chrome may need a preflight header).\n\n' +
+                'Paste the Cookie request header, not Set-Cookie (no ;Domain= / HttpOnly).'
+            );
+            return;
+          }
+          if (shouldShowCorsFetchHelp(err)) {
+            openAgentFetchCorsDialog(raw, environment);
+            return;
+          }
+          if (pipelineOpts && pipelineOpts.openAuthModalOnFailure) {
+            const clipMiss = !!pipelineOpts.clipboardAttemptFailed;
+            openCstoolAuthModal({
+              retryReason: clipMiss ? 'clipboard_failed' : pipelineOpts.retryReason || 'cookie_fetch_failed',
+              skipClipboardAutofill: clipMiss
+            });
+            if (clipMiss) {
+              setCstoolClipboardStatus(
+                'Paste the Cookie request header from DevTools → Network (after signing in to CSTool), then press Fetch.'
+              );
+            }
+            return;
+          }
+          alert(err && err.message ? err.message : String(err));
+        }
+
+        function runCstoolFetchPipeline(raw, environment, pipelineOpts) {
+          maybeWarmCstoolCookieIframe();
+          fetchBtn.disabled = true;
+          setParseOverlay(true, 'Connecting to log service…');
+          fetchTenErrViaCstool(raw, environment, {
+            onStatus: function (msg) {
+              setParseOverlay(true, msg);
+            }
+          })
+            .then(function (result) {
+              try {
+                localStorage.setItem('tenLogReader_lastAgentId', raw);
+                localStorage.setItem('tenLogReader_lastAgentEnv', environment);
+              } catch (e2) {}
+              onFileLoad(result.text, result.fileName);
+            })
+            .catch(function (err) {
+              handleCstoolFetchError(err, raw, environment, pipelineOpts);
+            })
+            .finally(function () {
+              updateAgentFetchButtonState();
+            });
+        }
+
         function runCstoolFetchFromUi() {
           const mAgent = document.getElementById('cstoolModalAgentId');
           const mEnv = document.getElementById('cstoolModalEnv');
@@ -4394,42 +4523,7 @@
           agentInput.value = raw;
           envSelect.value = environment;
           closeCstoolAuthModal();
-          maybeWarmCstoolCookieIframe();
-          fetchBtn.disabled = true;
-          setParseOverlay(true, 'Connecting to log service…');
-          fetchTenErrViaCstool(raw, environment, {
-            onStatus: function (msg) {
-              setParseOverlay(true, msg);
-            }
-          }).then(function (result) {
-            try {
-              localStorage.setItem('tenLogReader_lastAgentId', raw);
-              localStorage.setItem('tenLogReader_lastAgentEnv', environment);
-            } catch (e2) {}
-            onFileLoad(result.text, result.fileName);
-          }).catch(function (err) {
-            console.error(err);
-            setParseOverlay(false);
-            if (isLikelyNetworkOrCorsFetchFailure(err) && cstoolProxyRoot()) {
-              alert(
-                (err && err.message ? err.message : 'Failed to fetch') +
-                  '\n\nCheck: (1) Proxy running: node proxy/local-server.mjs on port 8787\n' +
-                  '(2) ALLOWED_ORIGIN matches this page exactly: ' +
-                  (window.location.origin || '(unknown)') +
-                  '\n   For local dev you can use: ALLOWED_ORIGIN=*\n' +
-                  '(3) Restart the proxy after updating it (Chrome may need a preflight header).\n\n' +
-                  'Paste the Cookie request header, not Set-Cookie (no ;Domain= / HttpOnly).'
-              );
-              return;
-            }
-            if (shouldShowCorsFetchHelp(err)) {
-              openAgentFetchCorsDialog(raw, environment);
-            } else {
-              alert(err && err.message ? err.message : String(err));
-            }
-          }).finally(function () {
-            updateAgentFetchButtonState();
-          });
+          runCstoolFetchPipeline(raw, environment, { openAuthModalOnFailure: false });
         }
 
         if (cstoolAuthCloseBtn) cstoolAuthCloseBtn.addEventListener('click', closeCstoolAuthModal);
@@ -4467,8 +4561,61 @@
             if (proxyInput) proxyInput.focus();
             return;
           }
-          openCstoolAuthModal();
+          const raw = (agentInput.value || '').trim();
+          if (!raw) {
+            alert('Enter an Agent ID.');
+            agentInput.focus();
+            return;
+          }
+          if (!/^[A-Za-z0-9_-]+$/.test(raw) || raw.length < 16) {
+            if (!confirm('Agent ID looks unusual. Continue anyway?')) return;
+          }
+          const environment = envSelect.value || 'prod';
+
+          if (cstoolUsesBrowserSessionOnly()) {
+            runCstoolFetchPipeline(raw, environment, {
+              openAuthModalOnFailure: true,
+              retryReason: 'session_failed'
+            });
+            return;
+          }
+
+          if (cstoolProxyRoot()) {
+            const ck = getStoredCstoolCookie();
+            if (ck) {
+              runCstoolFetchPipeline(raw, environment, {
+                openAuthModalOnFailure: true,
+                retryReason: 'cookie_fetch_failed'
+              });
+              return;
+            }
+            trySilentClipboardCookieForCstool().then(function (clip) {
+              runCstoolFetchPipeline(raw, environment, {
+                openAuthModalOnFailure: true,
+                retryReason: 'cookie_fetch_failed',
+                clipboardAttemptFailed: !clip.ok
+              });
+            });
+            return;
+          }
+
+          runCstoolFetchPipeline(raw, environment, {
+            openAuthModalOnFailure: true,
+            retryReason: 'session_failed'
+          });
         });
+
+        const agentCstoolOptionsBtn = document.getElementById('agentCstoolOptionsBtn');
+        if (agentCstoolOptionsBtn) {
+          agentCstoolOptionsBtn.addEventListener('click', function () {
+            if (!cstoolFetchCanWork()) {
+              alert('Set a CSTool proxy URL under “CSTool proxy” (or host this app on the CSTool site), then try again.');
+              if (proxyInput) proxyInput.focus();
+              return;
+            }
+            openCstoolAuthModal({});
+          });
+        }
       })();
 
       const appEl = document.getElementById('app');

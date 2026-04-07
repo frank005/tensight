@@ -6,10 +6,33 @@ const {
   readBodyBuffer
 } = require('../../lib/cstoolProxyCore');
 
+const CSTOOL_API_PREFIX = '/api/cstool';
+
+/**
+ * Catch-all segments from the URL. Vercel usually sets req.query.path for
+ * api/cstool/[...path].js, but rewrites and some Node runtimes leave it empty;
+ * pathname on req.url is reliable (e.g. /api/cstool/parse_ten_err).
+ */
 function pathSegments(req) {
-  let p = req.query.path;
-  if (p == null) return [];
-  return Array.isArray(p) ? p : [p];
+  const q = req.query && req.query.path;
+  if (q != null) {
+    const fromQuery = Array.isArray(q) ? q.filter(Boolean) : [q].filter(Boolean);
+    if (fromQuery.length) return fromQuery;
+  }
+  let pathname = '';
+  try {
+    const raw = req.url || '/';
+    const u = /^https?:\/\//i.test(raw)
+      ? new URL(raw)
+      : new URL(raw, `http://${req.headers.host || 'localhost'}`);
+    pathname = u.pathname || '';
+  } catch {
+    pathname = (req.url || '').split('?')[0] || '';
+  }
+  if (!pathname.startsWith(CSTOOL_API_PREFIX)) return [];
+  const rest = pathname.slice(CSTOOL_API_PREFIX.length).replace(/^\/+/, '');
+  if (!rest) return [];
+  return rest.split('/').filter(Boolean);
 }
 
 module.exports = async (req, res) => {
