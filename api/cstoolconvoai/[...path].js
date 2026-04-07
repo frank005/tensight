@@ -7,8 +7,9 @@ const {
   cstoolUpstreamSuffixFromPublicSegments
 } = require('../../lib/cstoolProxyCore');
 
-const CSTOOL_API_PREFIX = '/api/cstool';
-/** Public path used by the browser; vercel.json rewrites here but req.url often stays on this prefix in Node. */
+/** Internal handler URL (see vercel.json rewrites from /cstoolconvoai/…). */
+const CSTOOL_API_PREFIX = '/api/cstoolconvoai';
+/** Public path; req.url often stays here after rewrite on Node. */
 const CSTOOL_REWRITE_PREFIX = '/cstoolconvoai';
 
 function pathnameFromReq(req) {
@@ -25,11 +26,6 @@ function pathnameFromReq(req) {
   }
 }
 
-/**
- * Catch-all segments from the URL. Prefer req.query.path when set. Otherwise
- * parse req.url: after a vercel.json rewrite, Node often still reports the
- * *original* pathname (/cstoolconvoai/...) rather than /api/cstool/...
- */
 function pathSegments(req) {
   const q = req.query && req.query.path;
   if (q != null) {

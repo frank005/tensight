@@ -2,11 +2,11 @@
   "rewrites": [
     {
       "source": "/cstoolconvoai/api/ten_err_status/:jobId",
-      "destination": "/api/cstool/poll-ten-err/:jobId"
+      "destination": "/api/cstoolconvoai/poll-ten-err/:jobId"
     },
     {
       "source": "/cstoolconvoai/:path*",
-      "destination": "/api/cstool/:path*"
+      "destination": "/api/cstoolconvoai/:path*"
     },
     {
       "source": "/_oss_tunnel",
