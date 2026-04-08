@@ -1,7 +1,6 @@
 /**
  * Dedicated handler for GET /cstoolconvoai/ten_err_status/:jobId (rewritten here with ?job=).
- * Vercel often returns NOT_FOUND for multi-segment paths under api/cstoolconvoai/[...path];
- * a flat /api/cstool-poll route avoids that.
+ * Upstream JSON is NOT the same as CSTool's status_url HTML page: call api/ten_err_status.
  */
 
 const {
@@ -65,13 +64,13 @@ module.exports = async (req, res) => {
     const tail = qs.toString();
     if (tail) search = '?' + tail;
   }
-  const target = `${base}/cstoolconvoai/ten_err_status/${encodeURIComponent(job)}${search}`;
+  const target = `${base}/cstoolconvoai/api/ten_err_status/${encodeURIComponent(job)}${search}`;
 
   const headers = {
     cookie,
     'user-agent': 'ten-log-reader-vercel-proxy/1'
   };
-  if (req.headers.accept) headers.accept = req.headers.accept;
+  headers.accept = req.headers.accept || 'application/json';
   if (req.headers['accept-language']) headers['accept-language'] = req.headers['accept-language'];
 
   let r;

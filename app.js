@@ -4034,11 +4034,15 @@
             const jobId = data.job_id;
             if (!jobId) throw new Error('No job_id in response.');
             const rootNorm = root.replace(/\/$/, '');
-            let statusRel =
-              data && typeof data.status_url === 'string' && data.status_url.trim()
-                ? data.status_url.trim()
-                : '/cstoolconvoai/ten_err_status/' + encodeURIComponent(jobId);
-            if (statusRel.indexOf('/') !== 0) statusRel = '/' + statusRel;
+            const su = data && typeof data.status_url === 'string' ? data.status_url.trim() : '';
+            let statusRel;
+            if (su && su.indexOf('/api/ten_err_status') !== -1) {
+              statusRel = su.indexOf('/') === 0 ? su : '/' + su;
+            } else if (viaProxy) {
+              statusRel = '/cstoolconvoai/ten_err_status/' + encodeURIComponent(jobId);
+            } else {
+              statusRel = '/cstoolconvoai/api/ten_err_status/' + encodeURIComponent(jobId);
+            }
             const statusPath = rootNorm + statusRel;
             const deadline = Date.now() + CSTOOL_MAX_WAIT_MS;
 

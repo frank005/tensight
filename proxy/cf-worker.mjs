@@ -27,11 +27,14 @@
 
 const DEFAULT_UPSTREAM = 'https://rtsc-tools.sh3.agoralab.co';
 
-/** poll-ten-err/:jobId → upstream ten_err_status/:jobId (same as CSTool status_url). */
+/** Map public poll paths → upstream JSON api/ten_err_status (not HTML /ten_err_status). */
 function cstoolUpstreamSuffixFromPublicSegments(segments) {
   if (!segments || !segments.length) return '';
   if (segments[0] === 'poll-ten-err' && segments.length >= 2) {
-    return ['ten_err_status'].concat(segments.slice(1)).join('/');
+    return ['api', 'ten_err_status'].concat(segments.slice(1)).join('/');
+  }
+  if (segments[0] === 'ten_err_status' && segments.length >= 2) {
+    return ['api', 'ten_err_status'].concat(segments.slice(1)).join('/');
   }
   return segments.join('/');
 }
