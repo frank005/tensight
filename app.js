@@ -4226,6 +4226,10 @@
             eventStartCard.style.display = 'block';
             const ti = summary.eventStartInfo.taskInfo;
             const info = ti.info || {};
+            const geo =
+              (ti && ti.geoLocation && typeof ti.geoLocation === 'object' ? ti.geoLocation : null) ||
+              summary.geoLocation ||
+              null;
             const fields = [];
             if (ti.taskId != null) fields.push(['Task ID', ti.taskId]);
             if (ti.appId != null) fields.push(['App ID', ti.appId]);
