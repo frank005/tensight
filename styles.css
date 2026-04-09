@@ -416,15 +416,43 @@
       background: color-mix(in srgb, var(--accent) 8%, transparent);
     }
 
+    .file-name-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      flex: 1;
+      max-width: min(440px, 52vw);
+    }
     .file-name {
       color: var(--text-muted);
       font-size: 13px;
       min-width: 0;
       flex: 1;
-      max-width: 280px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    .download-raw-log-btn {
+      flex-shrink: 0;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: var(--font-sans);
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .download-raw-log-btn:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .download-raw-log-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
     }
 
     .main {
@@ -1241,4 +1269,31 @@
     .insight-table .perf-median-row td { border-top: 2px solid var(--border); }
     .turn-row.turn-user td:nth-child(2) { color: var(--accent); font-weight: 500; }
     .turn-row.turn-agent td:nth-child(2) { color: var(--success); font-weight: 500; }
+
+    .insight-text-inline { white-space: pre-wrap; word-break: break-word; }
+    .insight-text-expand { max-width: min(42rem, 92vw); }
+    .insight-text-expand .insight-text-summary {
+      cursor: pointer;
+      list-style-position: outside;
+      font-weight: 500;
+    }
+    .insight-text-expand .insight-text-summary::-webkit-details-marker { color: var(--text-muted); }
+    .insight-text-expand .insight-text-hint {
+      color: var(--text-muted);
+      font-size: 11px;
+      font-weight: 400;
+    }
+    .insight-text-full {
+      margin-top: 8px;
+      padding: 8px 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: min(70vh, 28rem);
+      overflow: auto;
+      font-size: 12px;
+      line-height: 1.45;
+    }
   

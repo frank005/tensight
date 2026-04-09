@@ -1916,11 +1916,11 @@
 
       /** Combined turns: user (ASR + eval_id + glue) + agent (TTS + glue), same shape, sorted by turn then time */
       function buildTurnRowHtml(row) {
-        const text = (row.text || '').slice(0, 200) + (row.text && row.text.length > 200 ? '…' : '');
+        const textCell = insightLongTextCell(row.text || '');
         const finalStr = row.final === true ? 'yes' : row.final === false ? 'no' : '—';
         const tsAttr = escapeHtml(row.ts || '');
         const idxAttr = row.entryIndex != null ? ' data-index="' + row.entryIndex + '"' : '';
-        return `<tr class="turn-row turn-${row.speaker}" data-ts="${tsAttr}"${idxAttr}><td>${row.turn != null ? row.turn : '—'}</td><td>${escapeHtml(row.speaker)}</td><td>${escapeHtml(row.ts)}</td><td>${escapeHtml(text)}</td><td>${finalStr}</td><td>${row.start_ms != null ? row.start_ms : '—'}</td><td>${row.duration_ms != null ? row.duration_ms : '—'}</td><td>${escapeHtml(row.language || '—')}</td></tr>`;
+        return `<tr class="turn-row turn-${row.speaker}" data-ts="${tsAttr}"${idxAttr}><td>${row.turn != null ? row.turn : '—'}</td><td>${escapeHtml(row.speaker)}</td><td>${escapeHtml(row.ts)}</td><td>${textCell}</td><td>${finalStr}</td><td>${row.start_ms != null ? row.start_ms : '—'}</td><td>${row.duration_ms != null ? row.duration_ms : '—'}</td><td>${escapeHtml(row.language || '—')}</td></tr>`;
       }
 
       function buildTurnsList(insights) {
@@ -2026,6 +2026,27 @@
         const div = document.createElement('div');
         div.textContent = s;
         return div.innerHTML;
+      }
+
+      /** Long text in insight tables: short strings inline; longer wrapped in details/summary so full text is readable without jumping to the log. */
+      const INSIGHT_TEXT_PREVIEW_MAX = 200;
+
+      function insightLongTextCell(raw, previewMax) {
+        const max = previewMax != null ? previewMax : INSIGHT_TEXT_PREVIEW_MAX;
+        const s = raw == null ? '' : String(raw);
+        if (s.length <= max) {
+          return '<span class="insight-text-cell insight-text-inline">' + escapeHtml(s) + '</span>';
+        }
+        const preview = s.slice(0, max) + '…';
+        return (
+          '<details class="insight-text-expand">' +
+          '<summary class="insight-text-summary"><span class="insight-text-preview">' +
+          escapeHtml(preview) +
+          '</span> <span class="insight-text-hint">Show full</span></summary>' +
+          '<div class="insight-text-full">' +
+          escapeHtml(s) +
+          '</div></details>'
+        );
       }
 
       function escapeRegExp(str) {
@@ -2386,11 +2407,11 @@
         if (allMessages.length) {
           html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Source','Text','Final','Turn','Start (ms)','Duration (ms)']) + '</tr></thead><tbody>';
           for (const row of allMessages) {
-            const text = (row.text || '').slice(0, 300) + (row.text && row.text.length > 300 ? '…' : '');
+            const textCell = insightLongTextCell(row.text || '', 300);
             const finalStr = row.final === true ? 'yes' : row.final === false ? 'no' : '—';
             const tsAttr = escapeHtml(row.ts || '');
             const idxAttr = row.entryIndex != null ? ' data-index="' + row.entryIndex + '"' : '';
-            html += `<tr class="msg-row source-${row.source}" data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(row.ts)}</td><td>${escapeHtml(row.source)}</td><td>${escapeHtml(text)}</td><td>${finalStr}</td><td>${row.turn_id != null ? row.turn_id : '—'}</td><td>${row.start_ms != null ? row.start_ms : '—'}</td><td>${row.duration_ms != null ? row.duration_ms : '—'}</td></tr>`;
+            html += `<tr class="msg-row source-${row.source}" data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(row.ts)}</td><td>${escapeHtml(row.source)}</td><td>${textCell}</td><td>${finalStr}</td><td>${row.turn_id != null ? row.turn_id : '—'}</td><td>${row.start_ms != null ? row.start_ms : '—'}</td><td>${row.duration_ms != null ? row.duration_ms : '—'}</td></tr>`;
           }
           html += '</tbody></table>';
         } else html += '<p class="insight-empty">No text messages found.</p>';
@@ -2399,7 +2420,7 @@
         const turnsList = buildTurnsList(insights);
         html += '<div class="insight-tab-panel" data-panel="turns">';
         if (turnsList.length) {
-          html += '<div class="turns-toolbar"><label><input type="checkbox" id="turnsFinalOnly" /> Show only final</label></div>';
+          html += '<div class="turns-toolbar"><label title="Hides user rows marked non-final (interim ASR). Agent and other turns stay listed."><input type="checkbox" id="turnsFinalOnly" /> Hide interim user ASR</label></div>';
           html += '<table id="turnsTable" class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Turn','Speaker','Time','Text','Final','Start (ms)','Duration (ms)','Language']) + '</tr></thead><tbody>';
           for (const row of turnsList) {
             html += buildTurnRowHtml(row);
@@ -2614,10 +2635,11 @@
           if (stt.transcripts.length) {
             html += '<p><strong>Transcripts / vendor results</strong></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Text','Final audio (ms)','Total audio (ms)']) + '</tr></thead><tbody>';
             for (const t of stt.transcripts) {
-              const text = t.user ? '(user) ' + (t.text || '').slice(0, 80) : (t.text || '').slice(0, 80);
+              const fullText = t.user ? '(user) ' + (t.text || '') : (t.text || '');
+              const textCell = insightLongTextCell(fullText, 120);
               const tsAttr = escapeHtml(t.ts || '');
               const idxAttr = t.entryIndex != null ? ' data-index="' + t.entryIndex + '"' : '';
-              html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(t.ts)}</td><td>${escapeHtml(text)}</td><td>${t.final_audio_proc_ms != null ? t.final_audio_proc_ms : '—'}</td><td>${t.total_audio_proc_ms != null ? t.total_audio_proc_ms : (t.input_audio_duration_ms != null ? t.input_audio_duration_ms : '—')}</td></tr>`;
+              html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(t.ts)}</td><td>${textCell}</td><td>${t.final_audio_proc_ms != null ? t.final_audio_proc_ms : '—'}</td><td>${t.total_audio_proc_ms != null ? t.total_audio_proc_ms : (t.input_audio_duration_ms != null ? t.input_audio_duration_ms : '—')}</td></tr>`;
             }
             html += '</tbody></table>';
           }
@@ -2833,8 +2855,8 @@
           for (const t of ttsOut) {
             const tsAttr = escapeHtml(t.ts || '');
             const idxAttr = t.entryIndex != null ? ' data-index="' + t.entryIndex + '"' : '';
-            const text = (t.text || '').slice(0, 200) + ((t.text || '').length > 200 ? '…' : '');
-            html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(t.ts)}</td><td>${t.turn_id != null ? escapeHtml(String(t.turn_id)) : '—'}</td><td>${escapeHtml(text || '—')}</td><td>${t.duration_ms != null ? t.duration_ms : '—'}</td></tr>`;
+            const textCell = insightLongTextCell((t.text || '') || '—');
+            html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(t.ts)}</td><td>${t.turn_id != null ? escapeHtml(String(t.turn_id)) : '—'}</td><td>${textCell}</td><td>${t.duration_ms != null ? t.duration_ms : '—'}</td></tr>`;
           }
           html += '</tbody></table>';
         }
@@ -3063,6 +3085,9 @@
         summary: {},
         extensions: [],
         insights: null,
+        /** Original file text (for download); not modified by parsing. */
+        rawLogText: '',
+        sourceFileName: '',
         selectedIndex: null,
         contextRadius: null,
         pendingScrollToSelection: false,
@@ -4113,6 +4138,33 @@
         document.body.classList.toggle('parse-busy', !!show);
       }
 
+      function sanitizeLogDownloadFileName(name) {
+        const base = String(name || 'ten.err').replace(/^.*[\\/]/, '').trim() || 'ten.err';
+        return base.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_');
+      }
+
+      function updateRawLogDownloadButton() {
+        const btn = document.getElementById('downloadRawLogBtn');
+        if (!btn) return;
+        const ok = state && typeof state.rawLogText === 'string' && state.rawLogText.length > 0;
+        btn.disabled = !ok;
+      }
+
+      function downloadRawLogFile() {
+        if (!state || typeof state.rawLogText !== 'string' || !state.rawLogText.length) return;
+        const name = sanitizeLogDownloadFileName(state.sourceFileName || 'ten.err');
+        const blob = new Blob([state.rawLogText], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+
       function onFileLoad(text, fileName) {
         document.getElementById('parseOverlayMsg').textContent = 'Parsing log…';
         document.getElementById('fileName').textContent = fileName || 'ten.err.log';
@@ -4131,6 +4183,8 @@
             summary,
             extensions,
             insights: null,
+            rawLogText: text,
+            sourceFileName: fileName || 'ten.err.log',
             selectedIndex: null,
             contextRadius: null,
             pendingScrollToSelection: false,
@@ -4329,6 +4383,7 @@
           renderInsights(state.insights);
 
           document.getElementById('loading').style.display = 'none';
+          updateRawLogDownloadButton();
           applyFilters();
             } catch (err) {
               console.error(err);
@@ -4369,6 +4424,13 @@
         const file = this.files && this.files[0];
         if (file) loadLogFile(file);
       });
+
+      const downloadRawLogBtn = document.getElementById('downloadRawLogBtn');
+      if (downloadRawLogBtn) {
+        downloadRawLogBtn.addEventListener('click', function () {
+          downloadRawLogFile();
+        });
+      }
 
       (function initAgentFetch() {
         if (isGitHubPagesHost()) return;
@@ -5004,7 +5066,8 @@
           const turnsTable = document.getElementById('turnsTable');
           if (!insights || !turnsTable) return;
           let list = buildTurnsList(insights);
-          if (ev.target.checked) list = list.filter(function (r) { return r.final === true; });
+          /* Drop only explicit interim user ASR (final === false). Agent TTS / LLM glue / eval use final: null — they must stay visible. */
+          if (ev.target.checked) list = list.filter(function (r) { return r.final !== false; });
           const tbody = turnsTable.querySelector('tbody');
           if (tbody) tbody.innerHTML = list.map(buildTurnRowHtml).join('');
           return;
@@ -5013,6 +5076,7 @@
 
       document.getElementById('insightsContent').addEventListener('click', function (ev) {
         if (window.getSelection().toString().trim()) return;
+        if (ev.target.closest && ev.target.closest('details.insight-text-expand')) return;
         const row = ev.target.closest('tr[data-ts], tr[data-index]');
         if (!row) return;
         let idx = -1;
