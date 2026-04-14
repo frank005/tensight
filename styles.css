@@ -1297,3 +1297,18 @@
       line-height: 1.45;
     }
   
+
+    /* Audio card styles */
+    .audio-card { margin-top: 12px; }
+    .audio-card .summary-card-title { margin-bottom: 8px; }
+    .audio-status { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+    .audio-status.audio-status--none { color: var(--text-muted); }
+    .audio-status.audio-status--loading { color: var(--accent); }
+    .audio-status.audio-status--error { color: var(--error); }
+    .audio-players { display: flex; flex-direction: column; gap: 10px; }
+    .audio-player-item { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; }
+    .audio-player-item label { display: block; font-size: 12px; font-weight: 500; margin-bottom: 6px; color: var(--text); }
+    .audio-player-item audio { width: 100%; height: 32px; }
+    .audio-player-item .audio-download { display: inline-block; margin-top: 6px; font-size: 11px; color: var(--accent); text-decoration: none; }
+    .audio-player-item .audio-download:hover { text-decoration: underline; }
+

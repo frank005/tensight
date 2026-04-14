@@ -4109,6 +4109,97 @@
           });
       }
 
+      /**
+       * Try to fetch audio dumps (PCM/WAV) for the given agent.
+       * Updates the UI audio card with results or "not available" message.
+       */
+      function fetchAudioDumps(agentId, environment) {
+        var audioCard = document.getElementById('audioCard');
+        var audioStatus = document.getElementById('audioStatus');
+        var audioPlayers = document.getElementById('audioPlayers');
+        if (!audioCard || !audioStatus || !audioPlayers) return;
+
+        var base = getInvestigatorBase();
+        if (!base) {
+          audioCard.style.display = 'none';
+          return;
+        }
+
+        audioCard.style.display = '';
+        audioStatus.className = 'audio-status audio-status--loading';
+        audioStatus.textContent = 'Checking for audio dumps…';
+        audioPlayers.innerHTML = '';
+
+        var audioTypes = [
+          { suffix: '.pcm', label: 'PCM Audio', mime: 'audio/pcm' },
+          { suffix: '.wav', label: 'WAV Audio', mime: 'audio/wav' }
+        ];
+
+        var foundAny = false;
+        var pending = audioTypes.length;
+
+        audioTypes.forEach(function (at) {
+          fetch(base + '/api/ten-investigator-extract', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agentId: agentId, environment: environment || 'prod', suffix: at.suffix }),
+            credentials: 'omit',
+            mode: 'cors'
+          })
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+              if (data && data.url) {
+                foundAny = true;
+                addAudioPlayer(audioPlayers, data.url, at.label, at.suffix, base);
+              }
+            })
+            .catch(function () {})
+            .finally(function () {
+              pending--;
+              if (pending === 0) {
+                if (foundAny) {
+                  audioStatus.className = 'audio-status';
+                  audioStatus.textContent = '';
+                } else {
+                  audioStatus.className = 'audio-status audio-status--none';
+                  audioStatus.textContent = 'No audio dumps available for this session.';
+                }
+              }
+            });
+        });
+      }
+
+      function addAudioPlayer(container, url, label, suffix, base) {
+        var tunnelUrl = base + '/api/ten-investigator-tunnel?u=' + encodeURIComponent(url);
+        var item = document.createElement('div');
+        item.className = 'audio-player-item';
+
+        var lbl = document.createElement('label');
+        lbl.textContent = label + ' (' + suffix + ')';
+        item.appendChild(lbl);
+
+        if (suffix === '.wav') {
+          var audio = document.createElement('audio');
+          audio.controls = true;
+          audio.src = tunnelUrl;
+          item.appendChild(audio);
+        } else if (suffix === '.pcm') {
+          var note = document.createElement('p');
+          note.style.cssText = 'font-size:11px;color:var(--text-muted);margin:4px 0;';
+          note.textContent = 'PCM files require conversion to play. Download and use ffmpeg: ffplay -f s16le -ar 16000 -ac 1 file.pcm';
+          item.appendChild(note);
+        }
+
+        var dl = document.createElement('a');
+        dl.className = 'audio-download';
+        dl.href = tunnelUrl;
+        dl.download = 'audio' + suffix;
+        dl.textContent = 'Download';
+        item.appendChild(dl);
+
+        container.appendChild(item);
+      }
+
       function fetchTenErrViaCstool(agentId, environment, opts) {
         const onStatus = opts && opts.onStatus ? opts.onStatus : () => {};
         const cred = cstoolFetchCredentials();
@@ -4257,6 +4348,11 @@
         document.getElementById('loading').style.display = 'block';
         document.getElementById('emptyState').style.display = 'none';
         document.getElementById('logEntries').style.display = 'none';
+        // Reset audio card when loading new file
+        var audioCard = document.getElementById('audioCard');
+        if (audioCard) audioCard.style.display = 'none';
+        var audioPlayers = document.getElementById('audioPlayers');
+        if (audioPlayers) audioPlayers.innerHTML = '';
 
         requestAnimationFrame(function () {
           requestAnimationFrame(function () {
@@ -4761,6 +4857,8 @@
                 localStorage.setItem('tenLogReader_lastAgentEnv', environment);
               } catch (e2) {}
               onFileLoad(result.text, result.fileName);
+              // After log loads, try to fetch audio dumps in background
+              fetchAudioDumps(raw, environment);
             })
             .catch(function (invErr) {
               setParseOverlay(false);
