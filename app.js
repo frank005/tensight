@@ -3519,7 +3519,15 @@
       }
 
       function cstoolFetchCanWork() {
-        return !!cstoolProxyRoot() || cstoolDirectOriginMatchesReader();
+        return !!cstoolProxyRoot() || cstoolDirectOriginMatchesReader() || !!window.__TEN_INVESTIGATOR_BASE__;
+      }
+
+      function investigatorAvailable() {
+        return !!window.__TEN_INVESTIGATOR_BASE__;
+      }
+
+      function getInvestigatorBase() {
+        return window.__TEN_INVESTIGATOR_BASE__ || '';
       }
 
       function cstoolFetchOriginMatchesReader() {
@@ -4023,6 +4031,84 @@
         });
       }
 
+      /**
+       * Fetch log via TEN Investigator (token-based, no cookie needed).
+       * Returns { text, fileName } or throws.
+       */
+      function fetchTenErrViaInvestigator(agentId, environment, opts) {
+        const onStatus = opts && opts.onStatus ? opts.onStatus : function () {};
+        const base = getInvestigatorBase();
+        if (!base) {
+          return Promise.reject(new Error('TEN Investigator not available'));
+        }
+
+        onStatus('Requesting log from TEN Investigator…');
+        return fetch(base + '/api/ten-investigator-extract', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agentId: agentId, environment: environment || 'prod' }),
+          credentials: 'omit',
+          mode: 'cors'
+        })
+          .then(function (res) {
+            return res.text().then(function (t) {
+              if (!res.ok) {
+                throw new Error('Investigator failed (' + res.status + '): ' + (t || '').slice(0, 300));
+              }
+              var data;
+              try {
+                data = JSON.parse(t);
+              } catch (e) {
+                throw new Error('Invalid JSON from investigator');
+              }
+              return data;
+            });
+          })
+          .then(function (data) {
+            if (data.error) {
+              throw new Error(data.error);
+            }
+            var downloadUrl = data.url || '';
+            if (!downloadUrl) {
+              throw new Error('No download URL in investigator response');
+            }
+            onStatus('Downloading log archive…');
+            // Try direct download first, then tunnel if blocked (CORS or referer policy)
+            return fetch(downloadUrl, { credentials: 'omit', mode: 'cors' })
+              .then(function (res) {
+                if (!res.ok) {
+                  // Direct failed (403 referer policy, etc) — use tunnel
+                  return fetch(base + '/api/ten-investigator-tunnel?u=' + encodeURIComponent(downloadUrl), {
+                    credentials: 'omit',
+                    mode: 'cors'
+                  });
+                }
+                return res;
+              })
+              .catch(function () {
+                // Network/CORS error — use tunnel
+                return fetch(base + '/api/ten-investigator-tunnel?u=' + encodeURIComponent(downloadUrl), {
+                  credentials: 'omit',
+                  mode: 'cors'
+                });
+              })
+              .then(function (res) {
+                if (!res.ok) {
+                  throw new Error('Download failed (' + res.status + ')');
+                }
+                return res.arrayBuffer();
+              });
+          })
+          .then(function (ab) {
+            onStatus('Extracting ten.err…');
+            return extractErrTextFromTgz(ab);
+          })
+          .then(function (text) {
+            var fileName = (agentId.slice(0, 12) || 'ten') + '-fetched.err';
+            return { text: text, fileName: fileName };
+          });
+      }
+
       function fetchTenErrViaCstool(agentId, environment, opts) {
         const onStatus = opts && opts.onStatus ? opts.onStatus : () => {};
         const cred = cstoolFetchCredentials();
@@ -4447,15 +4533,47 @@
         const proxyInput = document.getElementById('cstoolProxyInput');
         if (!agentInput || !envSelect || !fetchBtn) return;
 
-        fetch('/api/cstool-proxy-status', { method: 'GET', credentials: 'omit' })
-          .then(function (r) {
-            if (r.ok) window.__TEN_LOG_READER_BUILTIN_CSTOOL__ = true;
-          })
-          .catch(function () {})
-          .finally(function () {
+        function probeBackend(baseUrl) {
+          var url = baseUrl ? baseUrl.replace(/\/$/, '') + '/api/cstool-proxy-status' : '/api/cstool-proxy-status';
+          return fetch(url, { method: 'GET', credentials: 'omit', mode: 'cors' })
+            .then(function (r) {
+              if (!r.ok) return null;
+              return r.json().catch(function () { return null; });
+            })
+            .catch(function () { return null; });
+        }
+
+        // Probe same-origin backend first, then proxy if set
+        probeBackend(null).then(function (data) {
+          if (data && data.cstoolProxy) {
+            window.__TEN_LOG_READER_BUILTIN_CSTOOL__ = true;
+            if (data.investigator) {
+              window.__TEN_INVESTIGATOR_BASE__ = window.location.origin;
+            }
             updateAgentFetchButtonState();
             updateCstoolProxyDetailsVisibility();
-          });
+            return;
+          }
+          // Same-origin probe failed — try the proxy URL if set
+          var proxyUrl = (proxyInput && proxyInput.value || '').trim();
+          if (!proxyUrl) {
+            try {
+              proxyUrl = localStorage.getItem('tenLogReader_cstoolProxy') || '';
+            } catch (e) {}
+          }
+          if (proxyUrl) {
+            probeBackend(proxyUrl).then(function (pd) {
+              if (pd && pd.investigator) {
+                window.__TEN_INVESTIGATOR_BASE__ = proxyUrl.replace(/\/$/, '');
+              }
+              updateAgentFetchButtonState();
+              updateCstoolProxyDetailsVisibility();
+            });
+          } else {
+            updateAgentFetchButtonState();
+            updateCstoolProxyDetailsVisibility();
+          }
+        });
 
         try {
           const savedId = localStorage.getItem('tenLogReader_lastAgentId');
@@ -4631,12 +4749,28 @@
           });
         }
 
+        function runInvestigatorPipeline(raw, environment) {
+          fetchBtn.disabled = true;
+          setParseOverlay(true, 'Connecting to TEN Investigator…');
+          fetchTenErrViaInvestigator(raw, environment, {
+            onStatus: function (msg) { setParseOverlay(true, msg); }
+          })
+            .then(function (result) {
+              try {
+                localStorage.setItem('tenLogReader_lastAgentId', raw);
+                localStorage.setItem('tenLogReader_lastAgentEnv', environment);
+              } catch (e2) {}
+              onFileLoad(result.text, result.fileName);
+            })
+            .catch(function (invErr) {
+              setParseOverlay(false);
+              console.error('Investigator failed:', invErr);
+              alert('Failed to fetch log:\n' + (invErr.message || invErr));
+            })
+            .finally(function () { updateAgentFetchButtonState(); });
+        }
+
         fetchBtn.addEventListener('click', function () {
-          if (!cstoolFetchCanWork()) {
-            alert('Set a CSTool proxy URL under “CSTool proxy” (or host this app on the CSTool site), then try again.');
-            if (proxyInput) proxyInput.focus();
-            return;
-          }
           const raw = (agentInput.value || '').trim();
           if (!raw) {
             alert('Enter an Agent ID.');
@@ -4648,38 +4782,62 @@
           }
           const environment = envSelect.value || 'prod';
 
-          if (cstoolUsesBrowserSessionOnly()) {
-            runCstoolFetchPipeline(raw, environment, {
-              openAuthModalOnFailure: true,
-              retryReason: 'session_failed'
+          // Persist proxy input and probe it for investigator support
+          var currentProxyVal = (proxyInput && proxyInput.value || '').trim();
+          if (currentProxyVal) {
+            try { localStorage.setItem('tenLogReader_cstoolProxy', currentProxyVal.replace(/\/$/, '')); } catch(e){}
+            // Probe the proxy and then fetch
+            fetchBtn.disabled = true;
+            setParseOverlay(true, 'Checking proxy…');
+            probeBackend(currentProxyVal).then(function (pd) {
+              if (pd && pd.investigator) {
+                window.__TEN_INVESTIGATOR_BASE__ = currentProxyVal.replace(/\/$/, '');
+              }
+              setParseOverlay(false);
+              doFetch(raw, environment);
+            }).catch(function () {
+              setParseOverlay(false);
+              doFetch(raw, environment);
             });
+            return;
+          }
+
+          doFetch(raw, environment);
+        });
+
+        function doFetch(raw, environment) {
+          // TEN Investigator first (no cookie needed)
+          if (investigatorAvailable()) {
+            runInvestigatorPipeline(raw, environment);
+            return;
+          }
+
+          // No investigator — must have proxy or same-origin CSTool
+          if (!cstoolFetchCanWork()) {
+            alert('Set a CSTool proxy URL under "CSTool proxy" (or host this app on the CSTool site), then try again.');
+            if (proxyInput) proxyInput.focus();
+            return;
+          }
+
+          if (cstoolUsesBrowserSessionOnly()) {
+            runCstoolFetchPipeline(raw, environment, { openAuthModalOnFailure: true, retryReason: 'session_failed' });
             return;
           }
 
           if (cstoolProxyRoot()) {
             const ck = getStoredCstoolCookie();
             if (ck) {
-              runCstoolFetchPipeline(raw, environment, {
-                openAuthModalOnFailure: true,
-                retryReason: 'cookie_fetch_failed'
-              });
+              runCstoolFetchPipeline(raw, environment, { openAuthModalOnFailure: true, retryReason: 'cookie_fetch_failed' });
               return;
             }
             trySilentClipboardCookieForCstool().then(function (clip) {
-              runCstoolFetchPipeline(raw, environment, {
-                openAuthModalOnFailure: true,
-                retryReason: 'cookie_fetch_failed',
-                clipboardAttemptFailed: !clip.ok
-              });
+              runCstoolFetchPipeline(raw, environment, { openAuthModalOnFailure: true, retryReason: 'cookie_fetch_failed', clipboardAttemptFailed: !clip.ok });
             });
             return;
           }
 
-          runCstoolFetchPipeline(raw, environment, {
-            openAuthModalOnFailure: true,
-            retryReason: 'session_failed'
-          });
-        });
+          runCstoolFetchPipeline(raw, environment, { openAuthModalOnFailure: true, retryReason: 'session_failed' });
+        }
 
         const agentCstoolOptionsBtn = document.getElementById('agentCstoolOptionsBtn');
         if (agentCstoolOptionsBtn) {

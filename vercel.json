@@ -19,6 +19,10 @@
     {
       "source": "/_oss_tunnel",
       "destination": "/api/oss-tunnel"
+    },
+    {
+      "source": "/api/ten-investigator-tunnel",
+      "destination": "/api/ten-investigator-tunnel"
     }
   ]
 }

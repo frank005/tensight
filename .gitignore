@@ -1,3 +1,6 @@
+# Local secrets
+.env
+
 # Log files (user data, not for repo)
 *.log
 ten.err.log
