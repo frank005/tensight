@@ -4033,6 +4033,7 @@
 
       /**
        * Fetch log via TEN Investigator (token-based, no cookie needed).
+       * Server-side: downloads, extracts, and redacts sensitive keys.
        * Returns { text, fileName } or throws.
        */
       function fetchTenErrViaInvestigator(agentId, environment, opts) {
@@ -4042,8 +4043,8 @@
           return Promise.reject(new Error('TEN Investigator not available'));
         }
 
-        onStatus('Requesting log from TEN Investigator…');
-        return fetch(base + '/api/ten-investigator-extract', {
+        onStatus('Fetching log from TEN Investigator…');
+        return fetch(base + '/api/ten-investigator-fetch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ agentId: agentId, environment: environment || 'prod' }),
@@ -4053,7 +4054,15 @@
           .then(function (res) {
             return res.text().then(function (t) {
               if (!res.ok) {
-                throw new Error('Investigator failed (' + res.status + '): ' + (t || '').slice(0, 300));
+                var errMsg = 'Investigator failed (' + res.status + ')';
+                try {
+                  var errData = JSON.parse(t);
+                  if (errData.error) errMsg = errData.error;
+                  else if (errData.message) errMsg = errData.message;
+                } catch (e) {
+                  errMsg += ': ' + (t || '').slice(0, 200);
+                }
+                throw new Error(errMsg);
               }
               var data;
               try {
@@ -4068,44 +4077,11 @@
             if (data.error) {
               throw new Error(data.error);
             }
-            var downloadUrl = data.url || '';
-            if (!downloadUrl) {
-              throw new Error('No download URL in investigator response');
+            if (!data.text) {
+              throw new Error('No log text returned');
             }
-            onStatus('Downloading log archive…');
-            // Try direct download first, then tunnel if blocked (CORS or referer policy)
-            return fetch(downloadUrl, { credentials: 'omit', mode: 'cors' })
-              .then(function (res) {
-                if (!res.ok) {
-                  // Direct failed (403 referer policy, etc) — use tunnel
-                  return fetch(base + '/api/ten-investigator-tunnel?u=' + encodeURIComponent(downloadUrl), {
-                    credentials: 'omit',
-                    mode: 'cors'
-                  });
-                }
-                return res;
-              })
-              .catch(function () {
-                // Network/CORS error — use tunnel
-                return fetch(base + '/api/ten-investigator-tunnel?u=' + encodeURIComponent(downloadUrl), {
-                  credentials: 'omit',
-                  mode: 'cors'
-                });
-              })
-              .then(function (res) {
-                if (!res.ok) {
-                  throw new Error('Download failed (' + res.status + ')');
-                }
-                return res.arrayBuffer();
-              });
-          })
-          .then(function (ab) {
-            onStatus('Extracting ten.err…');
-            return extractErrTextFromTgz(ab);
-          })
-          .then(function (text) {
-            var fileName = (agentId.slice(0, 12) || 'ten') + '-fetched.err';
-            return { text: text, fileName: fileName };
+            onStatus('Log fetched and processed.');
+            return { text: data.text, fileName: data.fileName || ((agentId.slice(0, 12) || 'ten') + '-fetched.err') };
           });
       }
 
