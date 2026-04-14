@@ -23,6 +23,10 @@
     {
       "source": "/api/ten-investigator-tunnel",
       "destination": "/api/ten-investigator-tunnel"
+    },
+    {
+      "source": "/api/ten-investigator-fetch",
+      "destination": "/api/ten-investigator-fetch"
     }
   ]
 }
