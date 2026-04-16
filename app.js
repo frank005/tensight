@@ -4886,9 +4886,22 @@
 
         function probeBackend(baseUrl) {
           var url = baseUrl ? baseUrl.replace(/\/$/, '') + '/api/cstool-proxy-status' : '/api/cstool-proxy-status';
-          return fetch(url, { method: 'GET', credentials: 'omit', mode: 'cors' })
+          // Same-origin probe: send credentials so Vercel preview deployments
+          // behind "Deployment Protection" (SSO cookie) can reach our own
+          // API routes. Cross-origin probes still omit credentials to avoid
+          // unintentionally forwarding session cookies to an unrelated host.
+          var sameOrigin = !baseUrl;
+          return fetch(url, {
+            method: 'GET',
+            credentials: sameOrigin ? 'include' : 'omit',
+            mode: sameOrigin ? 'same-origin' : 'cors'
+          })
             .then(function (r) {
               if (!r.ok) return null;
+              var ctype = r.headers.get('content-type') || '';
+              // Vercel's SSO gate replies 200 text/html with the login page.
+              // Anything that isn't clearly JSON is therefore not our probe.
+              if (!/json/i.test(ctype)) return null;
               return r.json().catch(function () { return null; });
             })
             .catch(function () { return null; });
