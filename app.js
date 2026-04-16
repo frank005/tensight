@@ -4307,7 +4307,13 @@
 
       /**
        * Try to fetch audio dumps (PCM/WAV) for the given agent.
-       * Updates the UI audio card with results or "not available" message.
+       *
+       * The investigator returns a .tgz archive that actually holds several
+       * audio files (mixed playback, raw capture, per-vendor ASR input, ...).
+       * We hand that off to `/api/ten-investigator-audio`, which unpacks the
+       * archive server-side and returns a list of the real inner files plus
+       * per-file stream URLs. The UI picks the "mixed" stream as the default
+       * playable one and exposes the rest as individual downloads.
        */
       function fetchAudioDumps(agentId, environment) {
         var audioCard = document.getElementById('audioCard');
@@ -4327,26 +4333,35 @@
         audioPlayers.innerHTML = '';
 
         var audioTypes = [
-          { suffix: '.pcm', label: 'PCM Audio', mime: 'audio/pcm' },
-          { suffix: '.wav', label: 'WAV Audio', mime: 'audio/wav' }
+          { suffix: '.wav', label: 'WAV Audio' },
+          { suffix: '.pcm', label: 'PCM Audio' }
         ];
 
         var foundAny = false;
         var pending = audioTypes.length;
 
         audioTypes.forEach(function (at) {
-          fetch(base + '/api/ten-investigator-extract', {
+          fetch(base + '/api/ten-investigator-audio', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ agentId: agentId, environment: environment || 'prod', suffix: at.suffix }),
             credentials: 'omit',
             mode: 'cors'
           })
-            .then(function (res) { return res.json(); })
+            .then(function (res) {
+              return res.json().then(function (data) {
+                if (!res.ok) {
+                  // 404 ("no files") is expected for one suffix or the other.
+                  if (res.status === 404) return null;
+                  throw new Error((data && data.error) || ('audio fetch ' + res.status));
+                }
+                return data;
+              });
+            })
             .then(function (data) {
-              if (data && data.url) {
+              if (data && data.files && data.files.length) {
                 foundAny = true;
-                addAudioPlayer(audioPlayers, data.url, at.label, at.suffix, base);
+                renderAudioGroup(audioPlayers, at, data);
               }
             })
             .catch(function () {})
@@ -4365,35 +4380,79 @@
         });
       }
 
-      function addAudioPlayer(container, url, label, suffix, base) {
-        var tunnelUrl = base + '/api/ten-investigator-tunnel?u=' + encodeURIComponent(url);
-        var item = document.createElement('div');
-        item.className = 'audio-player-item';
+      /**
+       * Render one suffix group (.wav or .pcm). Shows the primary playable
+       * file first (inline <audio> for WAVs) and lists every other file from
+       * the archive with its own Download button so debugging any of the
+       * raw streams stays one click away.
+       */
+      function renderAudioGroup(container, audioType, data) {
+        var suffix = audioType.suffix;
+        var files = data.files || [];
+        if (!files.length) return;
 
-        var lbl = document.createElement('label');
-        lbl.textContent = label + ' (' + suffix + ')';
-        item.appendChild(lbl);
+        var primaryName = data.primary || (files[0] && files[0].name);
+        var primary = files.filter(function (f) { return f.name === primaryName; })[0] || files[0];
+        var others = files.filter(function (f) { return f !== primary; });
 
-        if (suffix === '.wav') {
+        var group = document.createElement('div');
+        group.className = 'audio-player-group';
+
+        var header = document.createElement('label');
+        header.textContent = audioType.label + ' (' + suffix + ')';
+        group.appendChild(header);
+
+        group.appendChild(renderAudioRow(primary, suffix, true));
+        if (others.length) {
+          var details = document.createElement('details');
+          details.className = 'audio-extra';
+          var summary = document.createElement('summary');
+          summary.textContent = 'Other files in archive (' + others.length + ')';
+          details.appendChild(summary);
+          others.forEach(function (f) { details.appendChild(renderAudioRow(f, suffix, false)); });
+          group.appendChild(details);
+        }
+
+        container.appendChild(group);
+      }
+
+      function renderAudioRow(file, suffix, isPrimary) {
+        var row = document.createElement('div');
+        row.className = 'audio-player-item' + (isPrimary ? ' audio-player-item--primary' : '');
+
+        var meta = document.createElement('div');
+        meta.className = 'audio-meta';
+        var kindLabel = document.createElement('span');
+        kindLabel.className = 'audio-kind';
+        kindLabel.textContent = file.label || file.name;
+        meta.appendChild(kindLabel);
+        var nameEl = document.createElement('span');
+        nameEl.className = 'audio-filename';
+        nameEl.textContent = file.name;
+        meta.appendChild(nameEl);
+        row.appendChild(meta);
+
+        if (isPrimary && suffix === '.wav') {
           var audio = document.createElement('audio');
           audio.controls = true;
-          audio.src = tunnelUrl;
-          item.appendChild(audio);
-        } else if (suffix === '.pcm') {
+          audio.preload = 'none';
+          audio.src = file.url;
+          row.appendChild(audio);
+        } else if (isPrimary && suffix === '.pcm') {
           var note = document.createElement('p');
           note.style.cssText = 'font-size:11px;color:var(--text-muted);margin:4px 0;';
-          note.textContent = 'PCM files require conversion to play. Download and use ffmpeg: ffplay -f s16le -ar 16000 -ac 1 file.pcm';
-          item.appendChild(note);
+          note.textContent = 'PCM is raw samples — download and play with: ffplay -f s16le -ar 16000 -ac 1 ' + file.name;
+          row.appendChild(note);
         }
 
         var dl = document.createElement('a');
         dl.className = 'audio-download';
-        dl.href = tunnelUrl;
-        dl.download = 'audio' + suffix;
+        dl.href = file.url;
+        dl.download = file.name;
         dl.textContent = 'Download';
-        item.appendChild(dl);
+        row.appendChild(dl);
 
-        container.appendChild(item);
+        return row;
       }
 
       function fetchTenErrViaCstool(agentId, environment, opts) {

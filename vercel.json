@@ -27,6 +27,10 @@
     {
       "source": "/api/ten-investigator-fetch",
       "destination": "/api/ten-investigator-fetch"
+    },
+    {
+      "source": "/api/ten-investigator-audio",
+      "destination": "/api/ten-investigator-audio"
     }
   ]
 }

@@ -1311,4 +1311,14 @@
     .audio-player-item audio { width: 100%; height: 32px; }
     .audio-player-item .audio-download { display: inline-block; margin-top: 6px; font-size: 11px; color: var(--accent); text-decoration: none; }
     .audio-player-item .audio-download:hover { text-decoration: underline; }
+    .audio-player-group { display: flex; flex-direction: column; gap: 6px; }
+    .audio-player-group > label { font-size: 12px; font-weight: 600; color: var(--text); margin: 0; }
+    .audio-player-item--primary { border-color: var(--accent); }
+    .audio-player-item .audio-meta { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; }
+    .audio-player-item .audio-kind { font-size: 12px; font-weight: 500; color: var(--text); }
+    .audio-player-item .audio-filename { font-size: 11px; color: var(--text-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+    .audio-extra { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 10px; }
+    .audio-extra > summary { font-size: 11px; color: var(--text-muted); cursor: pointer; padding: 4px 0; }
+    .audio-extra > summary:hover { color: var(--text); }
+    .audio-extra .audio-player-item { margin-top: 6px; padding: 8px; }
 

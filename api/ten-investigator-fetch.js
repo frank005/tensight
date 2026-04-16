@@ -10,52 +10,15 @@
  * 5. Return redacted log text
  */
 const { pickAllowOrigin, applyCorsToRes, readBodyBuffer } = require('../lib/cstoolProxyCore');
-const { getInvestigatorHost, buildExtractPayload, isAllowedDownloadHost } = require('../lib/tenInvestigatorCore');
+const {
+  getInvestigatorHost,
+  buildExtractPayload,
+  isAllowedDownloadHost,
+  parseTar,
+  pickErrEntry,
+} = require('../lib/tenInvestigatorCore');
 const { redactLog } = require('../lib/logRedaction');
 const zlib = require('zlib');
-
-function parseTar(buffer) {
-  const entries = [];
-  let offset = 0;
-  const buf = Buffer.from(buffer);
-  
-  while (offset < buf.length - 512) {
-    const header = buf.slice(offset, offset + 512);
-    if (header[0] === 0) break;
-    
-    const name = header.slice(0, 100).toString('utf8').replace(/\0+$/, '');
-    const sizeOctal = header.slice(124, 136).toString('utf8').replace(/\0+$/, '').trim();
-    const size = parseInt(sizeOctal, 8) || 0;
-    
-    offset += 512;
-    
-    if (size > 0 && name) {
-      const data = buf.slice(offset, offset + size);
-      entries.push({ name, data });
-    }
-    
-    offset += Math.ceil(size / 512) * 512;
-  }
-  
-  return entries;
-}
-
-function pickErrEntry(entries) {
-  if (!entries || !entries.length) return null;
-  const candidates = entries.filter(e => {
-    const n = (e.name || '').toLowerCase();
-    return /\.err$/i.test(n) || n.includes('ten.err');
-  });
-  if (candidates.length) {
-    candidates.sort((a, b) => b.data.length - a.data.length);
-    return candidates[0];
-  }
-  if (entries.length) {
-    entries.sort((a, b) => b.data.length - a.data.length);
-    return entries[0];
-  }
-  return null;
-}
 
 module.exports = async (req, res) => {
   const allow = pickAllowOrigin(req);

@@ -41,7 +41,15 @@ loadEnvFile();
 
 const require = createRequire(import.meta.url);
 const { cstoolUpstreamSuffixFromPublicSegments } = require('../lib/cstoolProxyCore.js');
-const { getInvestigatorHost, buildExtractPayload, isAllowedDownloadHost } = require('../lib/tenInvestigatorCore.js');
+const {
+  getInvestigatorHost,
+  buildExtractPayload,
+  isAllowedDownloadHost,
+  parseTar,
+  listAudioEntries,
+  pickPrimaryAudioEntry,
+  findTarEntryByName,
+} = require('../lib/tenInvestigatorCore.js');
 
 const PORT = Number(process.env.PORT) || 8787;
 const UPSTREAM = (process.env.UPSTREAM || 'https://rtsc-tools.sh3.agoralab.co').replace(/\/$/, '');
@@ -314,6 +322,170 @@ http.createServer(async (req, res) => {
     const text = await r.text();
     res.writeHead(r.status, { 'Content-Type': r.headers.get('content-type') || 'application/json', ...corsHeaders(allow, req, {}) });
     res.end(text);
+    return;
+  }
+
+  // TEN Investigator audio — unpacks the .tgz and returns individual audio files.
+  // POST { agentId, environment?, suffix: '.wav' | '.pcm', file? } → list or stream.
+  // GET  ?agentId=&environment=&suffix=&file= → stream that one file as audio/*.
+  if (url.pathname === '/api/ten-investigator-audio' && (req.method === 'POST' || req.method === 'GET')) {
+    if (!TEN_TOKEN) {
+      res.writeHead(503, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
+      res.end(JSON.stringify({ error: 'TEN_INVESTIGATOR_TOKEN not set' }));
+      return;
+    }
+
+    let agentId = '';
+    let environment = 'prod';
+    let suffix = '.wav';
+    let file = null;
+
+    if (req.method === 'GET') {
+      agentId = (url.searchParams.get('agentId') || '').trim();
+      environment = (url.searchParams.get('environment') || 'prod').trim() || 'prod';
+      suffix = (url.searchParams.get('suffix') || '.wav').trim() || '.wav';
+      file = url.searchParams.get('file');
+    } else {
+      let body;
+      try {
+        const chunks = await collectBody(req);
+        body = chunks.length ? JSON.parse(chunks.toString('utf8')) : {};
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'text/plain', ...corsHeaders(allow, req, {}) });
+        res.end('invalid JSON');
+        return;
+      }
+      agentId = body.agentId ? String(body.agentId).trim() : '';
+      environment = body.environment || 'prod';
+      suffix = body.suffix || '.wav';
+      file = body.file || null;
+    }
+
+    if (!agentId) {
+      res.writeHead(400, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
+      res.end(JSON.stringify({ error: 'missing agentId' }));
+      return;
+    }
+    if (suffix !== '.wav' && suffix !== '.pcm') {
+      res.writeHead(400, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
+      res.end(JSON.stringify({ error: 'suffix must be .wav or .pcm' }));
+      return;
+    }
+
+    const invHost = getInvestigatorHost(environment);
+    const extractUrl2 = `${invHost}/agents/extract?token=${encodeURIComponent(TEN_TOKEN)}`;
+    const payload2 = buildExtractPayload(agentId, { suffix });
+
+    let extractResp;
+    try {
+      extractResp = await fetch(extractUrl2, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload2),
+      });
+    } catch (e) {
+      res.writeHead(502, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
+      res.end(JSON.stringify({ error: 'Failed to contact investigator: ' + (e.message || e) }));
+      return;
+    }
+    if (!extractResp.ok) {
+      const txt = await extractResp.text().catch(() => '');
+      res.writeHead(extractResp.status, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
+      res.end(JSON.stringify({ error: 'investigator extract ' + extractResp.status, detail: txt.slice(0, 200) }));
+      return;
+    }
+    let extractData = {};
+    try { extractData = JSON.parse(await extractResp.text()); } catch {}
+    const downloadUrl2 = extractData.url;
+    if (!downloadUrl2) {
+      res.writeHead(404, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
+      res.end(JSON.stringify({ error: extractData.message || 'No download URL' }));
+      return;
+    }
+    try {
+      const parsedDl = new URL(downloadUrl2);
+      if (!isAllowedDownloadHost(parsedDl.hostname)) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
+        res.end(JSON.stringify({ error: 'invalid download host' }));
+        return;
+      }
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
+      res.end(JSON.stringify({ error: 'invalid download URL' }));
+      return;
+    }
+
+    let archiveResp;
+    try { archiveResp = await fetch(downloadUrl2, { redirect: 'follow' }); }
+    catch (e) {
+      res.writeHead(502, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
+      res.end(JSON.stringify({ error: 'download failed: ' + (e.message || e) }));
+      return;
+    }
+    if (!archiveResp.ok) {
+      res.writeHead(archiveResp.status, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
+      res.end(JSON.stringify({ error: 'download failed: ' + archiveResp.status }));
+      return;
+    }
+    const tgzBuf2 = Buffer.from(await archiveResp.arrayBuffer());
+
+    let tarBuf2;
+    try {
+      tarBuf2 = await new Promise((resolve, reject) => {
+        require('zlib').gunzip(tgzBuf2, (err, result) => err ? reject(err) : resolve(result));
+      });
+    } catch {
+      tarBuf2 = tgzBuf2;
+    }
+    const entries2 = parseTar(tarBuf2);
+    const audioList = listAudioEntries(entries2);
+    if (!audioList.length) {
+      res.writeHead(404, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
+      res.end(JSON.stringify({ error: 'No ' + suffix + ' files found in archive' }));
+      return;
+    }
+
+    if (file) {
+      const match = findTarEntryByName(entries2, file);
+      if (!match) {
+        res.writeHead(404, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
+        res.end(JSON.stringify({ error: 'file not found in archive: ' + file }));
+        return;
+      }
+      const base = match.name.replace(/^.*\//, '');
+      const isWav = /\.wav$/i.test(base);
+      res.writeHead(200, {
+        'Content-Type': isWav ? 'audio/wav' : 'application/octet-stream',
+        'Content-Length': match.data.length,
+        'Content-Disposition': 'attachment; filename="' + base.replace(/"/g, '') + '"',
+        'Accept-Ranges': 'none',
+        ...corsHeaders(allow, req, {}),
+      });
+      res.end(match.data);
+      return;
+    }
+
+    const proto = req.headers['x-forwarded-proto'] || (req.socket && req.socket.encrypted ? 'https' : 'http');
+    const reqHost = req.headers.host || 'localhost';
+    const baseUrl = `${proto}://${reqHost}/api/ten-investigator-audio`;
+    const files = audioList.map((f) => ({
+      name: f.base,
+      size: f.size,
+      kind: f.kind,
+      label: f.label,
+      url:
+        `${baseUrl}?agentId=${encodeURIComponent(agentId)}` +
+        `&environment=${encodeURIComponent(environment)}` +
+        `&suffix=${encodeURIComponent(suffix)}` +
+        `&file=${encodeURIComponent(f.base)}`,
+    }));
+    const primary = pickPrimaryAudioEntry(entries2, suffix);
+    res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
+    res.end(JSON.stringify({
+      suffix,
+      files,
+      primary: primary ? primary.base.replace(/^.*\//, '') : (files[0] ? files[0].name : null),
+    }));
     return;
   }
 
