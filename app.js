@@ -5,7 +5,8 @@
       const RFC_LINE = /^(\d{4}-\d{2}-\d{2}T[\d.:+TZ-]+)\s+(\d+)\((\d+)\)\s+([IDWEM])\s+(.*)$/;
       // Alternate timestamp (seen in some STT logs): "03-12 16:48:50.216 82569(82659) D ...".
       const ALT_RFC_LINE = /^(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+(\d+)\((\d+)\)\s+([IDWEM])\s+(.*)$/;
-      const APP_VERSION_LINE = /^(\d{4}\/\d{2}\/\d{2}\s+[\d.]+)\s+app_version:\s*([^,]+),\s*commit:\s*(\S+),\s*build_time:\s*(.+)$/;
+      // Time part allows HH:MM:SS(.fraction) or legacy HH.MM(.fraction) forms.
+      const APP_VERSION_LINE = /^(\d{4}\/\d{2}\/\d{2}\s+[\d:.]+)\s+app_version:\s*([^,]+),\s*commit:\s*([^,\s]+),\s*build_time:\s*(.+)$/;
       const TAB_LINE = /^(\d{4}-\d{2}-\d{2}T[^\t]+)\t(\w+)\t(.+)$/;
       const EXTENSION_TAG = /\[([^\]]+)\]/g;
 
@@ -392,7 +393,7 @@
             summary.appVersionTimestamp = e.ts || null;
             const m = e.msg.match(/app_version:\s*([^,]+)/);
             if (m) summary.appVersion = m[1].trim();
-            const c = e.msg.match(/commit:\s*(\S+)/);
+            const c = e.msg.match(/commit:\s*([^,\s]+)/);
             if (c) summary.commit = c[1];
             const b = e.msg.match(/build_time:\s*(.+)$/);
             if (b) summary.buildTime = b[1].trim();
@@ -463,8 +464,12 @@
                 if (!summary.mllmVendor && p.vendor) summary.mllmVendor = p.vendor;
                 if (!summary.mllmUrl && p.url) summary.mllmUrl = p.url;
                 if (!summary.mllmModel && p.params && p.params.model) summary.mllmModel = p.params.model;
-                if (!summary.llmUrl && p.url) summary.llmUrl = p.url;
-                if (!summary.llmModule && (p.vendor || v2vNode.addon || v2vNode.name)) summary.llmModule = p.vendor || v2vNode.addon || v2vNode.name;
+                if (p.url) summary.llmUrl = p.url;
+                // Prefer the specific addon name (e.g. `openai_v2v_python`) over the generic vendor
+                // so MLLM flows show the same level of detail as LLM flows. Graph JSON is
+                // authoritative, so overwrite any earlier hint ("truth-wins").
+                const v2vModule = v2vNode.addon || v2vNode.name || p.vendor || null;
+                if (v2vModule) summary.llmModule = v2vModule;
               }
               if (ttsNode) {
                 const ttsAddon = ttsNode.addon || ttsNode.name || null;
@@ -475,8 +480,13 @@
                 if (asrAddon) summary.sttModule = asrAddon;
               }
               if (avatarNode) {
+                // Some graphs wire a placeholder addon like `null_tts` into the `avatar` node
+                // when no avatar is configured. Treat any `null_*` / `noop_*` addon as
+                // "avatar disabled" rather than surfacing the placeholder name as the vendor.
                 const vendorFromGraph = avatarNode.addon || avatarNode.name || null;
-                if (vendorFromGraph) summary.avatarVendor = vendorFromGraph;
+                const isPlaceholder = vendorFromGraph && /^(null|noop|dummy)_/i.test(vendorFromGraph);
+                if (vendorFromGraph && !isPlaceholder) summary.avatarVendor = vendorFromGraph;
+                else if (isPlaceholder) summary.avatarVendor = null;
                 const p = avatarNode.property && avatarNode.property.params ? avatarNode.property.params : null;
                 if (p && !summary.avatarId && p.avatar_id) summary.avatarId = p.avatar_id;
               }
@@ -509,11 +519,16 @@
           if (e.json && Array.isArray(e.json)) {
             for (const item of e.json) {
               if (item && (item.role === 'user' || item.role === 'assistant') && item.content != null) {
+                const content = typeof item.content === 'string' ? item.content : String(item.content);
+                const source = item.metadata && item.metadata.source != null ? String(item.metadata.source) : '';
+                const key = item.role + '|' + (item.turn_id != null ? String(item.turn_id) : '') + '|' + content + '|' + source;
+                if (seenTurnKeys.has(key)) continue;
+                seenTurnKeys.add(key);
                 summary.turns.push({
                   role: item.role,
-                  content: typeof item.content === 'string' ? item.content : String(item.content),
+                  content,
                   turn_id: item.turn_id,
-                  source: item.metadata && item.metadata.source
+                  source: source || undefined
                 });
               }
             }
@@ -554,11 +569,16 @@
             if (Array.isArray(arr)) {
               for (const item of arr) {
                 if (item && (item.role === 'user' || item.role === 'assistant') && item.content != null) {
+                  const content = typeof item.content === 'string' ? item.content : String(item.content);
+                  const source = item.metadata && item.metadata.source != null ? String(item.metadata.source) : '';
+                  const key = item.role + '|' + (item.turn_id != null ? String(item.turn_id) : '') + '|' + content + '|' + source;
+                  if (seenTurnKeys.has(key)) continue;
+                  seenTurnKeys.add(key);
                   summary.turns.push({
                     role: item.role,
-                    content: typeof item.content === 'string' ? item.content : String(item.content),
+                    content,
                     turn_id: item.turn_id,
-                    source: item.metadata && item.metadata.source
+                    source: source || undefined
                   });
                 }
               }
@@ -584,7 +604,10 @@
               if (info.TTS_VENDOR || info.tts_vendor) summary.ttsModule = info.TTS_VENDOR || info.tts_vendor;
               if (!summary.llmModel && (info.LLM_MODEL || info.MODEL)) summary.llmModel = info.LLM_MODEL || info.MODEL;
               if (!summary.sipLabels && info && info.LABELS && typeof info.LABELS === 'object') summary.sipLabels = info.LABELS;
-              if (info.AVATAR_VENDOR || info.avatar_vendor) summary.avatarVendor = info.AVATAR_VENDOR || info.avatar_vendor;
+              const avTaskInfo = info.AVATAR_VENDOR || info.avatar_vendor;
+              if (avTaskInfo) {
+                summary.avatarVendor = /^(null|noop|dummy)_/i.test(avTaskInfo) ? null : avTaskInfo;
+              }
               if (!summary.avatarId && (info.AVATAR_ID || info.avatar_id)) summary.avatarId = info.AVATAR_ID || info.avatar_id;
             }
           }
@@ -702,8 +725,16 @@
           if (e.level === 'E' && e.ext === 'mcp_client' && e.msg && e.msg.includes('MCP') && e.msg.includes('failed')) {
             summary.tools.mcp_errors.push({ ts: e.ts || '', msg: e.msg.slice(0, 220) });
           }
-          if (e.msg && e.msg.includes('tool_call') && (e.msg.includes('tool_call ') || e.msg.includes('tool_call:'))) {
-            const m = e.msg.match(/tool_call[:\s]+([A-Za-z0-9_]+)\b/);
+          // Count each tool invocation exactly once by anchoring on the canonical `ifttt`
+          // dispatch line (`tool_call_with_retry ... tool_call NAME with args ...`). Other log
+          // lines ("Routing built-in tool", "[on_cmd:tool_call]") reference the *same*
+          // invocation and would cause double/triple counting.
+          //
+          // The `[ \t]` (not `\s`) is intentional: `\s` greedily matches newlines, which made
+          // lines ending in `tool_call\n` swallow the next log line's timestamp as the tool
+          // name (`2026-03-19T04`). See audit: that accounted for >50% of captured "names".
+          if (e.msg && e.msg.includes('tool_call_with_retry') && e.msg.includes(' with args')) {
+            const m = e.msg.match(/tool_call[ \t]+([A-Za-z_][A-Za-z0-9_\-]*)[ \t]+with args/);
             if (m) {
               const name = m[1];
               summary.tools.tool_calls[name] = (summary.tools.tool_calls[name] || 0) + 1;
@@ -821,8 +852,84 @@
           }
           if (e.msg.includes('assistant.transcription') && e.msg.includes('"source":"tts"')) {
             const j = tryParseJSON(e.msg);
-            if (j && j.text != null)
-              out.push({ ts: e.ts, text: j.text, duration_ms: j.duration_ms || 0, start_ms: j.start_ms || null, turn_id: j.turn_id != null ? j.turn_id : null, final: null, language: j.language || null, entryIndex: i });
+            if (j && j.text != null) {
+              // assistant.transcription JSON carries `turn_status`: 1 = finalized utterance,
+              // 0 = still being generated. That's the authoritative finality signal for agent turns.
+              const finalFromStatus = j.turn_status === 1 ? true : (j.turn_status === 0 ? false : null);
+              out.push({ ts: e.ts, text: j.text, duration_ms: j.duration_ms || 0, start_ms: j.start_ms || null, turn_id: j.turn_id != null ? j.turn_id : null, final: finalFromStatus, language: j.language || null, entryIndex: i });
+            }
+          }
+          // tts2_http.py shape: "[tts] Requesting TTS for text: <text>, text_input_end: ..., request ID: <id>"
+          if (e.msg.includes('Requesting TTS for text:')) {
+            const m = e.msg.match(/Requesting TTS for text:\s*([\s\S]*?),\s*text_input_end:\s*(True|False)\s*request ID:\s*(\d+)/);
+            if (m) {
+              out.push({
+                ts: e.ts,
+                text: m[1].trim(),
+                duration_ms: 0,
+                start_ms: null,
+                turn_id: null,
+                request_id: Number(m[3]),
+                // Keep `final: null` for TTS fragments; `text_input_end` is a streaming flag,
+                // not a transcript-finality signal. Using it here makes the turns-table
+                // "Final" column misreport agent output as interim.
+                final: null,
+                text_input_end: m[2] === 'True',
+                language: null,
+                entryIndex: i,
+              });
+            }
+          }
+          // message_collector agent transcript shape (authoritative agent finality):
+          // "[message_collector] on_data text: <text> turn_id: N is_final: <True|False> turn_status: <0|1>"
+          // For agent turns the authoritative "final" marker is `turn_status`:
+          //   turn_status: 1 = finalized utterance for that turn
+          //   turn_status: 0 = still being generated (interim agent TTS chunk)
+          // `is_final` on these lines is the ASR-style flag copied over and is almost always False
+          // for agent output, so we do not use it here.
+          if (e.msg.includes('[message_collector]') && e.msg.includes('on_data text:') && e.msg.includes('turn_status:')) {
+            const mc = e.msg.match(/on_data text:\s*([\s\S]*?)\s+turn_id:\s*(\d+)\s+is_final:\s*(True|False)\s+turn_status:\s*(\d+)/);
+            if (mc) {
+              const txt = mc[1].trim();
+              if (txt.length > 0) {
+                const ts = Number(mc[4]);
+                out.push({
+                  ts: e.ts,
+                  text: txt,
+                  duration_ms: 0,
+                  start_ms: null,
+                  turn_id: Number(mc[2]),
+                  final: ts === 1 ? true : (ts === 0 ? false : null),
+                  turn_status: ts,
+                  language: null,
+                  entryIndex: i,
+                });
+              }
+            }
+          }
+          // ElevenLabs / v2 extension shape: "[tts] request_tts: request_id='1' text='...' text_input_end=False metadata={'turn_id': 1, ...}"
+          // Only record non-empty text so we don't count the trailing text_input_end flush.
+          if (e.msg.includes('[tts]') && e.msg.includes(' request_tts: request_id=')) {
+            const textMatch = e.msg.match(/text=(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")/);
+            const rid = e.msg.match(/request_id='([^']+)'/);
+            const tidM = e.msg.match(/'turn_id'\s*:\s*(\d+)/);
+            const end = e.msg.match(/text_input_end=(True|False)/);
+            const txt = textMatch ? (textMatch[1] != null ? textMatch[1] : textMatch[2]) : null;
+            if (txt && txt.length > 0) {
+              out.push({
+                ts: e.ts,
+                text: txt,
+                duration_ms: 0,
+                start_ms: null,
+                turn_id: tidM ? Number(tidM[1]) : null,
+                request_id: rid ? rid[1] : null,
+                // Same reasoning: TTS streaming chunks are not "interim" transcripts.
+                final: null,
+                text_input_end: end ? end[1] === 'True' : null,
+                language: null,
+                entryIndex: i,
+              });
+            }
           }
         }
         return out;
@@ -984,6 +1091,23 @@
           if (e.msg.includes('user.transcription') && e.msg.includes('"text"')) {
             const j = tryParseJSON(e.msg);
             if (j && j.text) transcripts.push({ ts: e.ts, text: j.text, user: true, final: j.final, turn_id: j.turn_id, entryIndex: i });
+          }
+          // [asr] send_asr_result: {'id': '...', 'text': '...', 'final': True, 'start_ms': ..., 'duration_ms': ..., 'language': 'en'}
+          // (Python-dict syntax — single quotes, True/False — not parseable as JSON.)
+          if (e.msg.includes('send_asr_result:') && /\[asr\]/.test(e.msg)) {
+            const txt = e.msg.match(/'text'\s*:\s*'((?:[^'\\]|\\.)*)'/);
+            if (txt) {
+              const fin = e.msg.match(/'final'\s*:\s*(True|False)/);
+              const tid = e.msg.match(/'turn_id'\s*:\s*(\d+)/);
+              transcripts.push({
+                ts: e.ts,
+                text: txt[1],
+                user: true,
+                final: fin ? fin[1] === 'True' : undefined,
+                turn_id: tid ? Number(tid[1]) : undefined,
+                entryIndex: i,
+              });
+            }
           }
         }
         return { transcripts, metrics, errors };
@@ -1165,13 +1289,31 @@
         }
         if (lastRequest) requests.push(lastRequest);
         if (requests.length === 0) {
+          // Fallback: synthesize per-turn requests from llm_text_chunk emissions when the
+          // log doesn't include explicit on_request_start/end markers (some session shapes).
+          let cfgUrl = null, cfgModel = null;
           for (let i = 0; i < entries.length; i++) {
             const e = entries[i];
-            if (!e.msg || !e.msg.includes('[llm]') || !e.msg.includes('GlueConfig') || !e.msg.includes('chat/completions')) continue;
-            const urlMatch = e.msg.match(/url='([^']+)'/);
-            const modelMatch = e.msg.match(/params=\{[^}]*'model':\s*'([^']+)'/) || e.msg.match(/params=\{[^}]*"model":\s*"([^"]+)"/);
-            requests.push({ ts: e.ts, url: urlMatch ? urlMatch[1] : null, status: null, error: null, model: modelMatch ? modelMatch[1] : null, finish_reason: null, duration_ms: null, entryIndex: i });
+            if (!e.msg || !e.msg.includes('[llm]') || !e.msg.includes('GlueConfig')) continue;
+            const um = e.msg.match(/url='([^']+)'/);
+            const mm = e.msg.match(/params=\{[^}]*'model':\s*'([^']+)'/) || e.msg.match(/params=\{[^}]*"model":\s*"([^"]+)"/);
+            if (um) cfgUrl = um[1];
+            if (mm) cfgModel = mm[1];
             break;
+          }
+          const seenTurns = new Set();
+          for (let i = 0; i < entries.length; i++) {
+            const e = entries[i];
+            if (!e.msg) continue;
+            if (e.msg.includes('_send_llm_text_chunk') && e.msg.includes("'turn_id'")) {
+              const tm = e.msg.match(/'turn_id'\s*:\s*(\d+)/);
+              if (tm) {
+                const tid = tm[1];
+                if (seenTurns.has(tid)) continue;
+                seenTurns.add(tid);
+                requests.push({ ts: e.ts, url: cfgUrl, status: null, error: null, model: cfgModel, finish_reason: null, duration_ms: null, entryIndex: i, synthesized: true, turn_id: Number(tid) });
+              }
+            }
           }
         }
         return requests;
@@ -1430,9 +1572,16 @@
           if (e.level === 'E' && e.ext === 'mcp_client' && e.msg.includes('MCP') && e.msg.includes('failed')) {
             out.mcpErrors.push({ ts: e.ts || '', msg: redactInlineSecrets(e.msg).slice(0, 220), entryIndex: i });
           }
-          if (e.msg.includes('tool_call')) {
-            const m = e.msg.match(/tool_call[:\s]+([A-Za-z0-9_]+)\b/);
-            if (m) out.toolCalls[m[1]] = (out.toolCalls[m[1]] || 0) + 1;
+          // Mirror the summary.tools.tool_calls logic: only count the canonical dispatch
+          // line (`tool_call_with_retry ... tool_call NAME with args`). Keeps MCP, built-in
+          // (`_speak`, `_interrupt`, `_leave`), and future user-defined tools intact while
+          // avoiding triple counts and the newline/timestamp false-positive that `\s` caused.
+          if (e.msg.includes('tool_call_with_retry') && e.msg.includes(' with args')) {
+            const m = e.msg.match(/tool_call[ \t]+([A-Za-z_][A-Za-z0-9_\-]*)[ \t]+with args/);
+            if (m) {
+              const name = m[1];
+              out.toolCalls[name] = (out.toolCalls[name] || 0) + 1;
+            }
           }
           if (/\[mcp_client\]|\bMCP \[key_point\]|\btool_call\b|\btool_result\b/i.test(e.msg)) {
             out.events.push({ ts: e.ts, ext: e.ext || '', level: e.level || '', msg: redactInlineSecrets(e.msg).slice(0, 260), entryIndex: i });
@@ -1812,6 +1961,28 @@
               });
             }
           }
+          // message_collector user transcript shape (authoritative user finality):
+          // "[message_collector] on_data text: <text> turn_id: N is_final: <True|False> stream_id: N"
+          // stream_id identifies the user stream; turn_status is only on agent lines.
+          if (e.msg.includes('[message_collector]') && e.msg.includes('on_data text:') && e.msg.includes('stream_id:') && !e.msg.includes('turn_status:')) {
+            const mc = e.msg.match(/on_data text:\s*([\s\S]*?)\s+turn_id:\s*(\d+)\s+is_final:\s*(True|False)\s+stream_id:\s*(\d+)/);
+            if (mc) {
+              const txt = mc[1].trim();
+              if (txt.length > 0) {
+                out.push({
+                  ts: e.ts,
+                  text: txt,
+                  final: mc[3] === 'True',
+                  start_ms: null,
+                  duration_ms: null,
+                  language: null,
+                  turn_id: Number(mc[2]),
+                  stream_id: Number(mc[4]),
+                  entryIndex: i
+                });
+              }
+            }
+          }
           if (e.msg.includes('vendor_result:') && e.msg.includes('SonioxTranscriptToken(text=')) {
             const tokens = [];
             const re = /SonioxTranscriptToken\(text='((?:[^'\\]|\\.)*)'/g;
@@ -1991,14 +2162,31 @@
           language: o.language,
           entryIndex: o.entryIndex
         }));
+        // Merge rows with the same (turn, speaker) coming from different sources.
+        // Rules:
+        //  - Keep the row with the longest trimmed text (most complete utterance)
+        //    as the carrier row (its ts / entryIndex).
+        //  - But treat `final` separately: take the strongest finality signal any
+        //    source emitted for that (turn, speaker). Authoritative finality signals
+        //    come from the source that actually saw them (ASR's `is_final`,
+        //    assistant.transcription's `turn_status`, vendor `is_final`), and we do
+        //    not want the order of merging to silently downgrade that to `null`.
+        //  - final === true  beats final === false beats final === null / undefined.
         const byKey = {};
+        function strongerFinal(a, b) {
+          if (a === true || b === true) return true;
+          if (a === false || b === false) return false;
+          return null;
+        }
         function addOne(row) {
           const k = (row.turn != null ? row.turn : '') + '|' + row.speaker;
           const existing = byKey[k];
-          if (!existing) { byKey[k] = row; return; }
-          if (row.final === true && existing.final !== true) { byKey[k] = row; return; }
-          if (row.final !== true && existing.final === true) return;
-          if ((row.text || '').trim().length > (existing.text || '').trim().length) byKey[k] = row;
+          if (!existing) { byKey[k] = Object.assign({}, row); return; }
+          const newText = (row.text || '').trim();
+          const oldText = (existing.text || '').trim();
+          const merged = newText.length > oldText.length ? Object.assign({}, row) : existing;
+          merged.final = strongerFinal(existing.final, row.final);
+          byKey[k] = merged;
         }
         evalTurns.forEach(addOne);
         glueTurns.forEach(addOne);
