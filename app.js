@@ -1617,10 +1617,18 @@
         return out;
       }
 
-      /** Performance metrics per turn. Aligns with report_controller + llm key_point lines (glue ttfb, connect times, _log_and_report_latency). */
+      /** Performance metrics per turn. Aligns with report_controller + llm key_point lines (glue ttfb, connect times, _log_and_report_latency).
+       *  Policy: every field is "first-wins" unless the source is explicitly more authoritative:
+       *    - report_controller JSON is the *reported* E2E, so it overwrites vad/bhvs_delay and sets end_to_end_reported_ms.
+       *    - All other sources (metric_message, per-event regex) fill missing values but never overwrite.
+       *  No synthetic defaults are ever inserted — if a value is not logged, it stays null (→ rendered as N/A). */
       function extractPerformanceMetrics(entries) {
         const byTurn = {};
-        let pendingLlmConnectMs = null;
+        /* `connect times:` is logged on the llm extension thread without a turn_id; we pair it with the *next* glue ttfb
+         * line on the same thread.  We also track when the pending value was captured so a stale one (e.g. after an aborted
+         * request that never produced a glue line) is discarded instead of being mis-attributed to the next turn. */
+        let pendingLlmConnect = null;
+        const CONNECT_PAIR_WINDOW_SEC = 5;
         function ensure(turnId) {
           if (!byTurn[turnId]) byTurn[turnId] = { turn_id: turnId };
           return byTurn[turnId];
@@ -1631,27 +1639,28 @@
           function setTs(turnId) {
             if (tsSec != null && byTurn[turnId]) byTurn[turnId].ts = Math.max(byTurn[turnId].ts || 0, tsSec);
           }
-          /* HTTP time to response headers (s) — next glue [turn_id:N] [ttfb:…] pairs with this turn */
           const connectM = e.msg.match(/\[llm\]\s*connect times:\s*([\d.]+)\s/);
           if (connectM) {
             const sec = parseFloat(connectM[1]);
-            if (!isNaN(sec)) pendingLlmConnectMs = Math.round(sec * 1000);
+            if (!isNaN(sec)) pendingLlmConnect = { ms: Math.round(sec * 1000), tsSec: tsSec };
           }
           const glueTtfb = e.msg.match(/\[llm\]\s*glue\s*\[turn_id:(\d+)\]\s*\[ttfb:(\d+)ms\]/);
           if (glueTtfb) {
             const turnId = parseInt(glueTtfb[1], 10);
             const row = ensure(turnId);
-            row.llm_ttfb = parseInt(glueTtfb[2], 10);
-            if (pendingLlmConnectMs != null) {
-              row.llm_connect = pendingLlmConnectMs;
-              pendingLlmConnectMs = null;
+            if (row.llm_ttfb == null) row.llm_ttfb = parseInt(glueTtfb[2], 10);
+            if (pendingLlmConnect != null && row.llm_connect == null) {
+              const dt = (tsSec != null && pendingLlmConnect.tsSec != null) ? (tsSec - pendingLlmConnect.tsSec) : 0;
+              if (dt >= 0 && dt <= CONNECT_PAIR_WINDOW_SEC) row.llm_connect = pendingLlmConnect.ms;
             }
+            pendingLlmConnect = null;
             setTs(turnId);
           }
           const ttfsM = e.msg.match(/\[turn_id:(\d+)\]\s*\[ttfs:(\d+)ms\]/);
           if (ttfsM && e.msg.includes('_track_first_sentence')) {
             const turnId = parseInt(ttfsM[1], 10);
-            ensure(turnId).llm_ttfs = parseInt(ttfsM[2], 10);
+            const row = ensure(turnId);
+            if (row.llm_ttfs == null) row.llm_ttfs = parseInt(ttfsM[2], 10);
             setTs(turnId);
           }
           const llmLat = e.msg.match(/Sending llm_latency metric:\s*turn_id=(\d+),\s*ttfb=(\d+)ms,\s*ttfs=(\d+)ms/);
@@ -1682,21 +1691,31 @@
               }
             }
           }
-          const metricMsg = e.msg.match(/\[metric_message:\s*(\{[^]]+\})\]/);
-          if (metricMsg) {
-            const j = tryParseJSON(metricMsg[1]);
-            if (j && j.turn_id != null) {
-              const turnId = parseInt(j.turn_id, 10);
-              const row = ensure(turnId);
-              if (j.metric_name === 'aivad_delay' && j.latency_ms != null) row.aivad_delay = parseInt(j.latency_ms, 10);
-              if (j.metric_name === 'ttlw' && j.module === 'asr' && j.latency_ms != null) row.asr_ttlw = parseInt(j.latency_ms, 10);
-              if (j.metric_name === 'vad' && j.latency_ms != null) row.vad = parseInt(j.latency_ms, 10);
-              if (j.module === 'llm' && j.latency_ms != null) {
-                if (j.metric_name === 'connect_delay' || j.metric_name === 'connect') row.llm_connect = parseInt(j.latency_ms, 10);
-                else if (j.metric_name === 'ttfb' && row.llm_ttfb == null) row.llm_ttfb = parseInt(j.latency_ms, 10);
-                else if (j.metric_name === 'ttfs' && row.llm_ttfs == null) row.llm_ttfs = parseInt(j.latency_ms, 10);
+          /* [metric_message:{...}] — use balanced-brace scan so array/object values in the JSON don't break parsing. */
+          const mmIdx = e.msg.indexOf('[metric_message:');
+          if (mmIdx >= 0) {
+            const mmStart = e.msg.indexOf('{', mmIdx);
+            if (mmStart >= 0) {
+              let d = 0, mmEnd = mmStart;
+              for (; mmEnd < e.msg.length; mmEnd++) {
+                const ch = e.msg.charAt(mmEnd);
+                if (ch === '{') d++;
+                else if (ch === '}') { d--; if (d === 0) { mmEnd++; break; } }
               }
-              setTs(turnId);
+              const j = tryParseJSON(e.msg.slice(mmStart, mmEnd));
+              if (j && j.turn_id != null) {
+                const turnId = parseInt(j.turn_id, 10);
+                const row = ensure(turnId);
+                if (j.metric_name === 'aivad_delay' && j.latency_ms != null && row.aivad_delay == null) row.aivad_delay = parseInt(j.latency_ms, 10);
+                if (j.metric_name === 'ttlw' && j.module === 'asr' && j.latency_ms != null && row.asr_ttlw == null) row.asr_ttlw = parseInt(j.latency_ms, 10);
+                if (j.metric_name === 'vad' && j.latency_ms != null && row.vad == null) row.vad = parseInt(j.latency_ms, 10);
+                if (j.module === 'llm' && j.latency_ms != null) {
+                  if ((j.metric_name === 'connect_delay' || j.metric_name === 'connect') && row.llm_connect == null) row.llm_connect = parseInt(j.latency_ms, 10);
+                  else if (j.metric_name === 'ttfb' && row.llm_ttfb == null) row.llm_ttfb = parseInt(j.latency_ms, 10);
+                  else if (j.metric_name === 'ttfs' && row.llm_ttfs == null) row.llm_ttfs = parseInt(j.latency_ms, 10);
+                }
+                setTs(turnId);
+              }
             }
           }
           const ttlw = e.msg.match(/Turn TTLW recorded:\s*turn_id=(\d+),\s*ttlw=(\d+)ms/);
@@ -1709,16 +1728,18 @@
           const ttsTtfb = e.msg.match(/tts_ttfb:\s*(\d+)\s+of request_id:\s*(\d+)/);
           if (ttsTtfb) {
             const turnId = parseInt(ttsTtfb[2], 10);
-            ensure(turnId).tts_ttfb = parseInt(ttsTtfb[1], 10);
+            const row = ensure(turnId);
+            if (row.tts_ttfb == null) row.tts_ttfb = parseInt(ttsTtfb[1], 10);
             setTs(turnId);
           }
-          if ((e.msg.includes('tts') && e.msg.includes('ttfb')) && e.msg.includes('report_controller') && e.msg.includes("'turn_id'")) {
-            const turnM = e.msg.match(/'turn_id':\s*(\d+)/);
-            const ttfbM = e.msg.match(/'ttfb':\s*(\d+)/);
-            if (turnM && ttfbM) {
-              const turnId = parseInt(turnM[1], 10);
+          /* Python-dict style TTS report line, e.g. `...report_controller... 'turn_id': 5, ..., 'ttfb': 421, ...`
+           * Require 'ttfb' to follow 'turn_id' so we only pair fields from the same dict object. */
+          if (e.msg.includes('report_controller') && e.msg.includes("'ttfb'") && e.msg.includes("'turn_id'")) {
+            const pair = e.msg.match(/'turn_id':\s*(\d+)[\s\S]*?'ttfb':\s*(\d+)/);
+            if (pair) {
+              const turnId = parseInt(pair[1], 10);
               const row = ensure(turnId);
-              if (row.tts_ttfb == null) row.tts_ttfb = parseInt(ttfbM[1], 10);
+              if (row.tts_ttfb == null) row.tts_ttfb = parseInt(pair[2], 10);
               setTs(turnId);
             }
           }
@@ -1729,16 +1750,18 @@
             if (row.aivad_delay == null) row.aivad_delay = parseInt(aivadEnd[2], 10);
             setTs(turnId);
           }
-          if (e.msg.includes('bhvs_delay') && e.msg.match(/latency_ms["']?\s*:\s*(\d+)/)) {
-            const m = e.msg.match(/"turn_id"\s*:\s*(\d+)/);
-            if (m) ensure(parseInt(m[1], 10)).bhvs_delay = parseInt(e.msg.match(/latency_ms["']?\s*:\s*(\d+)/)[1], 10);
+          if (e.msg.includes('bhvs_delay')) {
+            const latM = e.msg.match(/latency_ms["']?\s*:\s*(\d+)/);
+            const turnM = e.msg.match(/"turn_id"\s*:\s*(\d+)/);
+            if (latM && turnM) {
+              const turnId = parseInt(turnM[1], 10);
+              const row = ensure(turnId);
+              if (row.bhvs_delay == null) row.bhvs_delay = parseInt(latM[1], 10);
+              setTs(turnId);
+            }
           }
         }
-        const list = Object.values(byTurn).sort((a, b) => a.turn_id - b.turn_id);
-        for (const row of list) {
-          if (row.bhvs_delay == null && row.asr_ttlw != null) row.bhvs_delay = 120;
-        }
-        return list;
+        return Object.values(byTurn).sort((a, b) => a.turn_id - b.turn_id);
       }
 
       /** User speech from ASR: send_asr_result, vendor_result, and ten:runtime Publish Message content user.transcription (has final) */
@@ -2595,7 +2618,7 @@
             { label: 'Turn ID', title: 'Turn index for this user-speech segment (matches turn_detector / metrics in the log).' },
             { label: 'VAD (ms)', title: 'Voice Activity Detection window: silence duration after speech ends plus fixed padding (from EOS / E2E report when logged). Not shown if that line is missing for the turn.' },
             { label: 'AIVAD Delay (ms)', title: 'AIVAD (AI VAD) extra delay when that extension is enabled; N/A when disabled.' },
-            { label: 'BHVS Delay (ms)', title: 'BHVS: behavioral hold / barge-in window (ms) before ASR finalize; often 120 ms when BHVS is on.' },
+            { label: 'BHVS Delay (ms)', title: 'BHVS: behavioral hold / barge-in window (ms) before ASR finalize, from bhvs_duration_ms in the report_controller E2E line (or a bhvs_delay metric_message). N/A when the turn did not log either.' },
             { label: 'ASR TTLW (ms)', title: 'ASR Time To Last Word: from end-of-speech to last finalized transcript for the turn.' },
             { label: 'LLM Connect (ms)', title: 'Time until the LLM HTTP streaming connection returns headers (before first token).' },
             { label: 'LLM TTFB (ms)', title: 'LLM Time To First Byte: from request start to first assistant text token in the stream.' },
