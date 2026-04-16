@@ -49,6 +49,7 @@ const {
   listAudioEntries,
   pickPrimaryAudioEntry,
   findTarEntryByName,
+  buildStoreZip,
 } = require('../lib/tenInvestigatorCore.js');
 
 const PORT = Number(process.env.PORT) || 8787;
@@ -339,12 +340,14 @@ http.createServer(async (req, res) => {
     let environment = 'prod';
     let suffix = '.wav';
     let file = null;
+    let all = false;
 
     if (req.method === 'GET') {
       agentId = (url.searchParams.get('agentId') || '').trim();
       environment = (url.searchParams.get('environment') || 'prod').trim() || 'prod';
       suffix = (url.searchParams.get('suffix') || '.wav').trim() || '.wav';
       file = url.searchParams.get('file');
+      all = !!url.searchParams.get('all');
     } else {
       let body;
       try {
@@ -359,6 +362,7 @@ http.createServer(async (req, res) => {
       environment = body.environment || 'prod';
       suffix = body.suffix || '.wav';
       file = body.file || null;
+      all = !!body.all;
     }
 
     if (!agentId) {
@@ -465,6 +469,44 @@ http.createServer(async (req, res) => {
       return;
     }
 
+    if (all) {
+      // Bundle every audio file in one uncompressed zip so the user gets all
+      // PCMs (or WAVs) in a single download instead of clicking each row.
+      // listAudioEntries() only carries metadata, so resolve each listed file
+      // back to its raw tar entry for the real payload.
+      const zipFiles = audioList
+        .map((f) => {
+          const tarEntry = findTarEntryByName(entries2, f.base);
+          if (!tarEntry) return null;
+          return { name: f.base, data: tarEntry.data };
+        })
+        .filter(Boolean);
+      if (!zipFiles.length) {
+        res.writeHead(500, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
+        res.end(JSON.stringify({ error: 'no audio entries resolved in archive' }));
+        return;
+      }
+      let zipBuf;
+      try {
+        zipBuf = buildStoreZip(zipFiles);
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
+        res.end(JSON.stringify({ error: 'zip build failed: ' + (e.message || String(e)) }));
+        return;
+      }
+      const safeAgent = agentId.replace(/[^A-Za-z0-9._-]/g, '_');
+      const zipName = `${safeAgent}_audio${suffix === '.pcm' ? '_pcm' : '_wav'}.zip`;
+      res.writeHead(200, {
+        'Content-Type': 'application/zip',
+        'Content-Length': zipBuf.length,
+        'Content-Disposition': 'attachment; filename="' + zipName + '"',
+        'Accept-Ranges': 'none',
+        ...corsHeaders(allow, req, {}),
+      });
+      res.end(zipBuf);
+      return;
+    }
+
     const proto = req.headers['x-forwarded-proto'] || (req.socket && req.socket.encrypted ? 'https' : 'http');
     const reqHost = req.headers.host || 'localhost';
     const baseUrl = `${proto}://${reqHost}/api/ten-investigator-audio`;
@@ -480,11 +522,18 @@ http.createServer(async (req, res) => {
         `&file=${encodeURIComponent(f.base)}`,
     }));
     const primary = pickPrimaryAudioEntry(entries2, suffix);
+    const allUrl =
+      `${baseUrl}?agentId=${encodeURIComponent(agentId)}` +
+      `&environment=${encodeURIComponent(environment)}` +
+      `&suffix=${encodeURIComponent(suffix)}` +
+      `&all=1`;
     res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
     res.end(JSON.stringify({
       suffix,
       files,
       primary: primary ? primary.base.replace(/^.*\//, '') : (files[0] ? files[0].name : null),
+      allUrl,
+      totalSize: files.reduce((n, f) => n + (f.size || 0), 0),
     }));
     return;
   }

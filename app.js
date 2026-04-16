@@ -354,7 +354,7 @@
           stopStatus: null,
           stopMessage: null,
           llmModule: null, llmUrl: null,
-          llmModel: null, llmSystemPrompt: null,
+          llmModel: null, llmSystemPrompt: null, llmSystemPromptEntryIndex: null,
           mllmVendor: null, mllmModel: null, mllmUrl: null,
           ttsModule: null,
           sttModule: null,
@@ -374,7 +374,8 @@
         };
         const seenTurnKeys = new Set();
 
-        for (const e of entries) {
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i];
           // Fallback hints from plain-text extension creation lines (works even if graph JSON parse fails).
           // Record the *addon* name, not a guessed vendor — e.g. [glue_python_async] is used with Groq / xAI / vLLM / etc.
           // Authoritative sources (graph JSON `addon`, taskInfo ASR/TTS/AVATAR_VENDOR, etc.) overwrite these below.
@@ -745,6 +746,32 @@
             if (urlMatch) {
               summary.llmUrl = summary.llmUrl || urlMatch[1];
               if (!summary.llmModule) summary.llmModule = urlMatch[1].replace(/^https?:\/\//, '').split('/')[0];
+            }
+          }
+          // Raw-log fallback for the LLM system prompt.
+          //
+          // Graph JSON carries `system_messages` as a real JSON array, but
+          // many sessions only emit the `[llm] ... GlueConfig(... system_messages=[{'content': '...', 'role': 'system'}] ...)`
+          // Python-dict dump. When Graph JSON never lands (or doesn't contain
+          // a system message) we grab the content from that line so the
+          // Insights summary still shows the prompt.
+          //
+          // We only look when we haven't already captured a prompt, and we
+          // skip empty `system_messages=[]` to avoid clobbering a real value
+          // from a later line.
+          if (!summary.llmSystemPrompt && e.msg && e.msg.includes('system_messages=[') && !e.msg.includes('system_messages=[]')) {
+            const m = e.msg.match(/system_messages=\[\{\s*'content'\s*:\s*'((?:[^'\\]|\\.)*)'\s*,\s*'role'\s*:\s*'system'\s*\}\]/);
+            if (m && m[1]) {
+              // Python-escaped literal: turn \n, \t, \', \\ into their real chars so
+              // the prompt renders naturally instead of showing escape sequences.
+              const decoded = m[1]
+                .replace(/\\n/g, '\n')
+                .replace(/\\r/g, '\r')
+                .replace(/\\t/g, '\t')
+                .replace(/\\'/g, "'")
+                .replace(/\\\\/g, '\\');
+              summary.llmSystemPrompt = decoded;
+              summary.llmSystemPromptEntryIndex = i;
             }
           }
         }
@@ -2925,8 +2952,29 @@
         if (sumForLlm.llmModel || sumForLlm.llmSystemPrompt) {
           html += '<p class="summary-json-hint"><strong>Model</strong>: ' + escapeHtml(sumForLlm.llmModel || '—') + '</p>';
           if (sumForLlm.llmSystemPrompt) {
-            const preview = String(sumForLlm.llmSystemPrompt).slice(0, 320);
-            html += '<details><summary>System prompt preview</summary><pre class="summary-json-view">' + escapeHtml(preview + (String(sumForLlm.llmSystemPrompt).length > 320 ? '\n... (truncated)' : '')) + '</pre></details>';
+            // Full prompt card — previously a 320-char preview. System prompts
+            // can be several KB, so we clamp the rendered block with a scroll
+            // container and expose copy + jump-to-log affordances.
+            const promptStr = String(sumForLlm.llmSystemPrompt);
+            const charCount = promptStr.length;
+            const lineCount = promptStr.split('\n').length;
+            const metaBits = [charCount + (charCount === 1 ? ' char' : ' chars')];
+            if (lineCount > 1) metaBits.push(lineCount + ' lines');
+            const jumpIdx = sumForLlm.llmSystemPromptEntryIndex;
+            const hasJump = typeof jumpIdx === 'number' && jumpIdx >= 0;
+            html += '<div class="system-prompt-card">';
+            html += '<div class="system-prompt-title">System prompt</div>';
+            html += '<div class="system-prompt-meta">' + escapeHtml(metaBits.join(' · ')) + '</div>';
+            html += '<details class="system-prompt-details"><summary>Show prompt</summary>';
+            html += '<pre class="system-prompt-text">' + escapeHtml(promptStr) + '</pre>';
+            html += '<div class="system-prompt-actions">';
+            html += '<button type="button" class="summary-json-toggle system-prompt-copy">Copy prompt</button>';
+            if (hasJump) {
+              html += '<button type="button" class="summary-json-toggle system-prompt-jump" data-entry-index="' + jumpIdx + '">Jump to log line</button>';
+            }
+            html += '</div>';
+            html += '</details>';
+            html += '</div>';
           }
         }
         if (insights.llm && insights.llm.length) {
@@ -4398,8 +4446,31 @@
         var group = document.createElement('div');
         group.className = 'audio-player-group';
 
-        var header = document.createElement('label');
-        header.textContent = audioType.label + ' (' + suffix + ')';
+        var header = document.createElement('div');
+        header.className = 'audio-group-header';
+        var label = document.createElement('label');
+        label.textContent = audioType.label + ' (' + suffix + ')';
+        header.appendChild(label);
+        // Show the "Download all (.zip)" affordance at the group level when the
+        // archive has more than one file. With a single file the per-row
+        // Download button is already all you need, so we'd just be adding noise.
+        if (files.length > 1 && data.allUrl) {
+          var totalBytes = typeof data.totalSize === 'number' ? data.totalSize : 0;
+          var dlAll = document.createElement('a');
+          dlAll.className = 'audio-download-all';
+          dlAll.href = data.allUrl;
+          // Hinting the target filename helps browsers save directly instead
+          // of navigating to the stream URL (the server sets Content-Disposition
+          // too; this is belt-and-suspenders).
+          dlAll.setAttribute('download', '');
+          // Icon-only: the inline SVG is decorative, so screen readers get
+          // the label via aria-label and sighted users get it via title tooltip.
+          var sizeSuffix = totalBytes ? ' (' + formatBytes(totalBytes) + ')' : '';
+          dlAll.title = 'Download all as .zip' + sizeSuffix;
+          dlAll.setAttribute('aria-label', 'Download all files in this archive as a .zip' + sizeSuffix);
+          dlAll.innerHTML = downloadIconSvg();
+          header.appendChild(dlAll);
+        }
         group.appendChild(header);
 
         group.appendChild(renderAudioRow(primary, suffix, true));
@@ -4414,6 +4485,14 @@
         }
 
         container.appendChild(group);
+      }
+
+      function formatBytes(n) {
+        if (!n || n < 0) return '0 B';
+        var units = ['B', 'KB', 'MB', 'GB'];
+        var i = 0;
+        while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+        return (i === 0 ? Math.round(n) : n.toFixed(1)) + ' ' + units[i];
       }
 
       function renderAudioRow(file, suffix, isPrimary) {
@@ -4449,10 +4528,31 @@
         dl.className = 'audio-download';
         dl.href = file.url;
         dl.download = file.name;
-        dl.textContent = 'Download';
+        // Icon-only: same pattern as the group-level "download all" button.
+        dl.title = 'Download ' + file.name;
+        dl.setAttribute('aria-label', 'Download ' + file.name);
+        dl.innerHTML = downloadIconSvg();
         row.appendChild(dl);
 
         return row;
+      }
+
+      /**
+       * Inline SVG for a "download" arrow (arrow pointing at a horizontal tray).
+       * Rendered with `currentColor` so the button's CSS color drives both the
+       * stroke and the resting/hover state.
+       */
+      function downloadIconSvg() {
+        return (
+          '<svg class="audio-download-icon" xmlns="http://www.w3.org/2000/svg"' +
+          ' width="14" height="14" viewBox="0 0 24 24" fill="none"' +
+          ' stroke="currentColor" stroke-width="2" stroke-linecap="round"' +
+          ' stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+          '<path d="M12 3v12"/>' +
+          '<path d="m7 10 5 5 5-5"/>' +
+          '<path d="M5 21h14"/>' +
+          '</svg>'
+        );
       }
 
       function fetchTenErrViaCstool(agentId, environment, opts) {
@@ -5599,8 +5699,38 @@
       });
 
       document.getElementById('insightsContent').addEventListener('click', function (ev) {
+        // Copy / jump controls inside the System prompt card. Intercept first
+        // so the generic table-row jump handler below doesn't also fire.
+        const copyBtn = ev.target.closest && ev.target.closest('.system-prompt-copy');
+        if (copyBtn) {
+          ev.stopPropagation();
+          const prompt = state && state.insights && state.insights.summary ? state.insights.summary.llmSystemPrompt : null;
+          if (prompt) {
+            copyText(String(prompt));
+            const orig = copyBtn.textContent;
+            copyBtn.textContent = 'Copied!';
+            setTimeout(function () { copyBtn.textContent = orig; }, 1200);
+          }
+          return;
+        }
+        const jumpBtn = ev.target.closest && ev.target.closest('.system-prompt-jump');
+        if (jumpBtn) {
+          ev.stopPropagation();
+          const idxRaw = jumpBtn.getAttribute('data-entry-index');
+          const idx = idxRaw != null ? parseInt(idxRaw, 10) : NaN;
+          if (!isNaN(idx) && state && Array.isArray(state.entries) && state.entries[idx]) {
+            document.querySelector('.view-tabs button[data-view="log"]').click();
+            resetLogFiltersForInsightsJump();
+            state.selectedIndex = idx;
+            state.contextRadius = 50;
+            state.pendingScrollToSelection = true;
+            applyFilters();
+          }
+          return;
+        }
         if (window.getSelection().toString().trim()) return;
         if (ev.target.closest && ev.target.closest('details.insight-text-expand')) return;
+        if (ev.target.closest && ev.target.closest('.system-prompt-card')) return;
         const row = ev.target.closest('tr[data-ts], tr[data-index]');
         if (!row) return;
         let idx = -1;

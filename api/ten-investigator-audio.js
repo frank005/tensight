@@ -21,6 +21,11 @@
  *   GET /api/ten-investigator-audio?agentId=...&environment=...&suffix=.wav&file=<basename>
  *     streams that one file as audio/wav or audio/* (or application/octet-stream for .pcm)
  *     with a `Content-Disposition` header using the real basename.
+ *
+ *   GET /api/ten-investigator-audio?agentId=...&environment=...&suffix=.pcm&all=1
+ *     streams a STORE (uncompressed) .zip bundling every audio file in the archive.
+ *     Used by the UI's "Download all" button so users don't have to grab each PCM/WAV
+ *     individually.
  */
 
 const zlib = require('zlib');
@@ -33,6 +38,7 @@ const {
   listAudioEntries,
   pickPrimaryAudioEntry,
   findTarEntryByName,
+  buildStoreZip,
 } = require('../lib/tenInvestigatorCore');
 
 function jsonError(res, allow, req, status, msg) {
@@ -129,7 +135,8 @@ module.exports = async (req, res) => {
       environment = (reqUrl.searchParams.get('environment') || 'prod').trim() || 'prod';
       suffix = (reqUrl.searchParams.get('suffix') || '.wav').trim() || '.wav';
       file = reqUrl.searchParams.get('file');
-      mode = file ? 'stream' : 'list';
+      const all = reqUrl.searchParams.get('all');
+      mode = all ? 'all' : (file ? 'stream' : 'list');
     } catch (e) {
       return jsonError(res, allow, req, 400, 'bad query');
     }
@@ -141,7 +148,7 @@ module.exports = async (req, res) => {
       environment = body.environment || 'prod';
       suffix = body.suffix || '.wav';
       file = body.file || null;
-      mode = file ? 'stream' : 'list';
+      mode = body.all ? 'all' : (file ? 'stream' : 'list');
     } catch {
       return jsonError(res, allow, req, 400, 'invalid JSON');
     }
@@ -187,7 +194,43 @@ module.exports = async (req, res) => {
     return;
   }
 
-  // List mode: build per-file stream URLs pointing back to this same endpoint.
+  if (mode === 'all') {
+    // Bundle every audio file in the archive into a single STORE zip.
+    // PCM/WAV don't compress meaningfully, and using STORE keeps us
+    // dependency-free (see buildStoreZip in lib/tenInvestigatorCore).
+    //
+    // listAudioEntries() intentionally only returns metadata (no `data`
+    // buffer), so resolve each listed file back to its tar entry to get
+    // the actual bytes.
+    const files = audioList
+      .map((f) => {
+        const tarEntry = findTarEntryByName(entries, f.base);
+        if (!tarEntry) return null;
+        return { name: f.base, data: tarEntry.data };
+      })
+      .filter(Boolean);
+    if (!files.length) {
+      return jsonError(res, allow, req, 500, 'no audio entries resolved in archive');
+    }
+    let zipBuf;
+    try {
+      zipBuf = buildStoreZip(files);
+    } catch (e) {
+      return jsonError(res, allow, req, 500, 'zip build failed: ' + (e.message || String(e)));
+    }
+    const safeAgent = agentId.replace(/[^A-Za-z0-9._-]/g, '_');
+    const zipName = `${safeAgent}_audio${suffix === '.pcm' ? '_pcm' : '_wav'}.zip`;
+    applyCorsToRes(res, allow, req, false);
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Length', zipBuf.length);
+    res.setHeader('Content-Disposition', 'attachment; filename="' + zipName + '"');
+    res.setHeader('Accept-Ranges', 'none');
+    res.end(zipBuf);
+    return;
+  }
+
+  // List mode: build per-file stream URLs + an "all" URL pointing back to this endpoint.
   const protoHeader = req.headers['x-forwarded-proto'] || (req.connection && req.connection.encrypted ? 'https' : 'http');
   const host = req.headers.host || 'localhost';
   const base = `${protoHeader}://${host}/api/ten-investigator-audio`;
@@ -203,6 +246,11 @@ module.exports = async (req, res) => {
       `&file=${encodeURIComponent(f.base)}`,
   }));
   const primary = pickPrimaryAudioEntry(entries, suffix);
+  const allUrl =
+    `${base}?agentId=${encodeURIComponent(agentId)}` +
+    `&environment=${encodeURIComponent(environment)}` +
+    `&suffix=${encodeURIComponent(suffix)}` +
+    `&all=1`;
 
   applyCorsToRes(res, allow, req, false);
   res.statusCode = 200;
@@ -211,5 +259,7 @@ module.exports = async (req, res) => {
     suffix,
     files,
     primary: primary ? primary.base.replace(/^.*\//, '') : (files[0] ? files[0].name : null),
+    allUrl,
+    totalSize: files.reduce((n, f) => n + (f.size || 0), 0),
   }));
 };
