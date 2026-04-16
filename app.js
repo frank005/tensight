@@ -375,10 +375,12 @@
 
         for (const e of entries) {
           // Fallback hints from plain-text extension creation lines (works even if graph JSON parse fails).
-          if (!summary.sttModule && e.msg && e.msg.includes('[deepgram_asr_python]')) summary.sttModule = 'deepgram';
-          if (!summary.ttsModule && e.msg && e.msg.includes('[minimax_tts_websocket]')) summary.ttsModule = 'minimax';
-          if (!summary.llmModule && e.msg && e.msg.includes('[glue_python_async]')) summary.llmModule = 'openai';
-          if (!summary.avatarVendor && (e.msg.includes('[heygen_avatar_python]') || e.msg.includes('[avatar]'))) summary.avatarVendor = 'heygen';
+          // Record the *addon* name, not a guessed vendor — e.g. [glue_python_async] is used with Groq / xAI / vLLM / etc.
+          // Authoritative sources (graph JSON `addon`, taskInfo ASR/TTS/AVATAR_VENDOR, etc.) overwrite these below.
+          if (!summary.sttModule && e.msg && e.msg.includes('[deepgram_asr_python]')) summary.sttModule = 'deepgram_asr_python';
+          if (!summary.ttsModule && e.msg && e.msg.includes('[minimax_tts_websocket]')) summary.ttsModule = 'minimax_tts_websocket';
+          if (!summary.llmModule && e.msg && e.msg.includes('[glue_python_async]')) summary.llmModule = 'glue_python_async';
+          if (!summary.avatarVendor && e.msg && e.msg.includes('[heygen_avatar_python]')) summary.avatarVendor = 'heygen_avatar_python';
 
           if (!summary.sessCtrlVersion && e.ext === 'agora_sess_ctrl' && e.msg && e.msg.includes('SESS_CTRL: version:')) {
             const m = e.msg.match(/SESS_CTRL:\s*version:\s*([^\s]+)/);
@@ -445,7 +447,8 @@
               const asrNode = j.nodes.find(n => n.name === 'asr');
               const avatarNode = j.nodes.find(n => n.name === 'avatar');
               if (llmNode) {
-                summary.llmModule = llmNode.addon || llmNode.name || null;
+                const llmAddon = llmNode.addon || llmNode.name || null;
+                if (llmAddon) summary.llmModule = llmAddon;
                 if (llmNode.property && llmNode.property.url) summary.llmUrl = llmNode.property.url;
                 if (!summary.llmModel && llmNode.property && llmNode.property.params && llmNode.property.params.model) {
                   summary.llmModel = llmNode.property.params.model;
@@ -463,10 +466,17 @@
                 if (!summary.llmUrl && p.url) summary.llmUrl = p.url;
                 if (!summary.llmModule && (p.vendor || v2vNode.addon || v2vNode.name)) summary.llmModule = p.vendor || v2vNode.addon || v2vNode.name;
               }
-              if (ttsNode) summary.ttsModule = ttsNode.addon || ttsNode.name || null;
-              if (asrNode) summary.sttModule = asrNode.addon || asrNode.name || null;
+              if (ttsNode) {
+                const ttsAddon = ttsNode.addon || ttsNode.name || null;
+                if (ttsAddon) summary.ttsModule = ttsAddon;
+              }
+              if (asrNode) {
+                const asrAddon = asrNode.addon || asrNode.name || null;
+                if (asrAddon) summary.sttModule = asrAddon;
+              }
               if (avatarNode) {
-                if (!summary.avatarVendor) summary.avatarVendor = (avatarNode.addon || avatarNode.name || null);
+                const vendorFromGraph = avatarNode.addon || avatarNode.name || null;
+                if (vendorFromGraph) summary.avatarVendor = vendorFromGraph;
                 const p = avatarNode.property && avatarNode.property.params ? avatarNode.property.params : null;
                 if (p && !summary.avatarId && p.avatar_id) summary.avatarId = p.avatar_id;
               }
@@ -478,23 +488,22 @@
             const g = tryParseJSON(e.msg);
             if (g && g.graph_id && !summary.graphId) summary.graphId = g.graph_id;
           }
-          if ((!summary.llmModule || !summary.ttsModule || !summary.sttModule) && e.msg && e.msg.includes('"nodes"') && (e.msg.includes('start_graph') || e.msg.includes('"name":"llm"'))) {
+          if (e.msg && e.msg.includes('"nodes"') && (e.msg.includes('start_graph') || e.msg.includes('"name":"llm"'))) {
             const g = e.json || tryParseJSON(e.msg);
             if (g && g.nodes && Array.isArray(g.nodes)) {
-              if (!summary.llmModule || !summary.llmModel || !summary.llmSystemPrompt || !summary.llmUrl) {
-                const n = g.nodes.find(nn => nn.name === 'llm');
-                if (n) {
-                  if (!summary.llmModule) summary.llmModule = n.addon || n.name;
-                  if (!summary.llmUrl && n.property && n.property.url) summary.llmUrl = n.property.url;
-                  if (!summary.llmModel && n.property && n.property.params && n.property.params.model) summary.llmModel = n.property.params.model;
-                  if (!summary.llmSystemPrompt && n.property && Array.isArray(n.property.system_messages) && n.property.system_messages.length) {
-                    const first = n.property.system_messages[0];
-                    if (first && first.content != null) summary.llmSystemPrompt = String(first.content);
-                  }
+              const n = g.nodes.find(nn => nn.name === 'llm');
+              if (n) {
+                const addon = n.addon || n.name || null;
+                if (addon) summary.llmModule = addon;
+                if (!summary.llmUrl && n.property && n.property.url) summary.llmUrl = n.property.url;
+                if (!summary.llmModel && n.property && n.property.params && n.property.params.model) summary.llmModel = n.property.params.model;
+                if (!summary.llmSystemPrompt && n.property && Array.isArray(n.property.system_messages) && n.property.system_messages.length) {
+                  const first = n.property.system_messages[0];
+                  if (first && first.content != null) summary.llmSystemPrompt = String(first.content);
                 }
               }
-              if (!summary.ttsModule) { const n = g.nodes.find(nn => nn.name === 'tts'); if (n) summary.ttsModule = n.addon || n.name; }
-              if (!summary.sttModule) { const n = g.nodes.find(nn => nn.name === 'asr'); if (n) summary.sttModule = n.addon || n.name; }
+              { const n2 = g.nodes.find(nn => nn.name === 'tts'); if (n2) { const a = n2.addon || n2.name; if (a) summary.ttsModule = a; } }
+              { const n2 = g.nodes.find(nn => nn.name === 'asr'); if (n2) { const a = n2.addon || n2.name; if (a) summary.sttModule = a; } }
             }
           }
           if (e.json && Array.isArray(e.json)) {
@@ -571,11 +580,11 @@
                 summary.geoLocation = j.taskInfo.geoLocation;
               }
               summary.providerSource.presets = parseVendorPresets(info && info['X-VENDOR-PRESETS']);
-              if (!summary.sttModule && (info.ASR_VENDOR || info.asr_vendor)) summary.sttModule = info.ASR_VENDOR || info.asr_vendor;
-              if (!summary.ttsModule && (info.TTS_VENDOR || info.tts_vendor)) summary.ttsModule = info.TTS_VENDOR || info.tts_vendor;
+              if (info.ASR_VENDOR || info.asr_vendor) summary.sttModule = info.ASR_VENDOR || info.asr_vendor;
+              if (info.TTS_VENDOR || info.tts_vendor) summary.ttsModule = info.TTS_VENDOR || info.tts_vendor;
               if (!summary.llmModel && (info.LLM_MODEL || info.MODEL)) summary.llmModel = info.LLM_MODEL || info.MODEL;
               if (!summary.sipLabels && info && info.LABELS && typeof info.LABELS === 'object') summary.sipLabels = info.LABELS;
-              if (!summary.avatarVendor && (info.AVATAR_VENDOR || info.avatar_vendor)) summary.avatarVendor = info.AVATAR_VENDOR || info.avatar_vendor;
+              if (info.AVATAR_VENDOR || info.avatar_vendor) summary.avatarVendor = info.AVATAR_VENDOR || info.avatar_vendor;
               if (!summary.avatarId && (info.AVATAR_ID || info.avatar_id)) summary.avatarId = info.AVATAR_ID || info.avatar_id;
             }
           }
@@ -587,15 +596,15 @@
               if (parsed.length) summary.providerSource.presets = parsed;
             }
           }
-          if ((!summary.sttModule || summary.sttModule === 'asr') && e.msg && /ASR_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/.test(e.msg)) {
+          if (e.msg && /ASR_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/.test(e.msg)) {
             const m = e.msg.match(/ASR_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/);
             if (m && m[1]) summary.sttModule = m[1];
           }
-          if ((!summary.ttsModule || summary.ttsModule === 'tts') && e.msg && /TTS_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/.test(e.msg)) {
+          if (e.msg && /TTS_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/.test(e.msg)) {
             const m = e.msg.match(/TTS_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/);
             if (m && m[1]) summary.ttsModule = m[1];
           }
-          if (!summary.avatarVendor && e.msg && /AVATAR_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/.test(e.msg)) {
+          if (e.msg && /AVATAR_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/.test(e.msg)) {
             const m = e.msg.match(/AVATAR_VENDOR['"]?\s*:\s*['"]([^'"]+)['"]/);
             if (m && m[1]) summary.avatarVendor = m[1];
           }
