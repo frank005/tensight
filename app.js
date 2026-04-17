@@ -927,10 +927,15 @@
           if (e.msg.includes('assistant.transcription') && e.msg.includes('"source":"tts"')) {
             const j = tryParseJSON(e.msg);
             if (j && j.text != null) {
-              // assistant.transcription JSON carries `turn_status`: 1 = finalized utterance,
-              // 0 = still being generated. That's the authoritative finality signal for agent turns.
-              const finalFromStatus = j.turn_status === 1 ? true : (j.turn_status === 0 ? false : null);
-              out.push({ ts: e.ts, text: j.text, duration_ms: j.duration_ms || 0, start_ms: j.start_ms || null, turn_id: j.turn_id != null ? j.turn_id : null, final: finalFromStatus, language: j.language || null, entryIndex: i });
+              // assistant.transcription payloads don't carry an `is_final` flag
+              // — only `turn_status` (0 = streaming, 1 = stream complete). Those
+              // are different concepts from transcript finality, so we leave
+              // `final: null` and surface `turn_status` separately. If the log
+              // ever adds an explicit is_final/final field we honor it verbatim.
+              let finalFlag = null;
+              if (typeof j.is_final === 'boolean') finalFlag = j.is_final;
+              else if (typeof j.final === 'boolean') finalFlag = j.final;
+              out.push({ ts: e.ts, text: j.text, duration_ms: j.duration_ms || 0, start_ms: j.start_ms || null, turn_id: j.turn_id != null ? j.turn_id : null, final: finalFlag, turn_status: typeof j.turn_status === 'number' ? j.turn_status : null, language: j.language || null, entryIndex: i });
             }
           }
           // tts2_http.py shape: "[tts] Requesting TTS for text: <text>, text_input_end: ..., request ID: <id>"
@@ -954,13 +959,12 @@
               });
             }
           }
-          // message_collector agent transcript shape (authoritative agent finality):
+          // message_collector agent transcript shape:
           // "[message_collector] on_data text: <text> turn_id: N is_final: <True|False> turn_status: <0|1>"
-          // For agent turns the authoritative "final" marker is `turn_status`:
-          //   turn_status: 1 = finalized utterance for that turn
-          //   turn_status: 0 = still being generated (interim agent TTS chunk)
-          // `is_final` on these lines is the ASR-style flag copied over and is almost always False
-          // for agent output, so we do not use it here.
+          // Report `final` verbatim from the `is_final` field — the log is the
+          // source of truth. `turn_status` is retained separately so callers
+          // can tell whether the *stream* finished (status 1) even when the
+          // final flag on the carried text is still False.
           if (e.msg.includes('[message_collector]') && e.msg.includes('on_data text:') && e.msg.includes('turn_status:')) {
             const mc = e.msg.match(/on_data text:\s*([\s\S]*?)\s+turn_id:\s*(\d+)\s+is_final:\s*(True|False)\s+turn_status:\s*(\d+)/);
             if (mc) {
@@ -973,7 +977,7 @@
                   duration_ms: 0,
                   start_ms: null,
                   turn_id: Number(mc[2]),
-                  final: ts === 1 ? true : (ts === 0 ? false : null),
+                  final: mc[3] === 'True',
                   turn_status: ts,
                   language: null,
                   entryIndex: i,
@@ -2006,7 +2010,7 @@
               out.push({
                 ts: e.ts,
                 text: typeof j.text === 'string' ? j.text : '',
-                final: j.final === true,
+                final: typeof j.final === 'boolean' ? j.final : null,
                 start_ms: j.start_ms != null ? j.start_ms : null,
                 duration_ms: j.duration_ms != null ? j.duration_ms : null,
                 language: (j.language != null && j.language !== '') ? j.language : null,
@@ -2162,7 +2166,7 @@
           list.push({ ts: o.ts, source: 'user', text: o.text, final: o.final, turn_id: o.turn_id, start_ms: o.start_ms, duration_ms: o.duration_ms != null ? o.duration_ms : o.final_audio_proc_ms, language: o.language, entryIndex: o.entryIndex });
         });
         (insights.tts || []).forEach(o => {
-          list.push({ ts: o.ts, source: 'agent', text: o.text, final: null, turn_id: o.turn_id, start_ms: o.start_ms, duration_ms: o.duration_ms, language: o.language, entryIndex: o.entryIndex });
+          list.push({ ts: o.ts, source: 'agent', text: o.text, final: (typeof o.final === 'boolean') ? o.final : null, turn_id: o.turn_id, start_ms: o.start_ms, duration_ms: o.duration_ms, language: o.language, entryIndex: o.entryIndex });
         });
         const stt = insights.stt;
         if (stt && stt.transcripts) {
