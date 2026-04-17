@@ -93,24 +93,37 @@
 
       function tryParseJSON(str) {
         if (!str || typeof str !== 'string') return null;
-        const startObj = str.indexOf('{');
-        const startArr = str.indexOf('[');
-        const start = startObj === -1 ? startArr : startArr === -1 ? startObj : Math.min(startObj, startArr);
-        if (start === -1) return null;
-        const open = str[start];
-        const close = open === '[' ? ']' : '}';
-        let depth = 0;
-        let end = -1;
-        for (let i = start; i < str.length; i++) {
-          if (str[i] === open) depth++;
-          else if (str[i] === close) { depth--; if (depth === 0) { end = i + 1; break; } }
+        // Try every `{` and `[` as a candidate JSON start. Log messages often
+        // embed prefix brackets like `[preload_extension_go]` before the real
+        // JSON payload, so picking the first bracket blindly misparses them.
+        // We attempt the earliest candidate first and fall through to later
+        // ones if it doesn't yield valid JSON. This also handles messages like
+        // `event start {'taskInfo': {...}}` that mix Python dict + JSON.
+        const candidates = [];
+        for (let i = 0; i < str.length; i++) {
+          const c = str[i];
+          if (c === '{' || c === '[') candidates.push(i);
         }
-        if (end === -1) return null;
-        try {
-          return JSON.parse(str.slice(start, end));
-        } catch (_) {
-          return null;
+        for (const start of candidates) {
+          const open = str[start];
+          const close = open === '[' ? ']' : '}';
+          let depth = 0, end = -1, inStr = false, esc = false;
+          for (let i = start; i < str.length; i++) {
+            const ch = str[i];
+            if (inStr) {
+              if (esc) esc = false;
+              else if (ch === '\\') esc = true;
+              else if (ch === '"') inStr = false;
+              continue;
+            }
+            if (ch === '"') inStr = true;
+            else if (ch === open) depth++;
+            else if (ch === close) { depth--; if (depth === 0) { end = i + 1; break; } }
+          }
+          if (end === -1) continue;
+          try { return JSON.parse(str.slice(start, end)); } catch (_) { /* try next candidate */ }
         }
+        return null;
       }
 
       /** Parse Python dict literal (e.g. "event start {'taskInfo': {...}}") into a JS object. */
@@ -354,7 +367,7 @@
           stopStatus: null,
           stopMessage: null,
           llmModule: null, llmUrl: null,
-          llmModel: null, llmSystemPrompt: null, llmSystemPromptEntryIndex: null,
+          llmModel: null, llmSystemPrompt: null, llmSystemPromptEntryIndex: null, llmSystemPromptEmpty: false,
           mllmVendor: null, mllmModel: null, mllmUrl: null,
           ttsModule: null,
           sttModule: null,
@@ -457,7 +470,16 @@
                 }
                 if (!summary.llmSystemPrompt && llmNode.property && Array.isArray(llmNode.property.system_messages) && llmNode.property.system_messages.length) {
                   const first = llmNode.property.system_messages[0];
-                  if (first && first.content != null) summary.llmSystemPrompt = String(first.content);
+                  if (first && first.content != null) {
+                    const content = String(first.content);
+                    if (content) {
+                      summary.llmSystemPrompt = content;
+                      summary.llmSystemPromptEntryIndex = i;
+                      summary.llmSystemPromptEmpty = false;
+                    } else {
+                      summary.llmSystemPromptEmpty = true;
+                    }
+                  }
                 }
               }
               if (v2vNode && v2vNode.property) {
@@ -510,7 +532,16 @@
                 if (!summary.llmModel && n.property && n.property.params && n.property.params.model) summary.llmModel = n.property.params.model;
                 if (!summary.llmSystemPrompt && n.property && Array.isArray(n.property.system_messages) && n.property.system_messages.length) {
                   const first = n.property.system_messages[0];
-                  if (first && first.content != null) summary.llmSystemPrompt = String(first.content);
+                  if (first && first.content != null) {
+                    const content = String(first.content);
+                    if (content) {
+                      summary.llmSystemPrompt = content;
+                      summary.llmSystemPromptEntryIndex = i;
+                      summary.llmSystemPromptEmpty = false;
+                    } else {
+                      summary.llmSystemPromptEmpty = true;
+                    }
+                  }
                 }
               }
               { const n2 = g.nodes.find(nn => nn.name === 'tts'); if (n2) { const a = n2.addon || n2.name; if (a) summary.ttsModule = a; } }
@@ -760,18 +791,34 @@
           // skip empty `system_messages=[]` to avoid clobbering a real value
           // from a later line.
           if (!summary.llmSystemPrompt && e.msg && e.msg.includes('system_messages=[') && !e.msg.includes('system_messages=[]')) {
-            const m = e.msg.match(/system_messages=\[\{\s*'content'\s*:\s*'((?:[^'\\]|\\.)*)'\s*,\s*'role'\s*:\s*'system'\s*\}\]/);
-            if (m && m[1]) {
-              // Python-escaped literal: turn \n, \t, \', \\ into their real chars so
-              // the prompt renders naturally instead of showing escape sequences.
-              const decoded = m[1]
-                .replace(/\\n/g, '\n')
-                .replace(/\\r/g, '\r')
-                .replace(/\\t/g, '\t')
-                .replace(/\\'/g, "'")
-                .replace(/\\\\/g, '\\');
-              summary.llmSystemPrompt = decoded;
-              summary.llmSystemPromptEntryIndex = i;
+            // Match the first `{'content': '...', 'role': 'system'}` dict inside
+            // `system_messages=[...]`. Uses a non-greedy content capture that
+            // permits escaped quotes (`\'`) inside the string, and deliberately
+            // doesn't require the dict to be the array's only element — some
+            // agents ship multiple system messages (primary prompt + greeting,
+            // for example) and we still want to surface the first one.
+            const m = e.msg.match(/system_messages=\[\s*\{\s*'content'\s*:\s*'((?:[^'\\]|\\.)*)'\s*,\s*'role'\s*:\s*'system'\s*\}/)
+              || e.msg.match(/system_messages=\[\s*\{\s*"content"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"role"\s*:\s*"system"\s*\}/);
+            if (m) {
+              if (m[1]) {
+                // Python-escaped literal: turn \n, \t, \', \\ into their real chars so
+                // the prompt renders naturally instead of showing escape sequences.
+                const decoded = m[1]
+                  .replace(/\\n/g, '\n')
+                  .replace(/\\r/g, '\r')
+                  .replace(/\\t/g, '\t')
+                  .replace(/\\'/g, "'")
+                  .replace(/\\"/g, '"')
+                  .replace(/\\\\/g, '\\');
+                summary.llmSystemPrompt = decoded;
+                summary.llmSystemPromptEntryIndex = i;
+                summary.llmSystemPromptEmpty = false;
+              } else {
+                // Matched the structure but the content string is empty. Common for
+                // workflow-style LLMs (Dify, n8n, etc.) where the prompt lives on
+                // the upstream service, not in the TEN graph.
+                summary.llmSystemPromptEmpty = true;
+              }
             }
           }
         }
@@ -2949,8 +2996,13 @@
 
         html += '<div class="insight-tab-panel" data-panel="llm">';
         const sumForLlm = insights.summary || {};
-        if (sumForLlm.llmModel || sumForLlm.llmSystemPrompt) {
+        if (sumForLlm.llmModel || sumForLlm.llmSystemPrompt || sumForLlm.llmSystemPromptEmpty) {
           html += '<p class="summary-json-hint"><strong>Model</strong>: ' + escapeHtml(sumForLlm.llmModel || '—') + '</p>';
+          if (!sumForLlm.llmSystemPrompt && sumForLlm.llmSystemPromptEmpty) {
+            // Prompt key was observed in the graph config but empty — typical for
+            // workflow-style LLMs that host the prompt upstream (Dify, n8n, etc.).
+            html += '<p class="insight-empty" style="margin-top:4px;">No system prompt configured in the TEN graph (empty <code>system_messages</code>). If this agent points at a hosted workflow, the prompt likely lives on the upstream service.</p>';
+          }
           if (sumForLlm.llmSystemPrompt) {
             // Full prompt card — previously a 320-char preview. System prompts
             // can be several KB, so we clamp the rendered block with a scroll
