@@ -1093,28 +1093,218 @@
       }
 
       function extractStt(entries) {
+        // Vendor-side ASR view (raw transcripts the vendor returned, vendor metrics,
+        // vendor/timeline errors). User-facing transcripts (`user.transcription`,
+        // `send_asr_result`) are intentionally NOT duplicated here — they are
+        // surfaced by `extractUserAsrTranscripts` and rendered in the Turns tab.
         const transcripts = [];
         const metrics = [];
         const errors = [];
+        // Rolling cache of recent `input_audio_duration=Nms` billing records so
+        // we can fold them into the matching `actual_send` asr_metrics row
+        // instead of emitting a stand-alone row with no context.
+        const billingQueue = [];
+        // Helper: parse the body of a Python-dict expression like
+        //   {'actual_send': 6770, 'actual_send_delta': 4940}
+        // into a plain JS object. Values supported: int, float, True/False, None,
+        // single-quoted strings. Non-matching keys are ignored rather than
+        // throwing so we don't drop an otherwise-good row for one weird value.
+        function parsePyDict(body) {
+          const out = {};
+          if (typeof body !== 'string') return out;
+          const re = /'([A-Za-z0-9_]+)'\s*:\s*(-?\d+\.?\d*|True|False|None|'[^']*')/g;
+          let m;
+          while ((m = re.exec(body)) !== null) {
+            const key = m[1];
+            const raw = m[2];
+            if (raw === 'True') out[key] = true;
+            else if (raw === 'False') out[key] = false;
+            else if (raw === 'None') out[key] = null;
+            else if (raw.startsWith("'")) out[key] = raw.slice(1, -1);
+            else if (raw.indexOf('.') >= 0) out[key] = parseFloat(raw);
+            else out[key] = parseInt(raw, 10);
+          }
+          return out;
+        }
         for (let i = 0; i < entries.length; i++) {
           const e = entries[i];
           if (!e.msg) continue;
-          const vr = e.msg.match(/vendor_result:\s*transcript:\s*(\[[^\]]*\]|[^,]+),\s*final_audio_proc_ms:\s*(\d+),\s*total_audio_proc_ms:\s*(\d+)/);
+
+          // --- Vendor result (full JSON, e.g. Deepgram `on_recognized`) ---
+          // Handle this BEFORE the Soniox/short-form branches because the
+          // Deepgram log contains both `vendor_result:` and JSON with a
+          // `transcript` field, which would otherwise match the short-form
+          // regex and produce garbage.
+          if (e.msg.includes('vendor_result:') && e.msg.includes('on_recognized:')) {
+            const jsonStart = e.msg.indexOf('{');
+            if (jsonStart >= 0) {
+              const vj = tryParseJSON(e.msg.slice(jsonStart));
+              if (vj && vj.channel && Array.isArray(vj.channel.alternatives) && vj.channel.alternatives.length) {
+                const alt = vj.channel.alternatives[0];
+                const txt = typeof alt.transcript === 'string' ? alt.transcript : '';
+                if (txt.trim().length > 0) {
+                  const modelName = vj.metadata && vj.metadata.model_info && vj.metadata.model_info.name ? String(vj.metadata.model_info.name) : null;
+                  transcripts.push({
+                    ts: e.ts,
+                    text: txt,
+                    final_audio_proc_ms: null,
+                    total_audio_proc_ms: null,
+                    vendor: modelName ? ('deepgram:' + modelName) : 'deepgram',
+                    confidence: typeof alt.confidence === 'number' && isFinite(alt.confidence) ? alt.confidence : null,
+                    is_final: vj.is_final === true,
+                    entryIndex: i,
+                  });
+                }
+              }
+            }
+            continue;
+          }
+
+          // --- Vendor result (Soniox token stream): `vendor_result: transcript: [SonioxTranscriptToken(text=..., is_final=..., confidence=...), ...], final_audio_proc_ms: N, total_audio_proc_ms: N` ---
+          // Collapse all tokens in the list into a single row: text = joined
+          // token texts, is_final = true only when every token is final,
+          // confidence = average across tokens (the Soniox aggregator in the
+          // main path uses min; here we want a row-level view).
+          if (e.msg.includes('vendor_result:') && e.msg.includes('SonioxTranscriptToken(text=')) {
+            const tokens = [];
+            const tokenRe = /SonioxTranscriptToken\(\s*text='((?:[^'\\]|\\.)*)'\s*,\s*start_ms=(-?\d+)\s*,\s*end_ms=(-?\d+)\s*,\s*is_final=(True|False)\s*,\s*confidence=([0-9.]+)/g;
+            let tm;
+            while ((tm = tokenRe.exec(e.msg)) !== null) {
+              tokens.push({ text: tm[1], isFinal: tm[4] === 'True', confidence: parseFloat(tm[5]) });
+            }
+            const procM = e.msg.match(/final_audio_proc_ms:\s*(\d+),\s*total_audio_proc_ms:\s*(\d+)/);
+            if (tokens.length) {
+              const textJoined = tokens.map(t => t.text).join('');
+              if (textJoined.trim().length > 0) {
+                const allFinal = tokens.every(t => t.isFinal);
+                const anyInterim = tokens.some(t => !t.isFinal);
+                const confs = tokens.map(t => t.confidence).filter(v => isFinite(v));
+                const avgConf = confs.length ? confs.reduce((a, b) => a + b, 0) / confs.length : null;
+                transcripts.push({
+                  ts: e.ts,
+                  text: textJoined,
+                  final_audio_proc_ms: procM ? parseInt(procM[1], 10) : null,
+                  total_audio_proc_ms: procM ? parseInt(procM[2], 10) : null,
+                  vendor: 'soniox',
+                  confidence: avgConf,
+                  is_final: allFinal ? true : (anyInterim ? false : null),
+                  entryIndex: i,
+                });
+              }
+            }
+            continue;
+          }
+
+          // --- Vendor result (short-form plain list, non-Soniox): `vendor_result: transcript: ["a","b"], final_audio_proc_ms: N, total_audio_proc_ms: N` ---
+          const vr = e.msg.match(/vendor_result:\s*transcript:\s*(\[[^\]]*\]|"[^"]*"),\s*final_audio_proc_ms:\s*(\d+),\s*total_audio_proc_ms:\s*(\d+)/);
           if (vr) {
             let text = vr[1];
-            if (text === '[]') text = '(empty)';
+            let isEmpty = false;
+            if (text === '[]') { text = ''; isEmpty = true; }
             else if (text.match(/^\[/)) try { text = JSON.parse(text).join(' '); } catch (_) {}
-            transcripts.push({ ts: e.ts, text, final_audio_proc_ms: parseInt(vr[2], 10), total_audio_proc_ms: parseInt(vr[3], 10), entryIndex: i });
+            else if (text.match(/^"/)) try { text = JSON.parse(text); } catch (_) {}
+            if (!isEmpty && String(text).trim().length > 0) {
+              transcripts.push({
+                ts: e.ts,
+                text,
+                final_audio_proc_ms: parseInt(vr[2], 10),
+                total_audio_proc_ms: parseInt(vr[3], 10),
+                vendor: null,
+                confidence: null,
+                is_final: null,
+                entryIndex: i,
+              });
+            }
+            continue;
           }
-          if (e.msg.includes('send asr_metrics:') || e.msg.includes('asr_metrics:')) {
-            const m = e.msg.match(/metrics=\{[^}]*'actual_send':\s*(\d+)[^}]*'actual_send_delta':\s*(\d+)/) || e.msg.match(/actual_send["']?\s*:\s*(\d+).*?actual_send_delta["']?\s*:\s*(\d+)/);
-            if (m) metrics.push({ ts: e.ts, actual_send: parseInt(m[1], 10), actual_send_delta: parseInt(m[2], 10), entryIndex: i });
+
+          // --- Billing: `[billing] asr_metrics_recorded: input_audio_duration=Nms` ---
+          // Folded into the next matching asr_metrics row (same value / near ts).
+          const billShort = e.msg.match(/asr_metrics_recorded:\s*input_audio_duration=(\d+)ms/);
+          if (billShort) {
+            billingQueue.push({
+              ts: e.ts,
+              entryIndex: i,
+              input_audio_duration: parseInt(billShort[1], 10),
+              vendor: null,
+            });
+            continue;
           }
-          if (e.msg.includes('input_audio_duration=')) {
-            const d = e.msg.match(/input_audio_duration=(\d+)ms/);
-            if (d) metrics.push({ ts: e.ts, input_audio_duration_ms: parseInt(d[1], 10), entryIndex: i });
+
+          // --- Billing: full `[billing] metrics_received: metrics_data=... module='asr' vendor='X' metrics={...}` ---
+          if (/\[billing\]\s*metrics_received:/.test(e.msg) && /module='asr'/.test(e.msg)) {
+            const vMatch = e.msg.match(/vendor='([^']+)'/);
+            const mBody = e.msg.match(/metrics=\{([^}]*)\}/);
+            if (mBody) {
+              const parsed = parsePyDict(mBody[1]);
+              if (parsed.input_audio_duration != null) {
+                billingQueue.push({
+                  ts: e.ts,
+                  entryIndex: i,
+                  input_audio_duration: parsed.input_audio_duration,
+                  total_input_audio_duration: parsed.total_input_audio_duration != null ? parsed.total_input_audio_duration : null,
+                  vendor: vMatch ? vMatch[1] : null,
+                });
+              }
+            }
+            continue;
           }
-          // ASR timeline failures (seen asr.py: Requested time ... exceeds timeline duration ...)
+
+          // --- ASR metrics: `[asr|agora_stream_asr] send asr_metrics: id='...' module='asr' vendor='X' metrics={...}` ---
+          if (/asr_metrics:/.test(e.msg) && /metrics=\{/.test(e.msg)) {
+            const vMatch = e.msg.match(/vendor='([^']*)'/);
+            const idMatch = e.msg.match(/\bid='([^']*)'/);
+            const mBody = e.msg.match(/metrics=\{([^}]*)\}/);
+            if (mBody) {
+              const parsed = parsePyDict(mBody[1]);
+              const row = {
+                ts: e.ts,
+                module: e.ext || null,
+                vendor: vMatch ? vMatch[1] : null,
+                metrics_id: idMatch && idMatch[1] ? idMatch[1] : null,
+                connect_delay: parsed.connect_delay != null ? parsed.connect_delay : null,
+                actual_send: parsed.actual_send != null ? parsed.actual_send : null,
+                actual_send_delta: parsed.actual_send_delta != null ? parsed.actual_send_delta : null,
+                ttfw: parsed.ttfw != null ? parsed.ttfw : null,
+                ttlw: parsed.ttlw != null ? parsed.ttlw : null,
+                input_audio_duration_ms: null,
+                extras: {},
+                entryIndex: i,
+              };
+              // Stash any unknown metric keys so we can still show them without
+              // silently dropping future fields the SDK might add.
+              for (const k of Object.keys(parsed)) {
+                if (['connect_delay','actual_send','actual_send_delta','ttfw','ttlw'].indexOf(k) < 0) {
+                  row.extras[k] = parsed[k];
+                }
+              }
+              // Fold the most recent unmatched billing row for the same
+              // vendor into this metrics row. Billing emits
+              // `[billing] metrics_received: ... module='asr' vendor='soniox'
+              // metrics={'input_audio_duration': N, ...}` immediately before
+              // the corresponding `[asr] send asr_metrics: ... 'actual_send'`
+              // line, so we match by vendor + temporal order (pop the oldest
+              // billing row for this vendor). The values are not necessarily
+              // equal — billing counts per delta/segment while asr_metrics
+              // reports cumulative — so we intentionally do NOT require
+              // numeric equality.
+              if (row.actual_send != null && row.vendor) {
+                for (let b = 0; b < billingQueue.length; b++) {
+                  const bill = billingQueue[b];
+                  const vendorOk = bill.vendor == null || bill.vendor === row.vendor;
+                  if (vendorOk) {
+                    row.input_audio_duration_ms = bill.input_audio_duration;
+                    billingQueue.splice(b, 1);
+                    break;
+                  }
+                }
+              }
+              metrics.push(row);
+            }
+            continue;
+          }
+
+          // --- ASR timeline failures (I-line: "Requested time Nms exceeds timeline duration Nms") ---
           const timelineErr = e.msg.match(/Requested time\s*(\d+)ms\s+exceeds timeline duration\s*(\d+)ms/);
           if (timelineErr) {
             errors.push({
@@ -1126,7 +1316,7 @@
               entryIndex: i
             });
           }
-          // E-level ASR line: vendor_error: code: 400, message: ...
+          // --- E-level ASR line: `vendor_error: code: 400, message: ...` ---
           const ve = e.msg.match(/vendor_error:\s*code:\s*(\d+),\s*message:\s*(.+)$/i);
           if (ve && (e.ext === 'asr' || /\[asr\]/i.test(e.msg))) {
             errors.push({
@@ -1143,7 +1333,7 @@
               entryIndex: i
             });
           }
-          // Vendor/protocol ASR errors (often key_point I-lines): "send asr_error: {...}"
+          // --- Vendor/protocol ASR errors (I-line): `send asr_error: {...}` ---
           const asrErrTag = 'send asr_error:';
           const asrErrIdx = e.msg.indexOf(asrErrTag);
           if (asrErrIdx >= 0) {
@@ -1166,27 +1356,25 @@
               });
             }
           }
-          if (e.msg.includes('user.transcription') && e.msg.includes('"text"')) {
-            const j = tryParseJSON(e.msg);
-            if (j && j.text) transcripts.push({ ts: e.ts, text: j.text, user: true, final: j.final, turn_id: j.turn_id, entryIndex: i });
-          }
-          // [asr] send_asr_result: {'id': '...', 'text': '...', 'final': True, 'start_ms': ..., 'duration_ms': ..., 'language': 'en'}
-          // (Python-dict syntax — single quotes, True/False — not parseable as JSON.)
-          if (e.msg.includes('send_asr_result:') && /\[asr\]/.test(e.msg)) {
-            const txt = e.msg.match(/'text'\s*:\s*'((?:[^'\\]|\\.)*)'/);
-            if (txt) {
-              const fin = e.msg.match(/'final'\s*:\s*(True|False)/);
-              const tid = e.msg.match(/'turn_id'\s*:\s*(\d+)/);
-              transcripts.push({
-                ts: e.ts,
-                text: txt[1],
-                user: true,
-                final: fin ? fin[1] === 'True' : undefined,
-                turn_id: tid ? Number(tid[1]) : undefined,
-                entryIndex: i,
-              });
-            }
-          }
+        }
+        // Any billing rows left over: emit them as standalone rows so we don't
+        // silently drop data. This is expected when the log lacks the matching
+        // asr_metrics line (e.g. early termination).
+        for (const bill of billingQueue) {
+          metrics.push({
+            ts: bill.ts,
+            module: 'billing',
+            vendor: bill.vendor,
+            metrics_id: null,
+            connect_delay: null,
+            actual_send: null,
+            actual_send_delta: null,
+            ttfw: null,
+            ttlw: null,
+            input_audio_duration_ms: bill.input_audio_duration,
+            extras: {},
+            entryIndex: bill.entryIndex,
+          });
         }
         return { transcripts, metrics, errors };
       }
@@ -3122,6 +3310,11 @@
             html += '<span class="stt-conf-stat"><em>Final frames</em> ' + finalVals.length + ' / ' + rows.length + '</span>';
           }
           html += '<span class="stt-conf-stat"><em>Below ' + Math.round(LOW_THRESHOLD * 100) + '%</em> ' + lowCount + '</span>';
+          // Only show the "low only" chip when there is actually something to
+          // filter down to — otherwise it's just dead UI.
+          if (lowCount > 0) {
+            html += '<label class="stt-conf-toggle"><input type="checkbox" class="stt-conf-lowonly" data-low-threshold="' + LOW_THRESHOLD + '"> <span>Show only &lt; ' + Math.round(LOW_THRESHOLD * 100) + '%</span></label>';
+          }
           html += '</div>';
           html += '<table class="insight-table insight-filterable insight-rows-clickable stt-conf-table"><thead><tr>' + insightHeaderRow(['Turn','Time','Confidence','Source','Frames','Range (min / max / avg)','Text']) + '</tr></thead><tbody>';
           for (const r of rows) {
@@ -3130,29 +3323,51 @@
             const pillRow = { confidence: r.confidence, confidenceSource: r.source, confidenceStats: { count: r.frames, min: r.min, max: r.max, avg: r.avg } };
             const pill = renderConfidencePill(pillRow);
             const range = fmtPct(r.min) + ' / ' + fmtPct(r.max) + ' / ' + fmtPct(r.avg);
-            html += '<tr data-ts="' + tsAttr + '"' + idxAttr + '><td>' + (r.turn_id != null ? r.turn_id : '—') + '</td><td>' + escapeHtml(r.ts || '') + '</td><td>' + pill + '</td><td>' + (r.source === 'final' ? 'final' : 'interim') + '</td><td>' + r.frames + '</td><td>' + range + '</td><td>' + insightLongTextCell(r.text || '', 100) + '</td></tr>';
+            const lowAttr = r.confidence < LOW_THRESHOLD ? ' data-conf-low="1"' : '';
+            html += '<tr class="stt-conf-row" data-ts="' + tsAttr + '"' + idxAttr + lowAttr + '><td>' + (r.turn_id != null ? r.turn_id : '—') + '</td><td>' + escapeHtml(r.ts || '') + '</td><td>' + pill + '</td><td>' + (r.source === 'final' ? 'final' : 'interim') + '</td><td>' + r.frames + '</td><td>' + range + '</td><td>' + insightLongTextCell(r.text || '', 100) + '</td></tr>';
           }
           html += '</tbody></table>';
           sttConfidenceRendered = true;
         })();
         if (stt && (stt.transcripts.length || stt.metrics.length || (stt.errors && stt.errors.length))) {
           if (stt.transcripts.length) {
-            html += '<p><strong>Transcripts / vendor results</strong></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Text','Final audio (ms)','Total audio (ms)']) + '</tr></thead><tbody>';
+            html += '<p><strong>Transcripts / vendor results</strong> <span class="summary-json-hint">raw ASR output from the vendor (empty heartbeat frames are hidden)</span></p>';
+            html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Vendor','Final','Confidence','Text','Final audio (ms)','Total audio (ms)']) + '</tr></thead><tbody>';
             for (const t of stt.transcripts) {
-              const fullText = t.user ? '(user) ' + (t.text || '') : (t.text || '');
-              const textCell = insightLongTextCell(fullText, 120);
+              const textCell = insightLongTextCell(t.text || '', 120);
               const tsAttr = escapeHtml(t.ts || '');
               const idxAttr = t.entryIndex != null ? ' data-index="' + t.entryIndex + '"' : '';
-              html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(t.ts)}</td><td>${textCell}</td><td>${t.final_audio_proc_ms != null ? t.final_audio_proc_ms : '—'}</td><td>${t.total_audio_proc_ms != null ? t.total_audio_proc_ms : (t.input_audio_duration_ms != null ? t.input_audio_duration_ms : '—')}</td></tr>`;
+              const vendorCell = t.vendor ? escapeHtml(t.vendor) : '—';
+              const finalCell = t.is_final === true ? 'yes' : t.is_final === false ? 'no' : '—';
+              // Reuse the same confidence pill we show in the Turns tab; each
+              // vendor row here is a single frame so we treat it as a mini
+              // "final" source when is_final is true, "interim" otherwise.
+              const confPill = typeof t.confidence === 'number' && isFinite(t.confidence)
+                ? renderConfidencePill({ confidence: t.confidence, confidenceSource: t.is_final ? 'final' : 'interim', speaker: 'user' })
+                : '—';
+              html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(t.ts)}</td><td>${vendorCell}</td><td>${finalCell}</td><td class="stt-conf-cell">${confPill}</td><td>${textCell}</td><td>${t.final_audio_proc_ms != null ? t.final_audio_proc_ms : '—'}</td><td>${t.total_audio_proc_ms != null ? t.total_audio_proc_ms : '—'}</td></tr>`;
             }
             html += '</tbody></table>';
           }
           if (stt.metrics.length) {
-            html += '<p><strong>ASR metrics</strong></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Actual send (ms)','Delta','Input duration (ms)']) + '</tr></thead><tbody>';
+            // Any rows carry unknown metric keys? Surface them in a single
+            // "Other metrics" column so we don't drop forward-compat fields.
+            const hasExtras = stt.metrics.some(m => m.extras && Object.keys(m.extras).length);
+            const metricsHeader = ['Time','Module','Vendor','Connect (ms)','Actual send (ms)','Delta (ms)','TTFW (ms)','TTLW (ms)','Input duration (ms)'];
+            if (hasExtras) metricsHeader.push('Other');
+            html += '<p><strong>ASR metrics</strong> <span class="summary-json-hint">per vendor, merged with billing input-duration when available</span></p>';
+            html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(metricsHeader) + '</tr></thead><tbody>';
             for (const m of stt.metrics) {
               const tsAttr = escapeHtml(m.ts || '');
               const idxAttr = m.entryIndex != null ? ' data-index="' + m.entryIndex + '"' : '';
-              html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(m.ts)}</td><td>${m.actual_send != null ? m.actual_send : '—'}</td><td>${m.actual_send_delta != null ? m.actual_send_delta : '—'}</td><td>${m.input_audio_duration_ms != null ? m.input_audio_duration_ms : '—'}</td></tr>`;
+              const cell = v => v != null ? escapeHtml(String(v)) : '—';
+              let extraStr = '';
+              if (hasExtras) {
+                const parts = [];
+                if (m.extras) for (const k of Object.keys(m.extras)) parts.push(k + '=' + m.extras[k]);
+                extraStr = '<td>' + (parts.length ? escapeHtml(parts.join(', ')) : '—') + '</td>';
+              }
+              html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(m.ts)}</td><td>${cell(m.module)}</td><td>${cell(m.vendor)}</td><td>${cell(m.connect_delay)}</td><td>${cell(m.actual_send)}</td><td>${cell(m.actual_send_delta)}</td><td>${cell(m.ttfw)}</td><td>${cell(m.ttlw)}</td><td>${cell(m.input_audio_duration_ms)}</td>${extraStr}</tr>`;
             }
             html += '</tbody></table>';
           }
@@ -3502,6 +3717,19 @@
           filterInput.addEventListener('keyup', applyInsightFilter);
         }
 
+        // Low-confidence-only toggle on the STT tab: hides any stt-conf-row
+        // that isn't tagged `data-conf-low="1"` when checked. Re-applies the
+        // search/column filter so the two compose cleanly.
+        root.querySelectorAll('.stt-conf-lowonly').forEach(cb => {
+          cb.addEventListener('change', function () {
+            const show = !this.checked;
+            root.querySelectorAll('.stt-conf-row').forEach(tr => {
+              tr.classList.toggle('stt-conf-row-hidden', !show && tr.getAttribute('data-conf-low') !== '1');
+            });
+            applyInsightFilter();
+          });
+        });
+
         root.addEventListener('click', function (ev) {
           const th = ev.target.closest('.insight-th-filter');
           if (!th) return;
@@ -3607,7 +3835,11 @@
               const cellText = (cell && cell.textContent || '').trim();
               colOk = colFilter.values.some(v => String(v).trim() === cellText);
             }
-            tr.style.display = textOk && colOk ? '' : 'none';
+            // Respect the low-only toggle on the STT confidence table: a row
+            // tagged `stt-conf-row-hidden` stays hidden regardless of the
+            // search/column filter result.
+            const hiddenByToggle = tr.classList.contains('stt-conf-row-hidden');
+            tr.style.display = textOk && colOk && !hiddenByToggle ? '' : 'none';
           });
         });
       }
