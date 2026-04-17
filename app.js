@@ -2813,6 +2813,56 @@
       function insightHeaderRow(labels) {
         return labels.map((l, i) => '<th class="insight-th-filter" data-col-index="' + i + '">' + escapeHtml(l) + '</th>').join('');
       }
+
+      // --- Collapsible section primitive -----------------------------------
+      // Any insight tab that stacks multiple tables uses this so the user can
+      // collapse noisy sections and keep their layout sticky. Open/closed
+      // state is keyed by `id` (stable per section) and persisted under a
+      // single JSON blob in localStorage so it survives re-renders and page
+      // reloads. Missing storage → default to `defaultOpen` (true unless the
+      // caller says otherwise).
+      const INSIGHT_SECTION_STORE = 'ten-log-insight-sections';
+      function insightSectionStateLoad() {
+        try {
+          const raw = localStorage.getItem(INSIGHT_SECTION_STORE);
+          if (!raw) return {};
+          const parsed = JSON.parse(raw);
+          return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch (e) { return {}; }
+      }
+      function insightSectionStateSave(state) {
+        try { localStorage.setItem(INSIGHT_SECTION_STORE, JSON.stringify(state)); } catch (e) {}
+      }
+      function insightSectionIsOpen(id, defaultOpen) {
+        const state = insightSectionStateLoad();
+        if (Object.prototype.hasOwnProperty.call(state, id)) return state[id] !== false;
+        return defaultOpen !== false;
+      }
+      // Render a collapsible section. `hintHtml` is optional and rendered
+      // next to the title inside the <summary>. `bodyHtml` is the contents
+      // revealed when the section is expanded.
+      function insightSection(id, title, hintHtml, bodyHtml, opts) {
+        opts = opts || {};
+        const open = insightSectionIsOpen(id, opts.defaultOpen !== false);
+        const safeTitle = escapeHtml(title || '');
+        const hint = hintHtml ? ' <span class="summary-json-hint insight-section-hint">' + hintHtml + '</span>' : '';
+        return '<details class="insight-section" data-section-id="' + escapeHtml(id) + '"' + (open ? ' open' : '') + '>' +
+          '<summary class="insight-section-summary"><span class="insight-section-caret" aria-hidden="true"></span><span class="insight-section-title">' + safeTitle + '</span>' + hint + '</summary>' +
+          '<div class="insight-section-body">' + (bodyHtml || '') + '</div>' +
+          '</details>';
+      }
+      // Summary panel variant: same state machine, but keeps the
+      // `.summary-card` / `.summary-json-card` styling so existing cards just
+      // become collapsible in place.
+      function summaryCardSection(id, title, bodyHtml, opts) {
+        opts = opts || {};
+        const open = insightSectionIsOpen(id, opts.defaultOpen !== false);
+        const safeTitle = escapeHtml(title || '');
+        return '<details class="summary-card summary-json-card insight-section summary-card-section" data-section-id="' + escapeHtml(id) + '"' + (open ? ' open' : '') + '>' +
+          '<summary class="insight-section-summary summary-card-summary"><span class="insight-section-caret" aria-hidden="true"></span><h3 class="summary-card-title">' + safeTitle + '</h3></summary>' +
+          '<div class="insight-section-body summary-card-body">' + (bodyHtml || '') + '</div>' +
+          '</details>';
+      }
       /** Performance table only: custom CSS tooltip (instant, no help cursor). */
       function insightPerfHeaderRow(cols) {
         return cols.map(function (c, i) {
@@ -2907,78 +2957,81 @@
         }
         html += '</div>';
 
-        html += '<div class="summary-card summary-json-card"><h3 class="summary-card-title">Options</h3>';
-        if (!flagKeys.length && (info.SAL_MODE == null || String(info.SAL_MODE).trim() === '')) {
-          html += '<p class="summary-json-hint">No ENABLE_* flags found in event-start info.</p>';
-        } else {
-          html += '<table class="summary-flag-table"><tbody>';
-          const hasSalMode = (info.SAL_MODE != null && String(info.SAL_MODE).trim() !== '');
-          // Keep ordering dynamic: SAL mode is displayed inline with ENABLE_SAL (if present), and not duplicated.
-          if (!flagKeys.includes('ENABLE_SAL') && hasSalMode) {
-            html += '<tr><td class="summary-flag-k">SAL mode <code>SAL_MODE</code></td><td class="summary-flag-v"><code>' + escapeHtml(String(info.SAL_MODE)) + '</code></td></tr>';
-          }
-          for (const k of flagKeys) {
-            if (k === 'ENABLE_SAL') {
-              html += '<tr><td class="summary-flag-k">SAL <code>ENABLE_SAL</code>' + (hasSalMode ? ' / <code>SAL_MODE</code>' : '') + '</td><td class="summary-flag-v">' + ynBadge(info[k]) + (hasSalMode ? ' <code style="margin-left:8px;">' + escapeHtml(String(info.SAL_MODE)) + '</code>' : '') + '</td></tr>';
-              continue;
+        {
+          let optsBody = '';
+          if (!flagKeys.length && (info.SAL_MODE == null || String(info.SAL_MODE).trim() === '')) {
+            optsBody += '<p class="summary-json-hint">No ENABLE_* flags found in event-start info.</p>';
+          } else {
+            optsBody += '<table class="summary-flag-table"><tbody>';
+            const hasSalMode = (info.SAL_MODE != null && String(info.SAL_MODE).trim() !== '');
+            // Keep ordering dynamic: SAL mode is displayed inline with ENABLE_SAL (if present), and not duplicated.
+            if (!flagKeys.includes('ENABLE_SAL') && hasSalMode) {
+              optsBody += '<tr><td class="summary-flag-k">SAL mode <code>SAL_MODE</code></td><td class="summary-flag-v"><code>' + escapeHtml(String(info.SAL_MODE)) + '</code></td></tr>';
             }
-            html += '<tr><td class="summary-flag-k">' + escapeHtml(labelForFlagKey(k)) + ' <code>' + escapeHtml(k) + '</code></td><td class="summary-flag-v">' + ynBadge(info[k]) + '</td></tr>';
+            for (const k of flagKeys) {
+              if (k === 'ENABLE_SAL') {
+                optsBody += '<tr><td class="summary-flag-k">SAL <code>ENABLE_SAL</code>' + (hasSalMode ? ' / <code>SAL_MODE</code>' : '') + '</td><td class="summary-flag-v">' + ynBadge(info[k]) + (hasSalMode ? ' <code style="margin-left:8px;">' + escapeHtml(String(info.SAL_MODE)) + '</code>' : '') + '</td></tr>';
+                continue;
+              }
+              optsBody += '<tr><td class="summary-flag-k">' + escapeHtml(labelForFlagKey(k)) + ' <code>' + escapeHtml(k) + '</code></td><td class="summary-flag-v">' + ynBadge(info[k]) + '</td></tr>';
+            }
+            optsBody += '</tbody></table>';
           }
-          html += '</tbody></table>';
+          html += summaryCardSection('summary:options', 'Options', optsBody);
         }
-        html += '</div>';
 
-        html += '<div class="summary-card summary-json-card"><h3 class="summary-card-title">Task versions</h3>';
-        const vKeys = Object.keys(versions);
-        if (vKeys.length) {
-          html += '<dl>' + vKeys.map(k => '<dt>' + escapeHtml(k) + '</dt><dd>' + escapeHtml(String(versions[k])) + '</dd>').join('') + '</dl>';
-        } else {
-          html += '<p class="summary-json-hint">No version snapshot found in this log.</p>';
+        {
+          let vBody = '';
+          const vKeys = Object.keys(versions);
+          if (vKeys.length) {
+            vBody += '<dl>' + vKeys.map(k => '<dt>' + escapeHtml(k) + '</dt><dd>' + escapeHtml(String(versions[k])) + '</dd>').join('') + '</dl>';
+          } else {
+            vBody += '<p class="summary-json-hint">No version snapshot found in this log.</p>';
+          }
+          html += summaryCardSection('summary:versions', 'Task versions', vBody);
         }
-        html += '</div>';
 
         if (summary.rtm) {
           const r = summary.rtm;
-          html += '<div class="summary-card summary-json-card"><h3 class="summary-card-title">RTM</h3>';
-          html += '<dl>';
-          html += '<dt>Enabled</dt><dd>' + (r.enabled ? 'yes' : 'no') + '</dd>';
-          html += '<dt>Presence</dt><dd>' + (r.presence_enabled ? 'yes' : 'no') + '</dd>';
-          html += '<dt>Metadata</dt><dd>' + (r.metadata_enabled ? 'yes' : 'no') + '</dd>';
-          html += '<dt>Lock</dt><dd>' + (r.lock_enabled ? 'yes' : 'no') + '</dd>';
-          if (r.channel) html += '<dt>Channel</dt><dd>' + escapeHtml(String(r.channel)) + '</dd>';
-          if (r.user_id) html += '<dt>UID</dt><dd>' + escapeHtml(String(r.user_id)) + '</dd>';
-          html += '</dl>';
-          html += '</div>';
+          let rBody = '<dl>';
+          rBody += '<dt>Enabled</dt><dd>' + (r.enabled ? 'yes' : 'no') + '</dd>';
+          rBody += '<dt>Presence</dt><dd>' + (r.presence_enabled ? 'yes' : 'no') + '</dd>';
+          rBody += '<dt>Metadata</dt><dd>' + (r.metadata_enabled ? 'yes' : 'no') + '</dd>';
+          rBody += '<dt>Lock</dt><dd>' + (r.lock_enabled ? 'yes' : 'no') + '</dd>';
+          if (r.channel) rBody += '<dt>Channel</dt><dd>' + escapeHtml(String(r.channel)) + '</dd>';
+          if (r.user_id) rBody += '<dt>UID</dt><dd>' + escapeHtml(String(r.user_id)) + '</dd>';
+          rBody += '</dl>';
+          html += summaryCardSection('summary:rtm', 'RTM', rBody);
         }
 
         if (summary.tools) {
           const t = summary.tools;
-          html += '<div class="summary-card summary-json-card"><h3 class="summary-card-title">Tools</h3>';
-          html += '<dl>';
-          if (t.is_tool_call_available != null) html += '<dt>Tool calling available</dt><dd>' + (t.is_tool_call_available ? 'yes' : 'no') + '</dd>';
-          if (t.total_tools != null) html += '<dt>Total tools</dt><dd>' + escapeHtml(String(t.total_tools)) + '</dd>';
-          if (t.servers && t.servers.length) html += '<dt>MCP servers</dt><dd>' + escapeHtml(t.servers.map(function (s) { return s.name + (s.transport ? ' (' + s.transport + ')' : '') + (s.url ? ' — ' + s.url : ''); }).join('\n')) + '</dd>';
-          html += '</dl>';
+          let tBody = '<dl>';
+          if (t.is_tool_call_available != null) tBody += '<dt>Tool calling available</dt><dd>' + (t.is_tool_call_available ? 'yes' : 'no') + '</dd>';
+          if (t.total_tools != null) tBody += '<dt>Total tools</dt><dd>' + escapeHtml(String(t.total_tools)) + '</dd>';
+          if (t.servers && t.servers.length) tBody += '<dt>MCP servers</dt><dd>' + escapeHtml(t.servers.map(function (s) { return s.name + (s.transport ? ' (' + s.transport + ')' : '') + (s.url ? ' — ' + s.url : ''); }).join('\n')) + '</dd>';
+          tBody += '</dl>';
           if (t.mcp_errors && t.mcp_errors.length) {
-            html += '<p class="summary-json-hint">MCP errors: ' + escapeHtml(String(t.mcp_errors.length)) + ' (see Insights → Tools for details)</p>';
+            tBody += '<p class="summary-json-hint">MCP errors: ' + escapeHtml(String(t.mcp_errors.length)) + ' (see Insights → Tools for details)</p>';
           }
-          html += '</div>';
+          html += summaryCardSection('summary:tools', 'Tools', tBody);
         }
 
         if (src && Array.isArray(src.presets) && src.presets.length) {
-          html += '<div class="summary-card summary-json-card"><h3 class="summary-card-title">Vendor presets</h3>';
-          html += '<table class="summary-flag-table"><tbody>';
+          let pBody = '<table class="summary-flag-table"><tbody>';
           for (const p of src.presets) {
-            html += '<tr><td class="summary-flag-k"><code>' + escapeHtml(String(p.preset || '')) + '</code></td><td class="summary-flag-v">' + ynBadge(!!p.enabled) + (p.applyMode ? ' <code style="margin-left:8px;">' + escapeHtml(p.applyMode) + '</code>' : '') + '</td></tr>';
+            pBody += '<tr><td class="summary-flag-k"><code>' + escapeHtml(String(p.preset || '')) + '</code></td><td class="summary-flag-v">' + ynBadge(!!p.enabled) + (p.applyMode ? ' <code style="margin-left:8px;">' + escapeHtml(p.applyMode) + '</code>' : '') + '</td></tr>';
           }
-          html += '</tbody></table></div>';
+          pBody += '</tbody></table>';
+          html += summaryCardSection('summary:presets', 'Vendor presets', pBody);
         }
 
-        html += '<div class="summary-card summary-json-card"><h3 class="summary-card-title">Raw JSON</h3>';
-        html += '<p class="summary-json-hint">Open a syntax-colored JSON viewer with copy.</p>';
-        if (summary.eventStartInfo) html += '<button type="button" class="summary-json-toggle open-json-modal" data-json-kind="eventStart">View event start JSON</button>';
-        if (summary.createRequestBody) html += '<button type="button" class="summary-json-toggle open-json-modal" data-json-kind="createReq">View create request JSON</button>';
-        html += '</div>';
+        {
+          let rjBody = '<p class="summary-json-hint">Open a syntax-colored JSON viewer with copy.</p>';
+          if (summary.eventStartInfo) rjBody += '<button type="button" class="summary-json-toggle open-json-modal" data-json-kind="eventStart">View event start JSON</button>';
+          if (summary.createRequestBody) rjBody += '<button type="button" class="summary-json-toggle open-json-modal" data-json-kind="createReq">View create request JSON</button>';
+          html += summaryCardSection('summary:raw-json', 'Raw JSON', rjBody);
+        }
         html += '</div>';
         return html;
       }
@@ -3300,23 +3353,23 @@
           const sessionMax = Math.max.apply(null, statsPool);
           const fmtPct = v => Math.round(v * 100) + '%';
           const tierOf = v => v >= 0.85 ? 'high' : (v >= 0.70 ? 'mid' : 'low');
-          html += '<p><strong>ASR confidence</strong> <span class="summary-json-hint">one score per turn; vendors report it on the final ASR frame (<code>metadata.asr_info.confidence</code>). Interim-frame scores shown dashed.</span></p>';
-          html += '<div class="stt-conf-stats">';
-          html += '<span class="stt-conf-stat"><em>Session avg</em> <span class="stt-conf-pill conf-final conf-' + tierOf(sessionAvg) + '">' + fmtPct(sessionAvg) + '</span></span>';
-          html += '<span class="stt-conf-stat"><em>Min</em> <span class="stt-conf-pill conf-final conf-' + tierOf(sessionMin) + '">' + fmtPct(sessionMin) + '</span></span>';
-          html += '<span class="stt-conf-stat"><em>Max</em> <span class="stt-conf-pill conf-final conf-' + tierOf(sessionMax) + '">' + fmtPct(sessionMax) + '</span></span>';
-          html += '<span class="stt-conf-stat"><em>Turns</em> ' + rows.length + '</span>';
+          let confBody = '';
+          confBody += '<div class="stt-conf-stats">';
+          confBody += '<span class="stt-conf-stat"><em>Session avg</em> <span class="stt-conf-pill conf-final conf-' + tierOf(sessionAvg) + '">' + fmtPct(sessionAvg) + '</span></span>';
+          confBody += '<span class="stt-conf-stat"><em>Min</em> <span class="stt-conf-pill conf-final conf-' + tierOf(sessionMin) + '">' + fmtPct(sessionMin) + '</span></span>';
+          confBody += '<span class="stt-conf-stat"><em>Max</em> <span class="stt-conf-pill conf-final conf-' + tierOf(sessionMax) + '">' + fmtPct(sessionMax) + '</span></span>';
+          confBody += '<span class="stt-conf-stat"><em>Turns</em> ' + rows.length + '</span>';
           if (finalVals.length && finalVals.length !== rows.length) {
-            html += '<span class="stt-conf-stat"><em>Final frames</em> ' + finalVals.length + ' / ' + rows.length + '</span>';
+            confBody += '<span class="stt-conf-stat"><em>Final frames</em> ' + finalVals.length + ' / ' + rows.length + '</span>';
           }
-          html += '<span class="stt-conf-stat"><em>Below ' + Math.round(LOW_THRESHOLD * 100) + '%</em> ' + lowCount + '</span>';
+          confBody += '<span class="stt-conf-stat"><em>Below ' + Math.round(LOW_THRESHOLD * 100) + '%</em> ' + lowCount + '</span>';
           // Only show the "low only" chip when there is actually something to
           // filter down to — otherwise it's just dead UI.
           if (lowCount > 0) {
-            html += '<label class="stt-conf-toggle"><input type="checkbox" class="stt-conf-lowonly" data-low-threshold="' + LOW_THRESHOLD + '"> <span>Show only &lt; ' + Math.round(LOW_THRESHOLD * 100) + '%</span></label>';
+            confBody += '<label class="stt-conf-toggle"><input type="checkbox" class="stt-conf-lowonly" data-low-threshold="' + LOW_THRESHOLD + '"> <span>Show only &lt; ' + Math.round(LOW_THRESHOLD * 100) + '%</span></label>';
           }
-          html += '</div>';
-          html += '<table class="insight-table insight-filterable insight-rows-clickable stt-conf-table"><thead><tr>' + insightHeaderRow(['Turn','Time','Confidence','Source','Frames','Range (min / max / avg)','Text']) + '</tr></thead><tbody>';
+          confBody += '</div>';
+          confBody += '<table class="insight-table insight-filterable insight-rows-clickable stt-conf-table"><thead><tr>' + insightHeaderRow(['Turn','Time','Confidence','Source','Frames','Range (min / max / avg)','Text']) + '</tr></thead><tbody>';
           for (const r of rows) {
             const tsAttr = escapeHtml(r.ts || '');
             const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
@@ -3324,15 +3377,20 @@
             const pill = renderConfidencePill(pillRow);
             const range = fmtPct(r.min) + ' / ' + fmtPct(r.max) + ' / ' + fmtPct(r.avg);
             const lowAttr = r.confidence < LOW_THRESHOLD ? ' data-conf-low="1"' : '';
-            html += '<tr class="stt-conf-row" data-ts="' + tsAttr + '"' + idxAttr + lowAttr + '><td>' + (r.turn_id != null ? r.turn_id : '—') + '</td><td>' + escapeHtml(r.ts || '') + '</td><td>' + pill + '</td><td>' + (r.source === 'final' ? 'final' : 'interim') + '</td><td>' + r.frames + '</td><td>' + range + '</td><td>' + insightLongTextCell(r.text || '', 100) + '</td></tr>';
+            confBody += '<tr class="stt-conf-row" data-ts="' + tsAttr + '"' + idxAttr + lowAttr + '><td>' + (r.turn_id != null ? r.turn_id : '—') + '</td><td>' + escapeHtml(r.ts || '') + '</td><td>' + pill + '</td><td>' + (r.source === 'final' ? 'final' : 'interim') + '</td><td>' + r.frames + '</td><td>' + range + '</td><td>' + insightLongTextCell(r.text || '', 100) + '</td></tr>';
           }
-          html += '</tbody></table>';
+          confBody += '</tbody></table>';
+          html += insightSection(
+            'stt:confidence',
+            'ASR confidence',
+            'one score per turn; vendors report it on the final ASR frame (<code>metadata.asr_info.confidence</code>). Interim-frame scores shown dashed.',
+            confBody
+          );
           sttConfidenceRendered = true;
         })();
         if (stt && (stt.transcripts.length || stt.metrics.length || (stt.errors && stt.errors.length))) {
           if (stt.transcripts.length) {
-            html += '<p><strong>Transcripts / vendor results</strong> <span class="summary-json-hint">raw ASR output from the vendor (empty heartbeat frames are hidden)</span></p>';
-            html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Vendor','Final','Confidence','Text','Final audio (ms)','Total audio (ms)']) + '</tr></thead><tbody>';
+            let tBody = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Vendor','Final','Confidence','Text','Final audio (ms)','Total audio (ms)']) + '</tr></thead><tbody>';
             for (const t of stt.transcripts) {
               const textCell = insightLongTextCell(t.text || '', 120);
               const tsAttr = escapeHtml(t.ts || '');
@@ -3345,9 +3403,15 @@
               const confPill = typeof t.confidence === 'number' && isFinite(t.confidence)
                 ? renderConfidencePill({ confidence: t.confidence, confidenceSource: t.is_final ? 'final' : 'interim', speaker: 'user' })
                 : '—';
-              html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(t.ts)}</td><td>${vendorCell}</td><td>${finalCell}</td><td class="stt-conf-cell">${confPill}</td><td>${textCell}</td><td>${t.final_audio_proc_ms != null ? t.final_audio_proc_ms : '—'}</td><td>${t.total_audio_proc_ms != null ? t.total_audio_proc_ms : '—'}</td></tr>`;
+              tBody += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(t.ts)}</td><td>${vendorCell}</td><td>${finalCell}</td><td class="stt-conf-cell">${confPill}</td><td>${textCell}</td><td>${t.final_audio_proc_ms != null ? t.final_audio_proc_ms : '—'}</td><td>${t.total_audio_proc_ms != null ? t.total_audio_proc_ms : '—'}</td></tr>`;
             }
-            html += '</tbody></table>';
+            tBody += '</tbody></table>';
+            html += insightSection(
+              'stt:transcripts',
+              'Transcripts / vendor results',
+              'raw ASR output from the vendor (empty heartbeat frames are hidden)',
+              tBody
+            );
           }
           if (stt.metrics.length) {
             // Any rows carry unknown metric keys? Surface them in a single
@@ -3355,8 +3419,7 @@
             const hasExtras = stt.metrics.some(m => m.extras && Object.keys(m.extras).length);
             const metricsHeader = ['Time','Module','Vendor','Connect (ms)','Actual send (ms)','Delta (ms)','TTFW (ms)','TTLW (ms)','Input duration (ms)'];
             if (hasExtras) metricsHeader.push('Other');
-            html += '<p><strong>ASR metrics</strong> <span class="summary-json-hint">per vendor, merged with billing input-duration when available</span></p>';
-            html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(metricsHeader) + '</tr></thead><tbody>';
+            let mBody = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(metricsHeader) + '</tr></thead><tbody>';
             for (const m of stt.metrics) {
               const tsAttr = escapeHtml(m.ts || '');
               const idxAttr = m.entryIndex != null ? ' data-index="' + m.entryIndex + '"' : '';
@@ -3367,34 +3430,47 @@
                 if (m.extras) for (const k of Object.keys(m.extras)) parts.push(k + '=' + m.extras[k]);
                 extraStr = '<td>' + (parts.length ? escapeHtml(parts.join(', ')) : '—') + '</td>';
               }
-              html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(m.ts)}</td><td>${cell(m.module)}</td><td>${cell(m.vendor)}</td><td>${cell(m.connect_delay)}</td><td>${cell(m.actual_send)}</td><td>${cell(m.actual_send_delta)}</td><td>${cell(m.ttfw)}</td><td>${cell(m.ttlw)}</td><td>${cell(m.input_audio_duration_ms)}</td>${extraStr}</tr>`;
+              mBody += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(m.ts)}</td><td>${cell(m.module)}</td><td>${cell(m.vendor)}</td><td>${cell(m.connect_delay)}</td><td>${cell(m.actual_send)}</td><td>${cell(m.actual_send_delta)}</td><td>${cell(m.ttfw)}</td><td>${cell(m.ttlw)}</td><td>${cell(m.input_audio_duration_ms)}</td>${extraStr}</tr>`;
             }
-            html += '</tbody></table>';
+            mBody += '</tbody></table>';
+            html += insightSection(
+              'stt:metrics',
+              'ASR metrics',
+              'per vendor, merged with billing input-duration when available',
+              mBody
+            );
           }
 
           if (stt.errors && stt.errors.length) {
             const timelineErrs = stt.errors.filter(function (err) { return !err.kind || err.kind === 'timeline'; });
             const vendorErrs = stt.errors.filter(function (err) { return err.kind === 'asr_error'; });
             if (timelineErrs.length) {
-              html += '<p><strong>ASR timeline errors</strong></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Requested time (ms)','Timeline duration (ms)','Message']) + '</tr></thead><tbody>';
+              let eBody = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Requested time (ms)','Timeline duration (ms)','Message']) + '</tr></thead><tbody>';
               for (const err of timelineErrs) {
                 const tsAttr = escapeHtml(err.ts || '');
                 const idxAttr = err.entryIndex != null ? ' data-index="' + err.entryIndex + '"' : '';
-                html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(err.ts)}</td><td>${err.requested_time_ms != null ? escapeHtml(String(err.requested_time_ms)) : '—'}</td><td>${err.timeline_duration_ms != null ? escapeHtml(String(err.timeline_duration_ms)) : '—'}</td><td>${escapeHtml((err.detail || '').slice(0, 90) || '—')}</td></tr>`;
+                eBody += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(err.ts)}</td><td>${err.requested_time_ms != null ? escapeHtml(String(err.requested_time_ms)) : '—'}</td><td>${err.timeline_duration_ms != null ? escapeHtml(String(err.timeline_duration_ms)) : '—'}</td><td>${escapeHtml((err.detail || '').slice(0, 90) || '—')}</td></tr>`;
               }
-              html += '</tbody></table>';
+              eBody += '</tbody></table>';
+              html += insightSection('stt:errors-timeline', 'ASR timeline errors', '', eBody);
             }
             if (vendorErrs.length) {
-              html += '<p><strong>ASR vendor / protocol errors</strong> <span class="summary-json-hint">(E-line <code>vendor_error:</code> and/or I-line <code>send asr_error:</code> JSON)</span></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Source','Lvl','Code','Vendor','Message','Vendor detail']) + '</tr></thead><tbody>';
+              let vBody = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Source','Lvl','Code','Vendor','Message','Vendor detail']) + '</tr></thead><tbody>';
               for (const err of vendorErrs) {
                 const tsAttr = escapeHtml(err.ts || '');
                 const idxAttr = err.entryIndex != null ? ' data-index="' + err.entryIndex + '"' : '';
                 const vm = err.vendor_message || err.message || '';
                 const src = err.source === 'vendor_error' ? 'vendor_error' : (err.source === 'send_asr_error' ? 'send_asr_error' : '—');
                 const lvl = err.level != null ? escapeHtml(String(err.level)) : '—';
-                html += `<tr class="llm-row error" data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(err.ts)}</td><td>${escapeHtml(src)}</td><td>${lvl}</td><td>${err.code != null ? escapeHtml(String(err.code)) : '—'}</td><td>${err.vendor != null ? escapeHtml(String(err.vendor)) : '—'}</td><td>${escapeHtml((err.message || '').slice(0, 120) || '—')}</td><td>${escapeHtml(vm.slice(0, 120) || '—')}</td></tr>`;
+                vBody += `<tr class="llm-row error" data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(err.ts)}</td><td>${escapeHtml(src)}</td><td>${lvl}</td><td>${err.code != null ? escapeHtml(String(err.code)) : '—'}</td><td>${err.vendor != null ? escapeHtml(String(err.vendor)) : '—'}</td><td>${escapeHtml((err.message || '').slice(0, 120) || '—')}</td><td>${escapeHtml(vm.slice(0, 120) || '—')}</td></tr>`;
               }
-              html += '</tbody></table>';
+              vBody += '</tbody></table>';
+              html += insightSection(
+                'stt:errors-vendor',
+                'ASR vendor / protocol errors',
+                '(E-line <code>vendor_error:</code> and/or I-line <code>send asr_error:</code> JSON)',
+                vBody
+              );
             }
           }
         } else if (!sttConfidenceRendered) {
@@ -3424,11 +3500,11 @@
         html += '<div class="insight-tab-panel" data-panel="llm">';
         const sumForLlm = insights.summary || {};
         if (sumForLlm.llmModel || sumForLlm.llmSystemPrompt || sumForLlm.llmSystemPromptEmpty) {
-          html += '<p class="summary-json-hint"><strong>Model</strong>: ' + escapeHtml(sumForLlm.llmModel || '—') + '</p>';
+          let mpBody = '<p class="summary-json-hint"><strong>Model</strong>: ' + escapeHtml(sumForLlm.llmModel || '—') + '</p>';
           if (!sumForLlm.llmSystemPrompt && sumForLlm.llmSystemPromptEmpty) {
             // Prompt key was observed in the graph config but empty — typical for
             // workflow-style LLMs that host the prompt upstream (Dify, n8n, etc.).
-            html += '<p class="insight-empty" style="margin-top:4px;">No system prompt configured in the TEN graph (empty <code>system_messages</code>). If this agent points at a hosted workflow, the prompt likely lives on the upstream service.</p>';
+            mpBody += '<p class="insight-empty" style="margin-top:4px;">No system prompt configured in the TEN graph (empty <code>system_messages</code>). If this agent points at a hosted workflow, the prompt likely lives on the upstream service.</p>';
           }
           if (sumForLlm.llmSystemPrompt) {
             // Full prompt card — previously a 320-char preview. System prompts
@@ -3441,32 +3517,34 @@
             if (lineCount > 1) metaBits.push(lineCount + ' lines');
             const jumpIdx = sumForLlm.llmSystemPromptEntryIndex;
             const hasJump = typeof jumpIdx === 'number' && jumpIdx >= 0;
-            html += '<div class="system-prompt-card">';
-            html += '<div class="system-prompt-title">System prompt</div>';
-            html += '<div class="system-prompt-meta">' + escapeHtml(metaBits.join(' · ')) + '</div>';
-            html += '<details class="system-prompt-details"><summary>Show prompt</summary>';
-            html += '<pre class="system-prompt-text">' + escapeHtml(promptStr) + '</pre>';
-            html += '<div class="system-prompt-actions">';
-            html += '<button type="button" class="summary-json-toggle system-prompt-copy">Copy prompt</button>';
+            mpBody += '<div class="system-prompt-card">';
+            mpBody += '<div class="system-prompt-title">System prompt</div>';
+            mpBody += '<div class="system-prompt-meta">' + escapeHtml(metaBits.join(' · ')) + '</div>';
+            mpBody += '<details class="system-prompt-details"><summary>Show prompt</summary>';
+            mpBody += '<pre class="system-prompt-text">' + escapeHtml(promptStr) + '</pre>';
+            mpBody += '<div class="system-prompt-actions">';
+            mpBody += '<button type="button" class="summary-json-toggle system-prompt-copy">Copy prompt</button>';
             if (hasJump) {
-              html += '<button type="button" class="summary-json-toggle system-prompt-jump" data-entry-index="' + jumpIdx + '">Jump to log line</button>';
+              mpBody += '<button type="button" class="summary-json-toggle system-prompt-jump" data-entry-index="' + jumpIdx + '">Jump to log line</button>';
             }
-            html += '</div>';
-            html += '</details>';
-            html += '</div>';
+            mpBody += '</div>';
+            mpBody += '</details>';
+            mpBody += '</div>';
           }
+          html += insightSection('llm:model-prompt', 'Model & system prompt', '', mpBody);
         }
         if (insights.llm && insights.llm.length) {
-          html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','URL / Status','Duration (ms)','Model','Finish / Error']) + '</tr></thead><tbody>';
+          let reqBody = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','URL / Status','Duration (ms)','Model','Finish / Error']) + '</tr></thead><tbody>';
           for (const r of insights.llm) {
             const status = r.status ? (r.status === '500' ? '<span style="color:var(--error)">500</span>' : r.status) : '—';
             const err = r.error || r.err_message || (r.finish_reason === 'error' ? 'error' : r.finish_reason || '');
             const tsAttr = escapeHtml(r.ts || '');
             const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
             const isErrorRow = (r.status === '500' || r.error || r.err_message || r.finish_reason === 'error');
-            html += `<tr class="llm-row ${isErrorRow ? 'error' : ''}" data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(r.ts)}</td><td><span class="url" title="${escapeHtml(r.url || '')}">${escapeHtml((r.url || '').replace(/^https?:\/\//, '').slice(0, 50))}</span> ${status}</td><td>${r.duration_ms != null ? r.duration_ms : '—'}</td><td>${escapeHtml(r.model || '—')}</td><td>${escapeHtml(String(err).slice(0, 80))}</td></tr>`;
+            reqBody += `<tr class="llm-row ${isErrorRow ? 'error' : ''}" data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(r.ts)}</td><td><span class="url" title="${escapeHtml(r.url || '')}">${escapeHtml((r.url || '').replace(/^https?:\/\//, '').slice(0, 50))}</span> ${status}</td><td>${r.duration_ms != null ? r.duration_ms : '—'}</td><td>${escapeHtml(r.model || '—')}</td><td>${escapeHtml(String(err).slice(0, 80))}</td></tr>`;
           }
-          html += '</tbody></table>';
+          reqBody += '</tbody></table>';
+          html += insightSection('llm:requests', 'LLM requests', '', reqBody);
         } else html += '<p class="insight-empty">No LLM requests found.</p>';
         html += '</div>';
 
@@ -3560,16 +3638,18 @@
         const tools = insights.toolsTab || null;
         if (tools) {
           const callNames = tools.toolCalls ? Object.keys(tools.toolCalls).sort(function (a, b) { return (tools.toolCalls[b] || 0) - (tools.toolCalls[a] || 0); }) : [];
-          html += '<div class="summary-card summary-json-card"><h3 class="summary-card-title">MCP</h3><dl>';
-          if (tools.isToolCallAvailable != null) html += '<dt>Tool calling available</dt><dd>' + (tools.isToolCallAvailable ? 'yes' : 'no') + '</dd>';
-          if (tools.totalTools != null) html += '<dt>Total tools</dt><dd>' + escapeHtml(String(tools.totalTools)) + '</dd>';
-          if (tools.servers && tools.servers.length) html += '<dt>Servers</dt><dd>' + escapeHtml(tools.servers.map(function (s) { return s.name + (s.transport ? ' (' + s.transport + ')' : '') + (s.url ? ' — ' + s.url : ''); }).join('\n')) + '</dd>';
-          if (tools.mcpErrors && tools.mcpErrors.length) html += '<dt>MCP errors</dt><dd>' + escapeHtml(String(tools.mcpErrors.length)) + '</dd>';
-          html += '</dl></div>';
+          let mcpBody = '<dl>';
+          if (tools.isToolCallAvailable != null) mcpBody += '<dt>Tool calling available</dt><dd>' + (tools.isToolCallAvailable ? 'yes' : 'no') + '</dd>';
+          if (tools.totalTools != null) mcpBody += '<dt>Total tools</dt><dd>' + escapeHtml(String(tools.totalTools)) + '</dd>';
+          if (tools.servers && tools.servers.length) mcpBody += '<dt>Servers</dt><dd>' + escapeHtml(tools.servers.map(function (s) { return s.name + (s.transport ? ' (' + s.transport + ')' : '') + (s.url ? ' — ' + s.url : ''); }).join('\n')) + '</dd>';
+          if (tools.mcpErrors && tools.mcpErrors.length) mcpBody += '<dt>MCP errors</dt><dd>' + escapeHtml(String(tools.mcpErrors.length)) + '</dd>';
+          mcpBody += '</dl>';
+          html += summaryCardSection('tools:mcp', 'MCP', mcpBody);
           if (callNames.length) {
-            html += '<div class="summary-card summary-json-card"><h3 class="summary-card-title">Observed tool calls</h3><dl>';
-            for (const n of callNames) html += '<dt>' + escapeHtml(n) + '</dt><dd>' + escapeHtml(String(tools.toolCalls[n])) + '</dd>';
-            html += '</dl></div>';
+            let cBody = '<dl>';
+            for (const n of callNames) cBody += '<dt>' + escapeHtml(n) + '</dt><dd>' + escapeHtml(String(tools.toolCalls[n])) + '</dd>';
+            cBody += '</dl>';
+            html += summaryCardSection('tools:observed', 'Observed tool calls', cBody);
           }
           if (tools.events && tools.events.length) {
             html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Ext','Level','Message']) + '</tr></thead><tbody>';
@@ -3585,27 +3665,29 @@
         html += '<div class="insight-tab-panel" data-panel="ttsTab">';
         const ttsIssues = insights.ttsIssues || [];
         if (ttsIssues.length) {
-          html += '<p><strong>TTS issues &amp; hints</strong></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Severity','Issue','Code','Detail']) + '</tr></thead><tbody>';
+          let iBody = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Severity','Issue','Code','Detail']) + '</tr></thead><tbody>';
           for (const r of ttsIssues) {
             const tsAttr = escapeHtml(r.ts || '');
             const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
             const sev = r.kind === 'error' ? '<span style="color:var(--error)">error</span>' : r.kind === 'warning' ? 'warning' : 'info';
-            html += `<tr class="${r.kind === 'error' ? 'llm-row error' : ''}" data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(r.ts)}</td><td>${sev}</td><td>${escapeHtml(r.issue || '—')}</td><td>${escapeHtml(r.code || '—')}</td><td>${escapeHtml((r.detail || '').slice(0, 100))}</td></tr>`;
+            iBody += `<tr class="${r.kind === 'error' ? 'llm-row error' : ''}" data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(r.ts)}</td><td>${sev}</td><td>${escapeHtml(r.issue || '—')}</td><td>${escapeHtml(r.code || '—')}</td><td>${escapeHtml((r.detail || '').slice(0, 100))}</td></tr>`;
           }
-          html += '</tbody></table>';
+          iBody += '</tbody></table>';
+          html += insightSection('tts:issues', 'TTS issues & hints', '', iBody);
         } else {
           html += '<p class="insight-empty">No TTS errors or warnings detected.</p>';
         }
         const ttsOut = insights.tts || [];
         if (ttsOut.length) {
-          html += '<p><strong>TTS output (transcripts / text results)</strong></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Turn','Text','Duration (ms)']) + '</tr></thead><tbody>';
+          let oBody = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Turn','Text','Duration (ms)']) + '</tr></thead><tbody>';
           for (const t of ttsOut) {
             const tsAttr = escapeHtml(t.ts || '');
             const idxAttr = t.entryIndex != null ? ' data-index="' + t.entryIndex + '"' : '';
             const textCell = insightLongTextCell((t.text || '') || '—');
-            html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(t.ts)}</td><td>${t.turn_id != null ? escapeHtml(String(t.turn_id)) : '—'}</td><td>${textCell}</td><td>${t.duration_ms != null ? t.duration_ms : '—'}</td></tr>`;
+            oBody += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(t.ts)}</td><td>${t.turn_id != null ? escapeHtml(String(t.turn_id)) : '—'}</td><td>${textCell}</td><td>${t.duration_ms != null ? t.duration_ms : '—'}</td></tr>`;
           }
-          html += '</tbody></table>';
+          oBody += '</tbody></table>';
+          html += insightSection('tts:output', 'TTS output (transcripts / text results)', '', oBody);
         }
         html += '</div>';
 
@@ -3624,28 +3706,30 @@
         }
 
         if (ncs.memoryItems && ncs.memoryItems.length) {
-          html += '<p><strong>Keypoints Memory history</strong></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Agent','Start','Stop','Timestamp(ms)','Role','Turn','Source','Interrupted','Confidence','Text']) + '</tr></thead><tbody>';
+          let memBody = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Agent','Start','Stop','Timestamp(ms)','Role','Turn','Source','Interrupted','Confidence','Text']) + '</tr></thead><tbody>';
           for (const m of ncs.memoryItems) {
             const tsAttr = escapeHtml(m.ts || '');
             const idxAttr = m.entryIndex != null ? ' data-index="' + m.entryIndex + '"' : '';
             const text = (m.text || '').slice(0, 240) + ((m.text || '').length > 240 ? '…' : '');
             const interruptedStr = m.interrupted ? 'yes' : '—';
             const confidenceStr = m.confidence != null ? escapeHtml(String(m.confidence)) : '—';
-            html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(m.ts)}</td><td>${escapeHtml(m.agent_id || '—')}</td><td>${m.start_ts != null ? escapeHtml(String(m.start_ts)) : '—'}</td><td>${m.stop_ts != null ? escapeHtml(String(m.stop_ts)) : '—'}</td><td>${m.timestamp_ms != null ? escapeHtml(String(m.timestamp_ms)) : '—'}</td><td>${escapeHtml(m.role || '—')}</td><td>${m.turn_id != null ? escapeHtml(String(m.turn_id)) : '—'}</td><td>${escapeHtml(m.source || '—')}</td><td>${escapeHtml(interruptedStr)}</td><td>${confidenceStr}</td><td>${escapeHtml(text || '—')}</td></tr>`;
+            memBody += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(m.ts)}</td><td>${escapeHtml(m.agent_id || '—')}</td><td>${m.start_ts != null ? escapeHtml(String(m.start_ts)) : '—'}</td><td>${m.stop_ts != null ? escapeHtml(String(m.stop_ts)) : '—'}</td><td>${m.timestamp_ms != null ? escapeHtml(String(m.timestamp_ms)) : '—'}</td><td>${escapeHtml(m.role || '—')}</td><td>${m.turn_id != null ? escapeHtml(String(m.turn_id)) : '—'}</td><td>${escapeHtml(m.source || '—')}</td><td>${escapeHtml(interruptedStr)}</td><td>${confidenceStr}</td><td>${escapeHtml(text || '—')}</td></tr>`;
           }
-          html += '</tbody></table>';
+          memBody += '</tbody></table>';
+          html += insightSection('ncs:memory', 'Keypoints Memory history', '', memBody);
 
           const interruptedItems = (ncs.memoryItems || []).filter(m => m.interrupted);
           if (interruptedItems.length) {
-            html += '<p><strong>Interrupted items</strong></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Agent','Timestamp(ms)','Role','Turn','Source','Confidence','Interrupt ts','Text']) + '</tr></thead><tbody>';
+            let intBody = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Agent','Timestamp(ms)','Role','Turn','Source','Confidence','Interrupt ts','Text']) + '</tr></thead><tbody>';
             for (const m of interruptedItems) {
               const tsAttr = escapeHtml(m.ts || '');
               const idxAttr = m.entryIndex != null ? ' data-index="' + m.entryIndex + '"' : '';
               const text = (m.text || '').slice(0, 240) + ((m.text || '').length > 240 ? '…' : '');
               const confidenceStr = m.confidence != null ? escapeHtml(String(m.confidence)) : '—';
-              html += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(m.ts)}</td><td>${escapeHtml(m.agent_id || '—')}</td><td>${m.timestamp_ms != null ? escapeHtml(String(m.timestamp_ms)) : '—'}</td><td>${escapeHtml(m.role || '—')}</td><td>${m.turn_id != null ? escapeHtml(String(m.turn_id)) : '—'}</td><td>${escapeHtml(m.source || '—')}</td><td>${confidenceStr}</td><td>${m.interrupt_timestamp_ms != null ? escapeHtml(String(m.interrupt_timestamp_ms)) : '—'}</td><td>${escapeHtml(text || '—')}</td></tr>`;
+              intBody += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(m.ts)}</td><td>${escapeHtml(m.agent_id || '—')}</td><td>${m.timestamp_ms != null ? escapeHtml(String(m.timestamp_ms)) : '—'}</td><td>${escapeHtml(m.role || '—')}</td><td>${m.turn_id != null ? escapeHtml(String(m.turn_id)) : '—'}</td><td>${escapeHtml(m.source || '—')}</td><td>${confidenceStr}</td><td>${m.interrupt_timestamp_ms != null ? escapeHtml(String(m.interrupt_timestamp_ms)) : '—'}</td><td>${escapeHtml(text || '—')}</td></tr>`;
             }
-            html += '</tbody></table>';
+            intBody += '</tbody></table>';
+            html += insightSection('ncs:interrupted', 'Interrupted items', '', intBody);
           }
         }
 
@@ -3729,6 +3813,20 @@
             applyInsightFilter();
           });
         });
+
+        // Persist collapsed/expanded state for every <details.insight-section>
+        // so user layout choices survive re-renders and page reloads.
+        // `toggle` bubbles when the listener is `capture:true` (browsers
+        // intentionally don't bubble it by default).
+        root.addEventListener('toggle', function (ev) {
+          const det = ev.target;
+          if (!det || !det.classList || !det.classList.contains('insight-section')) return;
+          const id = det.getAttribute('data-section-id');
+          if (!id) return;
+          const state = insightSectionStateLoad();
+          state[id] = !!det.open;
+          insightSectionStateSave(state);
+        }, true);
 
         root.addEventListener('click', function (ev) {
           const th = ev.target.closest('.insight-th-filter');

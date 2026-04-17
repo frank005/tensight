@@ -1335,6 +1335,80 @@
     .stt-conf-toggle:hover { color: var(--text); }
     .stt-conf-table { margin-top: 4px; }
 
+    /* Collapsible sections inside insight tabs. The <details> element gives
+       us browser-native accessibility (keyboard + screen-reader) so we just
+       style the summary row. Caret rotates when the section is open. */
+    details.insight-section {
+      margin: 0 0 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: rgba(0, 0, 0, 0.12);
+      overflow: hidden;
+    }
+    details.insight-section > summary.insight-section-summary {
+      list-style: none;
+      cursor: pointer;
+      user-select: none;
+      padding: 8px 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      line-height: 1.3;
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.02);
+      border-bottom: 1px solid transparent;
+      transition: background 120ms ease, border-color 120ms ease;
+    }
+    details.insight-section[open] > summary.insight-section-summary {
+      border-bottom-color: var(--border);
+    }
+    details.insight-section > summary.insight-section-summary:hover {
+      background: rgba(255, 255, 255, 0.05);
+    }
+    details.insight-section > summary.insight-section-summary::-webkit-details-marker { display: none; }
+    details.insight-section > summary.insight-section-summary::marker { content: ''; }
+
+    .insight-section-caret {
+      display: inline-block;
+      width: 0;
+      height: 0;
+      margin-right: 2px;
+      border-top: 4px solid transparent;
+      border-bottom: 4px solid transparent;
+      border-left: 6px solid var(--text-muted);
+      transition: transform 120ms ease;
+      flex: 0 0 auto;
+    }
+    details.insight-section[open] > summary .insight-section-caret { transform: rotate(90deg); }
+
+    .insight-section-title { font-weight: 600; color: var(--text); }
+    .insight-section-hint {
+      /* hint already has summary-json-hint styling (muted); trim margin here */
+      margin: 0;
+    }
+    .insight-section-body { padding: 10px 12px 12px; }
+    .insight-section-body > *:first-child { margin-top: 0; }
+    .insight-section-body > *:last-child { margin-bottom: 0; }
+
+    /* Summary-panel variant: keep the card look, just make it collapsible.
+       Override the base insight-section background so cards retain their
+       original panel chrome. */
+    details.insight-section.summary-card-section {
+      background: var(--bg);
+      padding: 0;
+    }
+    details.insight-section.summary-card-section > summary.summary-card-summary {
+      padding: 10px 14px;
+      background: transparent;
+    }
+    details.insight-section.summary-card-section > summary.summary-card-summary .summary-card-title {
+      margin: 0;
+    }
+    details.insight-section.summary-card-section > .summary-card-body {
+      padding: 10px 14px 12px;
+    }
+
     .insight-text-inline { white-space: pre-wrap; word-break: break-word; }
     .insight-text-expand { max-width: min(42rem, 92vw); }
     .insight-text-expand .insight-text-summary {
