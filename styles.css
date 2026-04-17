@@ -1248,7 +1248,7 @@
     .llm-row .url { font-size: 11px; color: var(--text-muted); max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
     .insight-empty { color: var(--text-muted); font-size: 13px; padding: 12px 0; }
     .insight-formula { font-size: 11px; color: var(--text-muted); margin: 0 0 12px; font-family: var(--font-mono); }
-    .perf-chart-wrap { margin-bottom: 16px; padding: 12px 14px; background: var(--bg); border-radius: var(--radius); border: 1px solid var(--border); max-width: 100%; overflow: hidden; }
+    .perf-chart-wrap { position: relative; margin-bottom: 16px; padding: 12px 14px; background: var(--bg); border-radius: var(--radius); border: 1px solid var(--border); max-width: 100%; overflow: visible; }
     .perf-chart-wrap .perf-chart-title { margin: 0 0 2px; font-size: 13px; font-weight: 700; color: var(--text); }
     .perf-chart-wrap .perf-chart-subtitle { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text-muted); }
     .perf-chart-wrap .perf-chart-svg-wrap { text-align: left; width: 100%; max-width: 100%; min-width: 0; max-height: 420px; overflow: hidden; margin-left: -12px; }
@@ -1261,6 +1261,37 @@
     .perf-legend-item:hover { background: var(--border); }
     .perf-legend-item.dimmed { opacity: 0.4; }
     .perf-series-off { visibility: hidden; }
+    .perf-point-hit { fill: transparent; cursor: pointer; pointer-events: all; outline: none; }
+    .perf-point-marker { pointer-events: none; transition: stroke-width 0.12s ease, filter 0.12s ease; }
+    .perf-point-marker.hovered,
+    .perf-point-marker.active {
+      stroke: var(--text);
+      stroke-width: 1.8;
+      filter: drop-shadow(0 0 4px rgba(255,255,255,0.5));
+    }
+    .perf-table-row.active td { background: rgba(255,255,255,0.08); }
+    .perf-chart-tooltip {
+      display: none;
+      position: absolute;
+      z-index: 20;
+      min-width: 170px;
+      max-width: 220px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.35;
+      pointer-events: none;
+    }
+    .perf-chart-tooltip.visible { display: block; }
+    .perf-chart-tooltip strong,
+    .perf-chart-tooltip span,
+    .perf-chart-tooltip em { display: block; }
+    .perf-chart-tooltip span { color: var(--text-muted); margin-top: 2px; }
+    .perf-chart-tooltip em { color: var(--accent); font-style: normal; margin-top: 4px; font-size: 11px; }
     .insight-table .perf-median-row { font-weight: 600; background: var(--accent-dim); }
     .perf-table-footnote { font-size: 12px; color: var(--text-muted); margin: 12px 0 0; max-width: 720px; line-height: 1.5; }
     /* Perf headers: instant custom tooltip (no OS delay, no ? cursor) */
@@ -1464,4 +1495,3 @@
     .audio-extra > summary { font-size: 11px; color: var(--text-muted); cursor: pointer; padding: 4px 0; }
     .audio-extra > summary:hover { color: var(--text); }
     .audio-extra .audio-player-item { margin-top: 6px; padding: 8px; }
-

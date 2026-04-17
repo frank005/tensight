@@ -3219,18 +3219,29 @@
               const turnId = perf[p.i].turn_id;
               return escapeHtml(s.label) + ': Turn ' + turnId + ', ' + Math.round(p.v) + ' ms';
             }
+            function pointAttrs(s, p, cx, cy) {
+              const turnId = perf[p.i].turn_id;
+              const title = pointTitle(s, p);
+              const pointId = escapeHtml(s.key + '-' + p.i);
+              return {
+                pointId: pointId,
+                marker: ' class="perf-point-marker" data-point-id="' + pointId + '"',
+                hit: ' class="perf-point-hit" data-point-id="' + pointId + '" data-series="' + escapeHtml(s.key) + '" data-label="' + escapeHtml(s.label) + '" data-turn="' + escapeHtml(String(turnId)) + '" data-value="' + escapeHtml(String(Math.round(p.v))) + '" data-cx="' + escapeHtml(String(cx)) + '" data-cy="' + escapeHtml(String(cy)) + '" aria-label="' + title + '" role="button" tabindex="0" focusable="true"'
+              };
+            }
             for (const s of series) {
               const pts = pointsBySeries[s.key];
               svg += '<g data-series="' + escapeHtml(s.key) + '">';
               if (pts.length < 2) {
                 for (const p of pts) {
                   const cx = xPos(p.i), cy = yPos(p.v);
+                  const attrs = pointAttrs(s, p, cx, cy);
                   if (s.marker === 'triangle') {
-                    svg += '<polygon points="' + cx + ',' + (cy - triH) + ' ' + (cx + triW) + ',' + (cy + triH) + ' ' + (cx - triW) + ',' + (cy + triH) + '" fill="' + s.color + '" stroke="none"/>';
-                    svg += '<circle cx="' + cx + '" cy="' + cy + '" r="' + hitR + '" fill="rgba(0,0,0,0.001)" style="cursor:pointer;pointer-events:all"><title>' + pointTitle(s, p) + '</title></circle>';
+                    svg += '<polygon' + attrs.marker + ' points="' + cx + ',' + (cy - triH) + ' ' + (cx + triW) + ',' + (cy + triH) + ' ' + (cx - triW) + ',' + (cy + triH) + '" fill="' + s.color + '" stroke="none"/>';
+                    svg += '<circle' + attrs.hit + ' cx="' + cx + '" cy="' + cy + '" r="' + hitR + '"></circle>';
                   } else {
-                    svg += '<circle cx="' + cx + '" cy="' + cy + '" r="' + markerR + '" fill="' + s.color + '" stroke="var(--bg)" stroke-width="0.3"/>';
-                    svg += '<circle cx="' + cx + '" cy="' + cy + '" r="' + hitR + '" fill="rgba(0,0,0,0.001)" style="cursor:pointer;pointer-events:all"><title>' + pointTitle(s, p) + '</title></circle>';
+                    svg += '<circle' + attrs.marker + ' cx="' + cx + '" cy="' + cy + '" r="' + markerR + '" fill="' + s.color + '" stroke="var(--bg)" stroke-width="0.3"/>';
+                    svg += '<circle' + attrs.hit + ' cx="' + cx + '" cy="' + cy + '" r="' + hitR + '"></circle>';
                   }
                 }
               } else {
@@ -3239,12 +3250,13 @@
                 svg += '<path d="' + path + '" fill="none" stroke="' + s.color + '" stroke-width="' + strokeW + '" stroke-linecap="round" stroke-linejoin="round"/>';
                 for (const p of pts) {
                   const cx = xPos(p.i), cy = yPos(p.v);
+                  const attrs = pointAttrs(s, p, cx, cy);
                   if (s.marker === 'triangle') {
-                    svg += '<polygon points="' + cx + ',' + (cy - triH) + ' ' + (cx + triW) + ',' + (cy + triH) + ' ' + (cx - triW) + ',' + (cy + triH) + '" fill="' + s.color + '" stroke="var(--bg)" stroke-width="0.3"/>';
-                    svg += '<circle cx="' + cx + '" cy="' + cy + '" r="' + hitR + '" fill="rgba(0,0,0,0.001)" style="cursor:pointer;pointer-events:all"><title>' + pointTitle(s, p) + '</title></circle>';
+                    svg += '<polygon' + attrs.marker + ' points="' + cx + ',' + (cy - triH) + ' ' + (cx + triW) + ',' + (cy + triH) + ' ' + (cx - triW) + ',' + (cy + triH) + '" fill="' + s.color + '" stroke="var(--bg)" stroke-width="0.3"/>';
+                    svg += '<circle' + attrs.hit + ' cx="' + cx + '" cy="' + cy + '" r="' + hitR + '"></circle>';
                   } else {
-                    svg += '<circle cx="' + cx + '" cy="' + cy + '" r="' + markerR + '" fill="' + s.color + '" stroke="var(--bg)" stroke-width="0.3"/>';
-                    svg += '<circle cx="' + cx + '" cy="' + cy + '" r="' + hitR + '" fill="rgba(0,0,0,0.001)" style="cursor:pointer;pointer-events:all"><title>' + pointTitle(s, p) + '</title></circle>';
+                    svg += '<circle' + attrs.marker + ' cx="' + cx + '" cy="' + cy + '" r="' + markerR + '" fill="' + s.color + '" stroke="var(--bg)" stroke-width="0.3"/>';
+                    svg += '<circle' + attrs.hit + ' cx="' + cx + '" cy="' + cy + '" r="' + hitR + '"></circle>';
                   }
                 }
               }
@@ -3279,7 +3291,7 @@
             let totalStr = '—';
             if (row.end_to_end_reported_ms != null) totalStr = totalExclRtc + ' ms';
             else if (sumParts > 0) totalStr = (row.vad == null ? '~' : '') + sumParts + ' ms' + (row.vad == null ? ' †' : '');
-            html += `<tr><td>${row.turn_id}</td><td>${vad}</td><td>${aivad}</td><td>${bhvs}</td><td>${asrTtlw}</td><td>${llmConn}</td><td>${llmTtfb}</td><td>${llmTtfs}</td><td>${ttsTtfb}</td><td>${totalStr}</td></tr>`;
+            html += `<tr class="perf-table-row" data-turn-id="${row.turn_id}"><td>${row.turn_id}</td><td>${vad}</td><td>${aivad}</td><td>${bhvs}</td><td>${asrTtlw}</td><td>${llmConn}</td><td>${llmTtfb}</td><td>${llmTtfs}</td><td>${ttsTtfb}</td><td>${totalStr}</td></tr>`;
           }
           const medVad = median(perf.map(function (r) { return r.vad; }));
           const medAivad = median(perf.map(function (r) { return r.aivad_delay; }));
@@ -3766,13 +3778,140 @@
         });
 
         root.querySelectorAll('.perf-chart-wrap').forEach(function (wrap) {
-          if (!wrap.querySelector('.perf-chart-svg-wrap svg')) return;
+          const chartSvg = wrap.querySelector('.perf-chart-svg-wrap svg');
+          if (!chartSvg) return;
+          const tooltip = document.createElement('div');
+          tooltip.className = 'perf-chart-tooltip';
+          tooltip.setAttribute('role', 'status');
+          wrap.appendChild(tooltip);
+          let pinnedPoint = null;
+          function pointMarker(point) {
+            const id = point.getAttribute('data-point-id');
+            return id ? wrap.querySelector('.perf-point-marker[data-point-id="' + id + '"]') : null;
+          }
+          function nearestPointFromEvent(ev) {
+            if (!ev || typeof chartSvg.createSVGPoint !== 'function') return null;
+            const matrix = chartSvg.getScreenCTM();
+            if (!matrix) return null;
+            const svgPoint = chartSvg.createSVGPoint();
+            svgPoint.x = ev.clientX;
+            svgPoint.y = ev.clientY;
+            const p = svgPoint.matrixTransform(matrix.inverse());
+            let best = null;
+            let bestDist = Infinity;
+            wrap.querySelectorAll('.perf-point-hit').forEach(function (point) {
+              const seriesKey = point.getAttribute('data-series');
+              const group = seriesKey ? wrap.querySelector('g[data-series="' + seriesKey + '"]') : null;
+              if (group && group.classList.contains('perf-series-off')) return;
+              const cx = parseFloat(point.getAttribute('data-cx'));
+              const cy = parseFloat(point.getAttribute('data-cy'));
+              if (!isFinite(cx) || !isFinite(cy)) return;
+              const dx = p.x - cx;
+              const dy = p.y - cy;
+              const dist = dx * dx + dy * dy;
+              if (dist < bestDist) {
+                bestDist = dist;
+                best = point;
+              }
+            });
+            return best;
+          }
+          function clearHover() {
+            wrap.querySelectorAll('.perf-point-marker.hovered').forEach(function (m) { m.classList.remove('hovered'); });
+          }
+          function clearActive() {
+            wrap.querySelectorAll('.perf-point-marker.active').forEach(function (m) { m.classList.remove('active'); });
+            root.querySelectorAll('.perf-table-row.active').forEach(function (r) { r.classList.remove('active'); });
+          }
+          function placeTooltip(point, ev) {
+            const wrapRect = wrap.getBoundingClientRect();
+            const pointRect = point.getBoundingClientRect();
+            const rawX = ev && ev.clientX ? ev.clientX - wrapRect.left : pointRect.left + pointRect.width / 2 - wrapRect.left;
+            const rawY = ev && ev.clientY ? ev.clientY - wrapRect.top : pointRect.top - wrapRect.top;
+            const maxX = Math.max(12, wrapRect.width - 220);
+            const x = Math.max(12, Math.min(rawX + 12, maxX));
+            const y = Math.max(12, rawY - 48);
+            tooltip.style.left = x + 'px';
+            tooltip.style.top = y + 'px';
+          }
+          function showPoint(point, ev, pin) {
+            const marker = pointMarker(point);
+            const turnId = point.getAttribute('data-turn') || '';
+            const label = point.getAttribute('data-label') || '';
+            const value = point.getAttribute('data-value') || '';
+            tooltip.innerHTML = '<strong>' + escapeHtml(label) + '</strong><span>Turn ' + escapeHtml(turnId) + ' · ' + escapeHtml(value) + ' ms</span>' + (pin ? '<em>Selected</em>' : '');
+            tooltip.classList.add('visible');
+            placeTooltip(point, ev);
+            clearHover();
+            if (marker) marker.classList.add('hovered');
+            if (pin) {
+              pinnedPoint = point;
+              clearActive();
+              if (marker) marker.classList.add('active');
+              const row = root.querySelector('.perf-table-row[data-turn-id="' + turnId + '"]');
+              if (row) row.classList.add('active');
+            }
+          }
+          function hidePoint(point) {
+            if (pinnedPoint === point) return;
+            clearHover();
+            if (pinnedPoint) showPoint(pinnedPoint, null, true);
+            else tooltip.classList.remove('visible');
+          }
+          wrap.querySelectorAll('.perf-point-hit').forEach(function (point) {
+            point.addEventListener('mouseenter', function (ev) { showPoint(nearestPointFromEvent(ev) || point, ev, false); });
+            point.addEventListener('mousemove', function (ev) {
+              const nearest = nearestPointFromEvent(ev) || point;
+              if (pinnedPoint !== nearest) showPoint(nearest, ev, false);
+              else placeTooltip(nearest, ev);
+            });
+            point.addEventListener('mouseleave', function () { hidePoint(point); });
+            point.addEventListener('focus', function () { showPoint(point, null, false); });
+            point.addEventListener('blur', function () { hidePoint(point); });
+            point.addEventListener('click', function (ev) {
+              ev.stopPropagation();
+              const nearest = (ev.clientX || ev.clientY) ? (nearestPointFromEvent(ev) || point) : point;
+              if (pinnedPoint === nearest) {
+                pinnedPoint = null;
+                clearActive();
+                tooltip.classList.remove('visible');
+                clearHover();
+              } else {
+                showPoint(nearest, ev, true);
+              }
+            });
+            point.addEventListener('keydown', function (ev) {
+              if (ev.key === 'Enter' || ev.key === ' ') {
+                ev.preventDefault();
+                point.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 0, clientY: 0 }));
+              } else if (ev.key === 'Escape') {
+                pinnedPoint = null;
+                clearActive();
+                clearHover();
+                tooltip.classList.remove('visible');
+                point.blur();
+              }
+            });
+          });
+          chartSvg.addEventListener('click', function () {
+            if (!pinnedPoint) return;
+            pinnedPoint = null;
+            clearActive();
+            clearHover();
+            tooltip.classList.remove('visible');
+          });
           wrap.querySelectorAll('.perf-legend-item').forEach(function (el) {
             el.addEventListener('click', function () {
               const key = el.getAttribute('data-series');
               if (!key) return;
               wrap.querySelectorAll('g[data-series="' + key + '"]').forEach(function (g) { g.classList.toggle('perf-series-off'); });
               el.classList.toggle('dimmed');
+              if (pinnedPoint && pinnedPoint.getAttribute('data-series') === key) {
+                pinnedPoint = null;
+                clearActive();
+                clearHover();
+                tooltip.classList.remove('visible');
+              }
             });
             el.addEventListener('keydown', function (e) {
               if (e.key === 'Enter' || e.key === ' ') {
