@@ -1303,6 +1303,35 @@
     .turn-row.turn-user td:nth-child(2) { color: var(--accent); font-weight: 500; }
     .turn-row.turn-agent td:nth-child(2) { color: var(--success); font-weight: 500; }
 
+    /* ASR confidence pill: only authoritative "final frame" confidences get a
+       solid fill; interim-frame values are dashed-outline so they're clearly
+       provisional. Colors tier by threshold so low-confidence turns catch the
+       eye when scanning long transcripts. */
+    .stt-conf-cell { white-space: nowrap; }
+    .stt-conf-pill {
+      display: inline-block;
+      min-width: 40px;
+      padding: 1px 7px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      text-align: center;
+      border: 1px solid transparent;
+      line-height: 1.5;
+      letter-spacing: 0.02em;
+    }
+    .stt-conf-pill.conf-final.conf-high { background: rgba(34, 197, 94, 0.16); color: #86efac; border-color: rgba(34, 197, 94, 0.35); }
+    .stt-conf-pill.conf-final.conf-mid  { background: rgba(234, 179, 8, 0.16);  color: #fde047; border-color: rgba(234, 179, 8, 0.35);  }
+    .stt-conf-pill.conf-final.conf-low  { background: rgba(239, 68, 68, 0.18);  color: #fca5a5; border-color: rgba(239, 68, 68, 0.4);   }
+    .stt-conf-pill.conf-interim { background: transparent; border-style: dashed; }
+    .stt-conf-pill.conf-interim.conf-high { color: #86efac; border-color: rgba(34, 197, 94, 0.55); }
+    .stt-conf-pill.conf-interim.conf-mid  { color: #fde047; border-color: rgba(234, 179, 8, 0.55); }
+    .stt-conf-pill.conf-interim.conf-low  { color: #fca5a5; border-color: rgba(239, 68, 68, 0.6); }
+    .stt-conf-stats { display: flex; flex-wrap: wrap; gap: 14px 22px; margin: 6px 0 12px; }
+    .stt-conf-stat { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); }
+    .stt-conf-stat em { font-style: normal; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px; }
+    .stt-conf-table { margin-top: 4px; }
+
     .insight-text-inline { white-space: pre-wrap; word-break: break-word; }
     .insight-text-expand { max-width: min(42rem, 92vw); }
     .insight-text-expand .insight-text-summary {

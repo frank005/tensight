@@ -1994,9 +1994,41 @@
       /** User speech from ASR: send_asr_result, vendor_result, and ten:runtime Publish Message content user.transcription (has final) */
       function extractUserAsrTranscripts(entries) {
         const out = [];
+        // Rolling cache of the most recent `vendor_result: on_recognized: {...}`
+        // alternative. Some vendors (e.g., Deepgram) only emit per-utterance
+        // confidence on the raw recognizer line and never propagate it to the
+        // downstream `send_asr_result` / `user.transcription`. We capture it
+        // here and attach it to the next matching transcript (same text, or
+        // the immediate next frame if text is empty) so the Turns/STT views
+        // still get an authoritative number. Keyed by (text, final).
+        let lastVendorConf = null; // { confidence, transcript, final, entryIndex }
         for (let i = 0; i < entries.length; i++) {
           const e = entries[i];
           if (!e.msg) continue;
+          // Capture raw vendor_result confidence when present. JSON shape:
+          //   vendor_result: on_recognized: {"channel":{"alternatives":[{"transcript":"...","confidence":0.93,"words":[...]}]},"is_final":true,...}
+          // We only keep frames with a non-empty transcript — Deepgram emits
+          // dozens of empty filler frames with `confidence: 0.0` that would
+          // otherwise swamp the averages and match against the next empty
+          // downstream frame.
+          if (e.msg.includes('vendor_result:') && e.msg.includes('on_recognized:') && e.msg.includes('"confidence"')) {
+            const jsonStart = e.msg.indexOf('{');
+            if (jsonStart >= 0) {
+              const vj = tryParseJSON(e.msg.slice(jsonStart));
+              if (vj && vj.channel && Array.isArray(vj.channel.alternatives) && vj.channel.alternatives.length) {
+                const alt = vj.channel.alternatives[0];
+                const transcript = typeof alt.transcript === 'string' ? alt.transcript : '';
+                if (alt && typeof alt.confidence === 'number' && isFinite(alt.confidence) && transcript.trim().length > 0) {
+                  lastVendorConf = {
+                    confidence: alt.confidence,
+                    transcript: transcript,
+                    final: vj.is_final === true,
+                    entryIndex: i,
+                  };
+                }
+              }
+            }
+          }
           if (e.msg.includes('Message content:') && e.msg.includes('user.transcription')) {
             let j = e.json;
             if (!j || j.object !== 'user.transcription') {
@@ -2007,6 +2039,21 @@
               }
             }
             if (j && j.object === 'user.transcription' && j.text != null) {
+              // Many ASR vendors attach an overall-utterance confidence at
+              // `metadata.asr_info.confidence` (0..1). Some logs surface it
+              // at the top level too — honor both. If the downstream payload
+              // doesn't carry a confidence but we just saw a vendor_result
+              // line with a matching transcript, reuse that score (Deepgram
+              // drops it between the raw recognizer and the user.transcription
+              // conversion).
+              let conf = null;
+              if (j.metadata && j.metadata.asr_info && typeof j.metadata.asr_info.confidence === 'number') {
+                conf = j.metadata.asr_info.confidence;
+              } else if (typeof j.confidence === 'number') {
+                conf = j.confidence;
+              } else if (lastVendorConf && typeof j.text === 'string' && j.text.trim().length > 0 && lastVendorConf.transcript === j.text) {
+                conf = lastVendorConf.confidence;
+              }
               out.push({
                 ts: e.ts,
                 text: typeof j.text === 'string' ? j.text : '',
@@ -2015,6 +2062,7 @@
                 duration_ms: j.duration_ms != null ? j.duration_ms : null,
                 language: (j.language != null && j.language !== '') ? j.language : null,
                 turn_id: j.turn_id != null ? j.turn_id : null,
+                confidence: conf,
                 entryIndex: i
               });
             }
@@ -2026,15 +2074,28 @@
             const durMatch = e.msg.match(/'duration_ms':\s*(\d+)/);
             const langMatch = e.msg.match(/'language':\s*'([^']*)'/);
             const turnMatch = e.msg.match(/'turn_id':\s*(\d+)/);
+            // Typical shape: `'metadata': {'asr_info': {'confidence': 0.91}, ...}`.
+            // Use a non-greedy match scoped to the asr_info dict so we don't
+            // accidentally grab a numeric field from another part of the log.
+            const confMatch = e.msg.match(/'asr_info'\s*:\s*\{[^}]*?'confidence'\s*:\s*([0-9.eE+-]+)/);
             if (textMatch) {
+              const text = textMatch[1].replace(/\\'/g, "'");
+              let conf = confMatch ? parseFloat(confMatch[1]) : null;
+              // Deepgram-via-SIP drops confidence on send_asr_result but the
+              // previous vendor_result line carries it. Match by transcript
+              // (ignoring empty strings so bogus 0.0 scores aren't attached).
+              if (conf == null && text.trim().length > 0 && lastVendorConf && lastVendorConf.transcript === text) {
+                conf = lastVendorConf.confidence;
+              }
               out.push({
                 ts: e.ts,
-                text: textMatch[1].replace(/\\'/g, "'"),
+                text: text,
                 final: finalMatch ? finalMatch[1] === 'True' : null,
                 start_ms: startMatch ? parseInt(startMatch[1], 10) : null,
                 duration_ms: durMatch ? parseInt(durMatch[1], 10) : null,
                 language: langMatch ? langMatch[1] : null,
                 turn_id: turnMatch ? parseInt(turnMatch[1], 10) : null,
+                confidence: conf,
                 entryIndex: i
               });
             }
@@ -2196,12 +2257,37 @@
       }
 
       /** Combined turns: user (ASR + eval_id + glue) + agent (TTS + glue), same shape, sorted by turn then time */
+      // Render an STT-confidence pill (e.g., "92%") colored by tier:
+      //   >= 0.85 → green, >= 0.70 → amber, < 0.70 → red.
+      // Only the authoritative source (final-frame) produces a solid pill; if
+      // we only have an interim frame's confidence we render a dashed outline
+      // and label the source in the tooltip. Returns '' for rows with no conf.
+      function renderConfidencePill(row) {
+        if (typeof row.confidence !== 'number' || !isFinite(row.confidence)) return '';
+        const pct = Math.max(0, Math.min(1, row.confidence));
+        const display = Math.round(pct * 100) + '%';
+        let tier = 'low';
+        if (pct >= 0.85) tier = 'high';
+        else if (pct >= 0.70) tier = 'mid';
+        const sourceLabel = row.confidenceSource === 'final' ? 'final frame' : 'interim frame';
+        const stats = row.confidenceStats;
+        const tipParts = ['ASR confidence · ' + sourceLabel];
+        if (stats && stats.count > 1) {
+          tipParts.push('across ' + stats.count + ' frames');
+          tipParts.push('min ' + Math.round(stats.min * 100) + '% · max ' + Math.round(stats.max * 100) + '% · avg ' + Math.round(stats.avg * 100) + '%');
+        }
+        const tip = tipParts.join('\n');
+        const sourceClass = row.confidenceSource === 'final' ? 'conf-final' : 'conf-interim';
+        return '<span class="stt-conf-pill conf-' + tier + ' ' + sourceClass + '" title="' + escapeHtml(tip) + '">' + display + '</span>';
+      }
+
       function buildTurnRowHtml(row) {
         const textCell = insightLongTextCell(row.text || '');
         const finalStr = row.final === true ? 'yes' : row.final === false ? 'no' : '—';
         const tsAttr = escapeHtml(row.ts || '');
         const idxAttr = row.entryIndex != null ? ' data-index="' + row.entryIndex + '"' : '';
-        return `<tr class="turn-row turn-${row.speaker}" data-ts="${tsAttr}"${idxAttr}><td>${row.turn != null ? row.turn : '—'}</td><td>${escapeHtml(row.speaker)}</td><td>${escapeHtml(row.ts)}</td><td>${textCell}</td><td>${finalStr}</td><td>${row.start_ms != null ? row.start_ms : '—'}</td><td>${row.duration_ms != null ? row.duration_ms : '—'}</td><td>${escapeHtml(row.language || '—')}</td></tr>`;
+        const confCell = row.speaker === 'user' ? (renderConfidencePill(row) || '—') : '—';
+        return `<tr class="turn-row turn-${row.speaker}" data-ts="${tsAttr}"${idxAttr}><td>${row.turn != null ? row.turn : '—'}</td><td>${escapeHtml(row.speaker)}</td><td>${escapeHtml(row.ts)}</td><td>${textCell}</td><td>${finalStr}</td><td class="stt-conf-cell">${confCell}</td><td>${row.start_ms != null ? row.start_ms : '—'}</td><td>${row.duration_ms != null ? row.duration_ms : '—'}</td><td>${escapeHtml(row.language || '—')}</td></tr>`;
       }
 
       function buildTurnsList(insights) {
@@ -2216,17 +2302,50 @@
           language: o.language,
           entryIndex: o.entryIndex
         }));
-        const userFromAsr = (insights.userAsr || []).map(o => ({
-          speaker: 'user',
-          turn: o.turn_id,
-          ts: o.ts,
-          text: o.text,
-          final: o.final,
-          start_ms: o.start_ms,
-          duration_ms: o.duration_ms != null ? o.duration_ms : o.final_audio_proc_ms,
-          language: o.language,
-          entryIndex: o.entryIndex
-        }));
+        // Group user ASR frames by turn so we can pick the "right" confidence
+        // per turn: the confidence from the final frame (final: True) if one
+        // exists, otherwise the confidence on the last interim frame. We also
+        // keep min/max/avg across frames for the STT tab tooltip.
+        const userAsrByTurn = {};
+        (insights.userAsr || []).forEach(o => {
+          const key = o.turn_id != null ? o.turn_id : '__null__';
+          if (!userAsrByTurn[key]) userAsrByTurn[key] = [];
+          userAsrByTurn[key].push(o);
+        });
+        function pickUserTurnConfidence(frames) {
+          const vals = frames.map(f => (typeof f.confidence === 'number' && isFinite(f.confidence) ? f.confidence : null)).filter(v => v != null);
+          if (!vals.length) return { value: null, source: null, count: 0, min: null, max: null, avg: null };
+          const finalFrame = frames.slice().reverse().find(f => f.final === true && typeof f.confidence === 'number');
+          const lastWithConf = frames.slice().reverse().find(f => typeof f.confidence === 'number');
+          const chosen = finalFrame || lastWithConf;
+          const sum = vals.reduce((a, b) => a + b, 0);
+          return {
+            value: chosen ? chosen.confidence : null,
+            source: finalFrame ? 'final' : 'interim',
+            count: vals.length,
+            min: Math.min.apply(null, vals),
+            max: Math.max.apply(null, vals),
+            avg: sum / vals.length,
+          };
+        }
+        const userFromAsr = (insights.userAsr || []).map(o => {
+          const frames = userAsrByTurn[o.turn_id != null ? o.turn_id : '__null__'] || [];
+          const confInfo = pickUserTurnConfidence(frames);
+          return {
+            speaker: 'user',
+            turn: o.turn_id,
+            ts: o.ts,
+            text: o.text,
+            final: o.final,
+            start_ms: o.start_ms,
+            duration_ms: o.duration_ms != null ? o.duration_ms : o.final_audio_proc_ms,
+            language: o.language,
+            confidence: confInfo.value,
+            confidenceSource: confInfo.source,
+            confidenceStats: confInfo,
+            entryIndex: o.entryIndex
+          };
+        });
         const evalTurns = (insights.evalIdTurns || []);
         const glueTurns = (insights.llmGlueTurns || []);
         const v2vTurns = (insights.v2vTranscriptions || []).map(o => ({
@@ -2264,6 +2383,19 @@
           const oldText = (existing.text || '').trim();
           const merged = newText.length > oldText.length ? Object.assign({}, row) : existing;
           merged.final = strongerFinal(existing.final, row.final);
+          // Confidence: prefer whichever source actually carries a number.
+          // Never overwrite a real confidence with null.
+          if (typeof merged.confidence !== 'number') {
+            if (typeof row.confidence === 'number') {
+              merged.confidence = row.confidence;
+              merged.confidenceSource = row.confidenceSource || merged.confidenceSource || null;
+              merged.confidenceStats = row.confidenceStats || merged.confidenceStats || null;
+            } else if (typeof existing.confidence === 'number') {
+              merged.confidence = existing.confidence;
+              merged.confidenceSource = existing.confidenceSource || merged.confidenceSource || null;
+              merged.confidenceStats = existing.confidenceStats || merged.confidenceStats || null;
+            }
+          }
           byKey[k] = merged;
         }
         evalTurns.forEach(addOne);
@@ -2719,7 +2851,7 @@
         html += '<div class="insight-tab-panel" data-panel="turns">';
         if (turnsList.length) {
           html += '<div class="turns-toolbar"><label title="Hides user rows marked non-final (interim ASR). Agent and other turns stay listed."><input type="checkbox" id="turnsFinalOnly" /> Hide interim user ASR</label></div>';
-          html += '<table id="turnsTable" class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Turn','Speaker','Time','Text','Final','Start (ms)','Duration (ms)','Language']) + '</tr></thead><tbody>';
+          html += '<table id="turnsTable" class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Turn','Speaker','Time','Text','Final','STT conf','Start (ms)','Duration (ms)','Language']) + '</tr></thead><tbody>';
           for (const row of turnsList) {
             html += buildTurnRowHtml(row);
           }
@@ -2929,6 +3061,80 @@
 
         html += '<div class="insight-tab-panel" data-panel="stt">';
         const stt = insights.stt;
+        let sttConfidenceRendered = false;
+        // Confidence summary: group final user ASR frames by turn so we report
+        // one number per turn (vendors emit per-utterance confidence on the
+        // final frame — that's the authoritative one). We still surface the
+        // min/max across *all* frames in the tooltip so you can see whether
+        // the score moved while streaming.
+        (function () {
+          const userAsr = insights.userAsr || [];
+          if (!userAsr.length) return;
+          const byTurn = {};
+          userAsr.forEach(o => {
+            const key = o.turn_id != null ? o.turn_id : '__null__';
+            if (!byTurn[key]) byTurn[key] = [];
+            byTurn[key].push(o);
+          });
+          const rows = [];
+          const finalVals = [];
+          let lowCount = 0;
+          const LOW_THRESHOLD = 0.70;
+          Object.keys(byTurn).forEach(k => {
+            const frames = byTurn[k];
+            const confs = frames.map(f => (typeof f.confidence === 'number' && isFinite(f.confidence)) ? f.confidence : null).filter(v => v != null);
+            if (!confs.length) return;
+            const finalFrame = frames.slice().reverse().find(f => f.final === true && typeof f.confidence === 'number');
+            const chosen = finalFrame || frames.slice().reverse().find(f => typeof f.confidence === 'number');
+            const v = chosen.confidence;
+            if (finalFrame) finalVals.push(v);
+            if (v < LOW_THRESHOLD) lowCount++;
+            const sum = confs.reduce((a, b) => a + b, 0);
+            rows.push({
+              turn_id: frames[0].turn_id != null ? frames[0].turn_id : null,
+              text: chosen.text || '',
+              ts: chosen.ts,
+              entryIndex: chosen.entryIndex,
+              confidence: v,
+              source: finalFrame ? 'final' : 'interim',
+              frames: confs.length,
+              min: Math.min.apply(null, confs),
+              max: Math.max.apply(null, confs),
+              avg: sum / confs.length,
+            });
+          });
+          if (!rows.length) return;
+          rows.sort((a, b) => (a.turn_id != null ? a.turn_id : 1e9) - (b.turn_id != null ? b.turn_id : 1e9));
+          const statsPool = finalVals.length ? finalVals : rows.map(r => r.confidence);
+          const statsSum = statsPool.reduce((a, b) => a + b, 0);
+          const sessionAvg = statsSum / statsPool.length;
+          const sessionMin = Math.min.apply(null, statsPool);
+          const sessionMax = Math.max.apply(null, statsPool);
+          const fmtPct = v => Math.round(v * 100) + '%';
+          const tierOf = v => v >= 0.85 ? 'high' : (v >= 0.70 ? 'mid' : 'low');
+          html += '<p><strong>ASR confidence</strong> <span class="summary-json-hint">one score per turn; vendors report it on the final ASR frame (<code>metadata.asr_info.confidence</code>). Interim-frame scores shown dashed.</span></p>';
+          html += '<div class="stt-conf-stats">';
+          html += '<span class="stt-conf-stat"><em>Session avg</em> <span class="stt-conf-pill conf-final conf-' + tierOf(sessionAvg) + '">' + fmtPct(sessionAvg) + '</span></span>';
+          html += '<span class="stt-conf-stat"><em>Min</em> <span class="stt-conf-pill conf-final conf-' + tierOf(sessionMin) + '">' + fmtPct(sessionMin) + '</span></span>';
+          html += '<span class="stt-conf-stat"><em>Max</em> <span class="stt-conf-pill conf-final conf-' + tierOf(sessionMax) + '">' + fmtPct(sessionMax) + '</span></span>';
+          html += '<span class="stt-conf-stat"><em>Turns</em> ' + rows.length + '</span>';
+          if (finalVals.length && finalVals.length !== rows.length) {
+            html += '<span class="stt-conf-stat"><em>Final frames</em> ' + finalVals.length + ' / ' + rows.length + '</span>';
+          }
+          html += '<span class="stt-conf-stat"><em>Below ' + Math.round(LOW_THRESHOLD * 100) + '%</em> ' + lowCount + '</span>';
+          html += '</div>';
+          html += '<table class="insight-table insight-filterable insight-rows-clickable stt-conf-table"><thead><tr>' + insightHeaderRow(['Turn','Time','Confidence','Source','Frames','Range (min / max / avg)','Text']) + '</tr></thead><tbody>';
+          for (const r of rows) {
+            const tsAttr = escapeHtml(r.ts || '');
+            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
+            const pillRow = { confidence: r.confidence, confidenceSource: r.source, confidenceStats: { count: r.frames, min: r.min, max: r.max, avg: r.avg } };
+            const pill = renderConfidencePill(pillRow);
+            const range = fmtPct(r.min) + ' / ' + fmtPct(r.max) + ' / ' + fmtPct(r.avg);
+            html += '<tr data-ts="' + tsAttr + '"' + idxAttr + '><td>' + (r.turn_id != null ? r.turn_id : '—') + '</td><td>' + escapeHtml(r.ts || '') + '</td><td>' + pill + '</td><td>' + (r.source === 'final' ? 'final' : 'interim') + '</td><td>' + r.frames + '</td><td>' + range + '</td><td>' + insightLongTextCell(r.text || '', 100) + '</td></tr>';
+          }
+          html += '</tbody></table>';
+          sttConfidenceRendered = true;
+        })();
         if (stt && (stt.transcripts.length || stt.metrics.length || (stt.errors && stt.errors.length))) {
           if (stt.transcripts.length) {
             html += '<p><strong>Transcripts / vendor results</strong></p><table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Text','Final audio (ms)','Total audio (ms)']) + '</tr></thead><tbody>';
@@ -2976,7 +3182,9 @@
               html += '</tbody></table>';
             }
           }
-        } else html += '<p class="insight-empty">No STT/ASR data found.</p>';
+        } else if (!sttConfidenceRendered) {
+          html += '<p class="insight-empty">No STT/ASR data found.</p>';
+        }
         html += '</div>';
 
         html += '<div class="insight-tab-panel" data-panel="rtc">';
