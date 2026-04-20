@@ -5857,6 +5857,28 @@
             if (p.tts && (p.tts.vendor || p.tts.vendor_name)) fields.push(['TTS', p.tts.vendor || p.tts.vendor_name]);
             if (p.asr && (p.asr.vendor || p.asr.vendor_name)) fields.push(['ASR (STT)', p.asr.vendor || p.asr.vendor_name]);
             if (p.asr && (p.asr.language || (p.asr.params && p.asr.params.language))) fields.push(['ASR language', p.asr.language || p.asr.params.language]);
+            if (p.idle_timeout != null) fields.push(['Idle timeout', p.idle_timeout + 's']);
+            if (p.turn_detection) {
+              const td = p.turn_detection;
+              const turnBits = [];
+              if (td.type) turnBits.push(td.type);
+              if (td.interrupt_mode) turnBits.push('mode ' + td.interrupt_mode);
+              if (td.silence_duration_ms != null) turnBits.push('silence ' + td.silence_duration_ms + 'ms');
+              if (td.interrupt_duration_ms != null) turnBits.push('interrupt ' + td.interrupt_duration_ms + 'ms');
+              if (td.threshold != null) turnBits.push('threshold ' + td.threshold);
+              if (td.prefix_padding_ms != null) turnBits.push('prefix ' + td.prefix_padding_ms + 'ms');
+              if (turnBits.length) fields.push(['Turn detection', turnBits.join(' · ')]);
+            }
+            if (p.advanced_features) {
+              const af = p.advanced_features;
+              const advancedBits = [];
+              if (af.enable_aivad != null) advancedBits.push('AIVAD ' + (af.enable_aivad ? 'on' : 'off'));
+              if (af.enable_rtm != null) advancedBits.push('RTM ' + (af.enable_rtm ? 'on' : 'off'));
+              if (advancedBits.length) fields.push(['Advanced', advancedBits.join(' · ')]);
+            }
+            if (p.filler_words && p.filler_words.enable != null) {
+              fields.push(['Filler words', p.filler_words.enable ? 'on' : 'off']);
+            }
             document.getElementById('sumCreateReqFields').innerHTML = '<dl>' + fields.map(([k, v]) => '<dt>' + escapeHtml(k) + '</dt><dd>' + escapeHtml(String(v)) + '</dd>').join('') + '</dl>';
             document.getElementById('sumCreateReqJson').textContent = JSON.stringify(redactSecrets(summary.createRequestBody), null, 2);
           } else createReqCard.style.display = 'none';
