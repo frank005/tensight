@@ -1,5 +1,6 @@
 const {
   appendAuditRecord,
+  getAuditStorageInfo,
   getClientMetadata,
   isAllowedPostOrigin,
   isAuthorized,
@@ -25,8 +26,14 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
-function renderAuditPage(records) {
+function renderAuditPage(records, storage) {
   const recent = records.slice().reverse();
+  const storageLabel = storage && storage.durable
+    ? 'Durable storage: Vercel KV'
+    : 'Volatile storage: in-memory fallback';
+  const storageDetail = storage && storage.durable
+    ? 'Keeping newest ' + storage.maxRows + ' records in key ' + storage.key + '.'
+    : 'Records can disappear on refresh, cold start, redeploy, or when requests hit another serverless instance. Configure KV_REST_API_URL and KV_REST_API_TOKEN for durable history.';
   const rows = recent.map(function (record) {
     const client = record.client || {};
     const meta = record.meta || {};
@@ -56,12 +63,14 @@ function renderAuditPage(records) {
     'h1{font-size:22px;margin:0}.meta{color:var(--muted);font-size:12px;margin-top:4px}' +
     '.actions{display:flex;gap:8px;flex-wrap:wrap}a.button{color:var(--bg);background:var(--accent);text-decoration:none;border-radius:6px;padding:8px 10px;font-weight:650}' +
     '.table-wrap{border:1px solid var(--border);border-radius:8px;overflow:auto;background:var(--surface)}' +
+    '.storage{border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:0 0 14px;background:var(--surface)}.storage.warn{border-color:#d29922;background:rgba(210,153,34,.12)}.storage strong{display:block;margin-bottom:2px}.storage span{color:var(--muted);font-size:12px}' +
     'table{width:100%;border-collapse:collapse;min-width:1120px}th,td{padding:8px 10px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}' +
     'th{position:sticky;top:0;background:#1f2630;font-size:12px;color:var(--muted);font-weight:650}td{font-size:12px}tr:last-child td{border-bottom:0}.ua{max-width:360px;word-break:break-word}' +
     '.empty{padding:24px;color:var(--muted)}' +
     '</style></head><body>' +
     '<header><div><h1>Usage Records</h1><div class="meta">' + records.length + ' total records. Newest first.</div></div>' +
     '<div class="actions"><a class="button" href="?format=json">Download JSON</a><a class="button" href="?format=csv">Download CSV</a></div></header>' +
+    '<div class="storage' + (storage && storage.durable ? '' : ' warn') + '"><strong>' + escapeHtml(storageLabel) + '</strong><span>' + escapeHtml(storageDetail) + '</span></div>' +
     (records.length
       ? '<div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>IP</th><th>Location</th><th>Path</th><th>Agent ID</th><th>Env</th><th>File</th><th>User agent</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
       : '<div class="table-wrap"><div class="empty">No usage records yet.</div></div>') +
@@ -175,6 +184,7 @@ module.exports = async function handler(req, res) {
 
     const url = new URL(req.url || '/', `https://${req.headers.host || 'localhost'}`);
     const format = (url.searchParams.get('format') || 'html').toLowerCase();
+    const storage = getAuditStorageInfo();
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     if (format === 'csv') {
       res.statusCode = 200;
@@ -188,13 +198,13 @@ module.exports = async function handler(req, res) {
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename="usage-${stamp}.json"`);
-      res.end(JSON.stringify({ count: records.length, records }, null, 2));
+      res.end(JSON.stringify({ count: records.length, storage, records }, null, 2));
       return;
     }
 
     res.statusCode = 200;
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.end(renderAuditPage(records));
+    res.end(renderAuditPage(records, storage));
     return;
   }
 
