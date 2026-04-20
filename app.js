@@ -20,6 +20,42 @@
         }
       }
 
+      function trackUsageEvent(eventName, meta) {
+        try {
+          if (!window.location || window.location.protocol === 'file:') return;
+          const payload = {
+            event: eventName || 'page_view',
+            client: {
+              path: window.location.pathname + window.location.search,
+              pageTitle: document.title || '',
+              referrer: document.referrer || '',
+              language: navigator.language || '',
+              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+              screen: window.screen ? [window.screen.width, window.screen.height].join('x') : '',
+              visibility: document.visibilityState || ''
+            },
+            meta: meta || {}
+          };
+          const body = JSON.stringify(payload);
+          const url = '/api/skyline-notes';
+          if (navigator.sendBeacon) {
+            const blob = new Blob([body], { type: 'application/json' });
+            if (navigator.sendBeacon(url, blob)) return;
+          }
+          fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: body,
+            credentials: 'same-origin',
+            keepalive: true
+          }).catch(function () {});
+        } catch (e) {}
+      }
+
+      setTimeout(function () {
+        trackUsageEvent('page_view');
+      }, 0);
+
       try {
         if (isGitHubPagesHost() && document.body) {
           document.body.classList.add('tenlr-host-github-pages');
@@ -5754,6 +5790,13 @@
           const entries = parseLines(text);
           const summary = extractSummary(entries);
           const extensions = collectExtensions(entries);
+          trackUsageEvent('log_loaded', {
+            fileName: fileName || 'ten.err.log',
+            fileSize: text && text.length != null ? text.length : '',
+            entryCount: entries.length,
+            errorCount: entries.filter(function (entry) { return entry.level === 'E'; }).length,
+            warningCount: entries.filter(function (entry) { return entry.level === 'W'; }).length
+          });
           state = {
             entries,
             summary,
@@ -6200,6 +6243,11 @@
         function runCstoolFetchPipeline(raw, environment, pipelineOpts) {
           maybeWarmCstoolCookieIframe();
           fetchBtn.disabled = true;
+          trackUsageEvent('fetch_log_requested', {
+            agentId: raw,
+            environment: environment,
+            source: 'cstool'
+          });
           setParseOverlay(true, 'Connecting to log service…');
           fetchTenErrViaCstool(raw, environment, {
             onStatus: function (msg) {
@@ -6211,9 +6259,20 @@
                 localStorage.setItem('tenLogReader_lastAgentId', raw);
                 localStorage.setItem('tenLogReader_lastAgentEnv', environment);
               } catch (e2) {}
+              trackUsageEvent('fetch_log_succeeded', {
+                agentId: raw,
+                environment: environment,
+                source: 'cstool',
+                fileName: result.fileName || ''
+              });
               onFileLoad(result.text, result.fileName);
             })
             .catch(function (err) {
+              trackUsageEvent('fetch_log_failed', {
+                agentId: raw,
+                environment: environment,
+                source: 'cstool'
+              });
               handleCstoolFetchError(err, raw, environment, pipelineOpts);
             })
             .finally(function () {
@@ -6282,6 +6341,11 @@
 
         function runInvestigatorPipeline(raw, environment) {
           fetchBtn.disabled = true;
+          trackUsageEvent('fetch_log_requested', {
+            agentId: raw,
+            environment: environment,
+            source: 'investigator'
+          });
           setParseOverlay(true, 'Connecting to TEN Investigator…');
           fetchTenErrViaInvestigator(raw, environment, {
             onStatus: function (msg) { setParseOverlay(true, msg); }
@@ -6291,11 +6355,22 @@
                 localStorage.setItem('tenLogReader_lastAgentId', raw);
                 localStorage.setItem('tenLogReader_lastAgentEnv', environment);
               } catch (e2) {}
+              trackUsageEvent('fetch_log_succeeded', {
+                agentId: raw,
+                environment: environment,
+                source: 'investigator',
+                fileName: result.fileName || ''
+              });
               onFileLoad(result.text, result.fileName);
               // After log loads, try to fetch audio dumps in background
               fetchAudioDumps(raw, environment);
             })
             .catch(function (invErr) {
+              trackUsageEvent('fetch_log_failed', {
+                agentId: raw,
+                environment: environment,
+                source: 'investigator'
+              });
               setParseOverlay(false);
               console.error('Investigator failed:', invErr);
               alert('Failed to fetch log:\n' + (invErr.message || invErr));

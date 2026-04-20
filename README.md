@@ -10,6 +10,25 @@ No backend required.
 - Open **`index.html`** directly in a browser, or host the folder (for example with GitHub Pages).
 - Load a file via **Choose log file** (or drag-and-drop).
 
+## Optional Vercel audit log
+
+When deployed on Vercel, the app can record lightweight usage metadata for access review.
+
+Environment variables:
+
+- `AUDIT_LOG_PASSWORD`: required to download the log.
+- `KV_REST_API_URL` and `KV_REST_API_TOKEN`: recommended for durable storage via Vercel KV/Upstash Redis.
+- `AUDIT_LOG_KEY`: optional Redis key name; defaults to `ten-log-reader:audit-log`.
+
+Download exports from the neutral endpoint name:
+
+```bash
+curl -u ":$AUDIT_LOG_PASSWORD" "https://<deployment>/api/skyline-notes?format=json" -o usage.json
+curl -u ":$AUDIT_LOG_PASSWORD" "https://<deployment>/api/skyline-notes?format=csv" -o usage.csv
+```
+
+If KV is not configured, Vercel functions fall back to in-memory storage, which is only useful for local/dev checks and is not durable across serverless instances.
+
 ## Project structure
 
 - **`index.html`**: UI layout/markup

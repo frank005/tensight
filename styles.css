@@ -163,6 +163,14 @@
     .cstool-proxy-override-btn:hover {
       filter: brightness(1.08);
     }
+    .usage-notice {
+      flex-basis: 100%;
+      width: 100%;
+      margin: -4px 0 0;
+      padding: 0 4px;
+      color: var(--text-muted);
+      font-size: 11px;
+    }
 
     .agent-proxy-details {
       flex-basis: 100%;
