@@ -216,6 +216,35 @@
         return null;
       }
 
+      function inferConvoAiJoinSchemaFromBody(body) {
+        const p = body && body.properties && typeof body.properties === 'object' ? body.properties : {};
+        const td = p.turn_detection && typeof p.turn_detection === 'object' ? p.turn_detection : null;
+        if (!td) return null;
+        const hasCurrent = td.config != null || td.mode != null;
+        const hasLegacy = ['interrupt_mode', 'interrupt_keywords', 'interrupt_duration_ms', 'prefix_padding_ms', 'silence_duration_ms', 'threshold']
+          .some(function (key) { return td[key] != null; });
+        if (hasCurrent && hasLegacy) return 'mixed turn_detection schema';
+        if (hasCurrent) return 'current nested turn_detection schema';
+        if (hasLegacy) return 'legacy flat turn_detection schema';
+        return null;
+      }
+
+      function inferConvoAiJoinSchemaFromGraph(graph) {
+        if (!graph || !Array.isArray(graph.nodes)) return null;
+        function node(name) {
+          return graph.nodes.find(function (n) { return n && n.name === name && n.property; }) || null;
+        }
+        const context = node('context');
+        const vad = node('vad');
+        const contextp = context ? context.property : {};
+        const vadp = vad ? vad.property : {};
+        const hasLegacyRuntimeSignals = contextp.interrupt_mode != null
+          || vadp.speech_threshold != null
+          || (vadp.end_of_speech && typeof vadp.end_of_speech === 'object')
+          || (vadp.start_of_speech && typeof vadp.start_of_speech === 'object');
+        return hasLegacyRuntimeSignals ? 'legacy flat turn_detection schema inferred from graph' : null;
+      }
+
       function synthesizeConvoAiRequestBodyFromGraph(graph) {
         if (!graph || !Array.isArray(graph.nodes)) return null;
         function node(name) {
@@ -494,6 +523,7 @@
           eventStartInfo: null,
           createRequestBody: null,
           createRequestBodySource: null,
+          createRequestBodySchema: null,
           sipLabels: null,
           sessCtrlVersion: null,
           rtm: null,
@@ -571,6 +601,7 @@
                 if (synthesized) {
                   summary.createRequestBody = synthesized;
                   summary.createRequestBodySource = 'parsed from start_graph runtime config';
+                  summary.createRequestBodySchema = inferConvoAiJoinSchemaFromGraph(j) || inferConvoAiJoinSchemaFromBody(synthesized);
                 }
               }
               if (!summary.channel) {
@@ -655,6 +686,7 @@
                 if (synthesized) {
                   summary.createRequestBody = synthesized;
                   summary.createRequestBodySource = 'parsed from start_graph runtime config';
+                  summary.createRequestBodySchema = inferConvoAiJoinSchemaFromGraph(g) || inferConvoAiJoinSchemaFromBody(synthesized);
                 }
               }
               const n = g.nodes.find(nn => nn.name === 'llm');
@@ -818,6 +850,7 @@
             if (j && typeof j === 'object' && j.properties && typeof j.properties === 'object' && j.properties.llm && j.properties.tts && j.properties.asr) {
               summary.createRequestBody = j;
               summary.createRequestBodySource = 'logged request body';
+              summary.createRequestBodySchema = inferConvoAiJoinSchemaFromBody(j);
               const p = j.properties;
               if (!summary.llmModule && p.llm) {
                 if (typeof p.llm === 'string') summary.llmModule = p.llm;
@@ -4044,7 +4077,8 @@
               const subtitle = isLoggedBody
                 ? 'Parsed from logged request body'
                 : 'Parsed from log runtime config, not the request that was sent';
-              openJsonModal('Create request JSON', subtitle, sum.createRequestBody, { warning: !isLoggedBody });
+              const schema = sum.createRequestBodySchema ? ' (' + sum.createRequestBodySchema + ')' : '';
+              openJsonModal('Create request JSON', subtitle + schema, sum.createRequestBody, { warning: !isLoggedBody });
             }
           });
         });
@@ -5863,6 +5897,7 @@
             const p = summary.createRequestBody.properties;
             const fields = [];
             if (summary.createRequestBodySource) fields.push(['Source', summary.createRequestBodySource]);
+            if (summary.createRequestBodySchema) fields.push(['Schema', summary.createRequestBodySchema]);
             if (summary.createRequestBodySource && summary.createRequestBodySource !== 'logged request body') {
               fields.push(['Certainty', 'Runtime config parsed from the log, not the captured HTTP body']);
             }
