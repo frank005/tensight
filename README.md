@@ -20,7 +20,13 @@ Environment variables:
 - `KV_REST_API_URL` and `KV_REST_API_TOKEN`: recommended for durable storage via Vercel KV/Upstash Redis.
 - `AUDIT_LOG_KEY`: optional Redis key name; defaults to `ten-log-reader:audit-log`.
 
-Download exports from the neutral endpoint name:
+Open the neutral endpoint name in a browser to view records after the Basic auth prompt:
+
+```text
+https://<deployment>/api/skyline-notes
+```
+
+The page includes JSON and CSV download links. Direct downloads also work:
 
 ```bash
 curl -u ":$AUDIT_LOG_PASSWORD" "https://<deployment>/api/skyline-notes?format=json" -o usage.json
