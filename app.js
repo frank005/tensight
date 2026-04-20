@@ -236,6 +236,14 @@
           if (s.indexOf('agora') !== -1) return 'agora';
           return addon || null;
         }
+        function pickObjectFields(src, keys) {
+          const out = {};
+          if (!src || typeof src !== 'object') return out;
+          keys.forEach(function (key) {
+            if (src[key] != null && src[key] !== '') out[key] = clone(src[key]);
+          });
+          return out;
+        }
 
         const rtc = node('rtc');
         const rtm = node('rtm');
@@ -305,11 +313,11 @@
           },
           asr: {
             vendor: vendorFromAddon(asr && asr.addon),
-            params: asrp.params ? clone(asrp.params) : {}
+            params: pickObjectFields(asrp.params, ['url', 'model', 'language', 'key', 'api_key'])
           },
           tts: {
             vendor: vendorFromAddon(tts && tts.addon),
-            params: ttsp.params ? clone(ttsp.params) : {}
+            params: pickObjectFields(ttsp.params, ['base_url', 'url', 'model', 'sample_rate', 'voice_id', 'key', 'api_key'])
           },
           filler_words: {
             enable: filler.enable === true
@@ -562,7 +570,7 @@
                 const synthesized = synthesizeConvoAiRequestBodyFromGraph(j);
                 if (synthesized) {
                   summary.createRequestBody = synthesized;
-                  summary.createRequestBodySource = 'reconstructed from start_graph';
+                  summary.createRequestBodySource = 'parsed from start_graph runtime config';
                 }
               }
               if (!summary.channel) {
@@ -646,7 +654,7 @@
                 const synthesized = synthesizeConvoAiRequestBodyFromGraph(g);
                 if (synthesized) {
                   summary.createRequestBody = synthesized;
-                  summary.createRequestBodySource = 'reconstructed from start_graph';
+                  summary.createRequestBodySource = 'parsed from start_graph runtime config';
                 }
               }
               const n = g.nodes.find(nn => nn.name === 'llm');
@@ -3016,7 +3024,7 @@
         s = s.replace(/(\btoken\b\s*[:=]\s*)[^\s,}]+/gi, '$1***');
         return s;
       }
-      function openJsonModal(title, subtitle, obj) {
+      function openJsonModal(title, subtitle, obj, options) {
         const overlay = document.getElementById('jsonModal');
         const pre = document.getElementById('jsonModalPre');
         const t = document.getElementById('jsonModalTitle');
@@ -3026,6 +3034,7 @@
         jsonModalCurrentText = text || '';
         t.textContent = title || 'JSON';
         st.textContent = subtitle || '';
+        st.className = 'modal-subtitle' + (options && options.warning ? ' modal-subtitle-warning' : '');
         pre.innerHTML = jsonSyntaxHighlight(text || '');
         overlay.classList.add('visible');
         overlay.setAttribute('aria-hidden', 'false');
@@ -3285,8 +3294,10 @@
 
         {
           let rjBody = '<p class="summary-json-hint">Open a syntax-colored JSON viewer with copy.</p>';
+          rjBody += '<div class="summary-json-actions">';
           if (summary.eventStartInfo) rjBody += '<button type="button" class="summary-json-toggle open-json-modal" data-json-kind="eventStart">View event start JSON</button>';
           if (summary.createRequestBody) rjBody += '<button type="button" class="summary-json-toggle open-json-modal" data-json-kind="createReq">View create request JSON</button>';
+          rjBody += '</div>';
           html += summaryCardSection('summary:raw-json', 'Raw JSON', rjBody);
         }
         html += '</div>';
@@ -4029,7 +4040,11 @@
             if (kind === 'eventStart' && sum.eventStartInfo) {
               openJsonModal('Event start JSON', 'Parsed from log', sum.eventStartInfo);
             } else if (kind === 'createReq' && sum.createRequestBody) {
-              openJsonModal('Create request JSON', 'Parsed from log', sum.createRequestBody);
+              const isLoggedBody = sum.createRequestBodySource === 'logged request body';
+              const subtitle = isLoggedBody
+                ? 'Parsed from logged request body'
+                : 'Parsed from log runtime config, not the request that was sent';
+              openJsonModal('Create request JSON', subtitle, sum.createRequestBody, { warning: !isLoggedBody });
             }
           });
         });
@@ -5848,6 +5863,9 @@
             const p = summary.createRequestBody.properties;
             const fields = [];
             if (summary.createRequestBodySource) fields.push(['Source', summary.createRequestBodySource]);
+            if (summary.createRequestBodySource && summary.createRequestBodySource !== 'logged request body') {
+              fields.push(['Certainty', 'Runtime config parsed from the log, not the captured HTTP body']);
+            }
             if (summary.createRequestBody.name != null) fields.push(['Name', summary.createRequestBody.name]);
             if (p.channel != null) fields.push(['Channel', p.channel]);
             if (p.llm) {

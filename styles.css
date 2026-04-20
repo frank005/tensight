@@ -524,7 +524,9 @@
     .summary-json-card .summary-card-title { margin-bottom: 8px; }
     .summary-json-hint { font-size: 11px; color: var(--text-muted); margin: 0 0 8px; line-height: 1.4; }
     .summary-json-card dl { margin: 0 0 10px; }
+    .summary-json-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .summary-json-toggle { font-size: 12px; padding: 4px 10px; background: var(--border); color: var(--text); border: none; border-radius: var(--radius); cursor: pointer; margin-bottom: 8px; }
+    .summary-json-actions .summary-json-toggle { margin-bottom: 0; }
     .summary-json-toggle:hover { background: var(--accent-dim); color: var(--accent); }
     .summary-json-block { font-size: 11px; max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-all; margin: 0; padding: 10px; background: rgba(0,0,0,0.3); border-radius: var(--radius); border: 1px solid var(--border); }
 
@@ -675,6 +677,7 @@
     .modal-close:hover { filter: brightness(1.08); }
     .modal-body { padding: 14px; overflow: auto; min-height: 0; }
     .modal-subtitle { font-size: 12px; color: var(--text-muted); margin: -6px 0 10px; }
+    .modal-subtitle-warning { color: var(--error); font-weight: 700; }
 
     .filters {
       padding: 12px 16px;
