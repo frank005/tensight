@@ -216,6 +216,116 @@
         return null;
       }
 
+      function synthesizeConvoAiRequestBodyFromGraph(graph) {
+        if (!graph || !Array.isArray(graph.nodes)) return null;
+        function node(name) {
+          return graph.nodes.find(function (n) { return n && n.name === name && n.property; }) || null;
+        }
+        function clone(v) {
+          if (v == null) return v;
+          try { return JSON.parse(JSON.stringify(v)); } catch (_) { return v; }
+        }
+        function vendorFromAddon(addon) {
+          const s = String(addon || '').toLowerCase();
+          if (s.indexOf('deepgram') !== -1) return 'deepgram';
+          if (s.indexOf('minimax') !== -1) return 'minimax';
+          if (s.indexOf('eleven') !== -1) return 'elevenlabs';
+          if (s.indexOf('openai') !== -1) return 'openai';
+          if (s.indexOf('cartesia') !== -1) return 'cartesia';
+          if (s.indexOf('soniox') !== -1) return 'soniox';
+          if (s.indexOf('agora') !== -1) return 'agora';
+          return addon || null;
+        }
+
+        const rtc = node('rtc');
+        const rtm = node('rtm');
+        const llm = node('llm');
+        const tts = node('tts');
+        const asr = node('asr');
+        const context = node('context');
+        const ifttt = node('ifttt');
+        const vad = node('vad');
+        const aivad = node('agora_aivadmd');
+        const main = node('main');
+        const collector = node('message_collector');
+
+        const rtcp = rtc ? rtc.property : {};
+        const rtmp = rtm ? rtm.property : {};
+        const llmp = llm ? llm.property : {};
+        const ttsp = tts ? tts.property : {};
+        const asrp = asr ? asr.property : {};
+        const contextp = context ? context.property : {};
+        const iftttp = ifttt ? ifttt.property : {};
+        const vadp = vad ? vad.property : {};
+        const aivadp = aivad ? aivad.property : {};
+        const mainp = main ? main.property : {};
+        const collectorp = collector ? collector.property : {};
+
+        if (!llm && !tts && !asr) return null;
+
+        const eos = vadp.end_of_speech || {};
+        const sos = vadp.start_of_speech || {};
+        const eosAcoustic = eos.acoustic_cfg || {};
+        const eosSemantic = eos.semantic_cfg || {};
+        const sosVad = sos.vad_cfg || {};
+        const sosSemantic = sos.semantic_cfg || {};
+        const orchestrator = mainp.llm_orchestrator || {};
+        const filler = orchestrator.filler_words || {};
+
+        const props = {
+          channel: rtcp.channel || rtmp.channel || contextp.channel || '',
+          token: rtcp.token || rtmp.token || '',
+          agent_rtc_uid: rtmp.user_id != null && rtmp.user_id !== '' ? String(rtmp.user_id) : (rtcp.user_id != null ? String(rtcp.user_id) : ''),
+          remote_rtc_uids: Array.isArray(rtcp.subscribe_remote_user_ids) && rtcp.subscribe_remote_user_ids.length ? clone(rtcp.subscribe_remote_user_ids) : ['*'],
+          enable_string_uid: rtcp.enable_string_uid === true,
+          idle_timeout: iftttp.idle_duration != null ? iftttp.idle_duration : null,
+          parameters: {
+            enable_dump: contextp.enable_dump === true
+          },
+          turn_detection: {
+            type: 'agora_vad',
+            interrupt_mode: contextp.interrupt_mode || null,
+            silence_duration_ms: eosAcoustic.silence_duration_ms != null ? eosAcoustic.silence_duration_ms : (eosSemantic.silence_duration_ms != null ? eosSemantic.silence_duration_ms : null),
+            interrupt_duration_ms: sosVad.interrupt_duration_ms != null ? sosVad.interrupt_duration_ms : (sosSemantic.interrupt_duration_ms != null ? sosSemantic.interrupt_duration_ms : null),
+            threshold: vadp.speech_threshold != null ? vadp.speech_threshold : null,
+            prefix_padding_ms: sosVad.prefix_padding_ms != null ? sosVad.prefix_padding_ms : (sosSemantic.prefix_padding_ms != null ? sosSemantic.prefix_padding_ms : null)
+          },
+          advanced_features: {
+            enable_aivad: aivadp.enable === true,
+            enable_rtm: rtmp.rtm_enabled === true
+          },
+          llm: {
+            url: llmp.url || '',
+            api_key: llmp.api_key || '',
+            system_messages: Array.isArray(llmp.system_messages) ? clone(llmp.system_messages) : [],
+            greeting_message: iftttp.greeting_message || '',
+            failure_message: iftttp.failure_message || '',
+            max_history: contextp.max_history != null ? contextp.max_history : null,
+            params: llmp.params ? clone(llmp.params) : {}
+          },
+          asr: {
+            vendor: vendorFromAddon(asr && asr.addon),
+            params: asrp.params ? clone(asrp.params) : {}
+          },
+          tts: {
+            vendor: vendorFromAddon(tts && tts.addon),
+            params: ttsp.params ? clone(ttsp.params) : {}
+          },
+          filler_words: {
+            enable: filler.enable === true
+          }
+        };
+
+        Object.keys(props.turn_detection).forEach(function (k) {
+          if (props.turn_detection[k] == null) delete props.turn_detection[k];
+        });
+        if (props.idle_timeout == null) delete props.idle_timeout;
+        return {
+          name: collectorp.agent_name || contextp.agent_name || llmp.agent_name || '',
+          properties: props
+        };
+      }
+
       function parseLines(text) {
         const lines = text.split(/\r?\n/);
         const entries = [];
@@ -375,6 +485,7 @@
           avatarId: null,
           eventStartInfo: null,
           createRequestBody: null,
+          createRequestBodySource: null,
           sipLabels: null,
           sessCtrlVersion: null,
           rtm: null,
@@ -447,6 +558,13 @@
               if (j.detail.start_ts != null) summary.startTs = summary.startTs != null ? summary.startTs : j.detail.start_ts;
             }
             if (j.nodes && Array.isArray(j.nodes)) {
+              if (!summary.createRequestBody) {
+                const synthesized = synthesizeConvoAiRequestBodyFromGraph(j);
+                if (synthesized) {
+                  summary.createRequestBody = synthesized;
+                  summary.createRequestBodySource = 'reconstructed from start_graph';
+                }
+              }
               if (!summary.channel) {
                 const rtc = j.nodes.find(n => n.name === 'agora_rtc' && n.property);
                 if (rtc && rtc.property && rtc.property.channel) summary.channel = rtc.property.channel;
@@ -524,6 +642,13 @@
           if (e.msg && e.msg.includes('"nodes"') && (e.msg.includes('start_graph') || e.msg.includes('"name":"llm"'))) {
             const g = e.json || tryParseJSON(e.msg);
             if (g && g.nodes && Array.isArray(g.nodes)) {
+              if (!summary.createRequestBody) {
+                const synthesized = synthesizeConvoAiRequestBodyFromGraph(g);
+                if (synthesized) {
+                  summary.createRequestBody = synthesized;
+                  summary.createRequestBodySource = 'reconstructed from start_graph';
+                }
+              }
               const n = g.nodes.find(nn => nn.name === 'llm');
               if (n) {
                 const addon = n.addon || n.name || null;
@@ -684,6 +809,7 @@
             }
             if (j && typeof j === 'object' && j.properties && typeof j.properties === 'object' && j.properties.llm && j.properties.tts && j.properties.asr) {
               summary.createRequestBody = j;
+              summary.createRequestBodySource = 'logged request body';
               const p = j.properties;
               if (!summary.llmModule && p.llm) {
                 if (typeof p.llm === 'string') summary.llmModule = p.llm;
@@ -5721,6 +5847,7 @@
             createReqCard.style.display = 'block';
             const p = summary.createRequestBody.properties;
             const fields = [];
+            if (summary.createRequestBodySource) fields.push(['Source', summary.createRequestBodySource]);
             if (summary.createRequestBody.name != null) fields.push(['Name', summary.createRequestBody.name]);
             if (p.channel != null) fields.push(['Channel', p.channel]);
             if (p.llm) {
@@ -5729,9 +5856,9 @@
             }
             if (p.tts && (p.tts.vendor || p.tts.vendor_name)) fields.push(['TTS', p.tts.vendor || p.tts.vendor_name]);
             if (p.asr && (p.asr.vendor || p.asr.vendor_name)) fields.push(['ASR (STT)', p.asr.vendor || p.asr.vendor_name]);
-            if (p.asr && p.asr.language) fields.push(['ASR language', p.asr.language]);
+            if (p.asr && (p.asr.language || (p.asr.params && p.asr.params.language))) fields.push(['ASR language', p.asr.language || p.asr.params.language]);
             document.getElementById('sumCreateReqFields').innerHTML = '<dl>' + fields.map(([k, v]) => '<dt>' + escapeHtml(k) + '</dt><dd>' + escapeHtml(String(v)) + '</dd>').join('') + '</dl>';
-            document.getElementById('sumCreateReqJson').textContent = JSON.stringify(summary.createRequestBody, null, 2);
+            document.getElementById('sumCreateReqJson').textContent = JSON.stringify(redactSecrets(summary.createRequestBody), null, 2);
           } else createReqCard.style.display = 'none';
 
           document.getElementById('badgeErrors').textContent = summary.errors + ' errors';
