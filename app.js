@@ -1726,7 +1726,7 @@
                 const md = item.metadata && typeof item.metadata === 'object' ? item.metadata : {};
                 const confidence = (md.asr_info && md.asr_info.confidence != null) ? md.asr_info.confidence : null;
                 const interruptMode = md.interrupt_mode != null ? md.interrupt_mode : null;
-                const interrupted = (md.interrupted === true) || (interruptMode != null && /interrupt/i.test(String(interruptMode)));
+                const interrupted = (md.interrupted === true) || String(md.interrupted || '').toLowerCase() === 'true';
                 const interruptTimestampMs = md.interrupt_timestamp != null ? md.interrupt_timestamp : null;
                 memoryItems.push({
                   ts: e.ts,
@@ -2408,6 +2408,65 @@
         return out;
       }
 
+      function extractTurnInterruptions(entries) {
+        const out = [];
+        const seen = new Set();
+        function add(turnId, ts, reason, entryIndex) {
+          if (turnId == null || isNaN(turnId)) return;
+          const key = String(turnId) + '|' + String(reason || '') + '|' + String(entryIndex);
+          if (seen.has(key)) return;
+          seen.add(key);
+          out.push({ turn_id: turnId, ts: ts || '', reason: reason || null, entryIndex });
+        }
+
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i];
+          const msg = e.msg || '';
+          if (!msg || msg.indexOf('interrupted') === -1) continue;
+
+          // Agent tracer view shape: one log line can contain many Python-repr
+          // spans. For each `name: turn` span, look for its explicit turn_id and
+          // an interrupted end status inside that span.
+          let searchFrom = 0;
+          while (searchFrom < msg.length) {
+            let idx = msg.indexOf("'name': 'turn'", searchFrom);
+            let jsonStyle = false;
+            const idxJson = msg.indexOf('"name":"turn"', searchFrom);
+            if (idx === -1 || (idxJson !== -1 && idxJson < idx)) {
+              idx = idxJson;
+              jsonStyle = idxJson !== -1;
+            }
+            if (idx === -1) break;
+            const nextPy = msg.indexOf("}, {'traceId'", idx + 1);
+            const nextJson = msg.indexOf('},{"traceId"', idx + 1);
+            const ends = [nextPy, nextJson].filter(v => v !== -1);
+            const end = ends.length ? Math.min.apply(null, ends) : Math.min(msg.length, idx + 2400);
+            const span = msg.slice(idx, end);
+            if (span.indexOf('interrupted') !== -1) {
+              const turnM = jsonStyle
+                ? span.match(/"key"\s*:\s*"turn_id"[\s\S]{0,180}?"intValue"\s*:\s*"?(\d+)/)
+                : span.match(/'key':\s*'turn_id'[\s\S]{0,180}?'intValue':\s*'?(\d+)/);
+              const reasonM = span.match(/caused_by["']?\s*:\s*["']([^"'}]+)["']/);
+              if (turnM) add(parseInt(turnM[1], 10), e.ts, reasonM ? reasonM[1] : null, i);
+            }
+            searchFrom = end > idx ? end : idx + 1;
+          }
+
+          // Turn trace summary shape:
+          // {"turn_id": 5, ..., "end": {"type": "interrupted", ...}}
+          const j = e.json || tryParseJSON(msg);
+          if (j && typeof j === 'object') {
+            const endType = j.end && j.end.type != null ? String(j.end.type) : '';
+            const turnId = j.turn_id != null ? Number(j.turn_id) : null;
+            const reason = j.end && j.end.metadata && j.end.metadata.caused_by != null
+              ? String(j.end.metadata.caused_by)
+              : null;
+            if (turnId != null && /interrupted/i.test(endType)) add(turnId, e.ts, reason, i);
+          }
+        }
+        return out;
+      }
+
       /** All individual text messages (user ASR + agent TTS + STT transcripts), no deduplication, for filtering */
       function buildAllMessagesList(insights) {
         const list = [];
@@ -2472,10 +2531,13 @@
       function buildTurnRowHtml(row) {
         const textCell = insightLongTextCell(row.text || '');
         const finalStr = row.final === true ? 'yes' : row.final === false ? 'no' : '—';
+        const interruptedStr = row.interrupted ? 'yes' : '—';
+        const interruptedTitle = row.interruptReason ? ' title="' + escapeHtml('Interrupted: ' + row.interruptReason) + '"' : '';
         const tsAttr = escapeHtml(row.ts || '');
         const idxAttr = row.entryIndex != null ? ' data-index="' + row.entryIndex + '"' : '';
         const confCell = row.speaker === 'user' ? (renderConfidencePill(row) || '—') : '—';
-        return `<tr class="turn-row turn-${row.speaker}" data-ts="${tsAttr}"${idxAttr}><td>${row.turn != null ? row.turn : '—'}</td><td>${escapeHtml(row.speaker)}</td><td>${escapeHtml(row.ts)}</td><td>${textCell}</td><td>${finalStr}</td><td class="stt-conf-cell">${confCell}</td><td>${row.start_ms != null ? row.start_ms : '—'}</td><td>${row.duration_ms != null ? row.duration_ms : '—'}</td><td>${escapeHtml(row.language || '—')}</td></tr>`;
+        const classes = ['turn-row', 'turn-' + row.speaker, row.interrupted ? 'turn-interrupted' : ''].filter(Boolean).join(' ');
+        return `<tr class="${classes}" data-ts="${tsAttr}"${idxAttr}><td>${row.turn != null ? row.turn : '—'}</td><td>${escapeHtml(row.speaker)}</td><td>${escapeHtml(row.ts)}</td><td>${escapeHtml(row.source || '—')}</td><td${interruptedTitle}>${interruptedStr}</td><td>${textCell}</td><td>${finalStr}</td><td class="stt-conf-cell">${confCell}</td><td>${row.start_ms != null ? row.start_ms : '—'}</td><td>${row.duration_ms != null ? row.duration_ms : '—'}</td><td>${escapeHtml(row.language || '—')}</td></tr>`;
       }
 
       function buildTurnsList(insights) {
@@ -2484,12 +2546,61 @@
           turn: o.turn_id,
           ts: o.ts,
           text: o.text,
+          source: 'tts',
           final: o.final,
           start_ms: o.start_ms,
           duration_ms: o.duration_ms,
           language: o.language,
           entryIndex: o.entryIndex
         }));
+        const turnInterruptById = {};
+        (insights.turnInterruptions || []).forEach(o => {
+          if (!o || o.turn_id == null) return;
+          turnInterruptById[String(o.turn_id)] = o;
+        });
+        const ncsTurnItems = [];
+        ((insights.ncs && insights.ncs.memoryItems) || []).forEach(m => {
+          if (!m) return;
+          const role = String(m.role || '').toLowerCase();
+          const speaker = role === 'assistant' ? 'agent' : (role === 'user' ? 'user' : role);
+          if (speaker !== 'agent' && speaker !== 'user') return;
+          ncsTurnItems.push({
+            speaker,
+            turn: m.turn_id != null ? m.turn_id : null,
+            text: m.text != null ? String(m.text).trim() : '',
+            source: m.source != null ? String(m.source) : null,
+            interrupted: !!m.interrupted,
+            reason: m.interrupt_mode || null,
+            entryIndex: m.entryIndex
+          });
+        });
+        function applyTurnInterruption(row) {
+          if (!row) return row;
+          let matched = null;
+          const rowText = String(row.text || '').trim();
+          for (const item of ncsTurnItems) {
+            if (item.speaker !== row.speaker) continue;
+            if (item.turn != null && row.turn != null && String(item.turn) !== String(row.turn)) continue;
+            if (item.text && rowText && item.text !== rowText) continue;
+            matched = item;
+            break;
+          }
+          if (matched) {
+            if (matched.source) row.source = matched.source;
+            if (matched.interrupted) {
+              row.interrupted = true;
+              row.interruptReason = matched.reason || row.interruptReason || null;
+            }
+          }
+          if (!row.interrupted && row.speaker === 'agent' && row.turn != null && turnInterruptById[String(row.turn)]) {
+            const intr = turnInterruptById[String(row.turn)];
+            row.interrupted = true;
+            row.interruptReason = intr.reason || row.interruptReason || null;
+          } else {
+            row.interrupted = !!row.interrupted;
+          }
+          return row;
+        }
         // Group user ASR frames by turn so we can pick the "right" confidence
         // per turn: the confidence from the final frame (final: True) if one
         // exists, otherwise the confidence on the last interim frame. We also
@@ -2524,6 +2635,7 @@
             turn: o.turn_id,
             ts: o.ts,
             text: o.text,
+            source: 'asr',
             final: o.final,
             start_ms: o.start_ms,
             duration_ms: o.duration_ms != null ? o.duration_ms : o.final_audio_proc_ms,
@@ -2534,13 +2646,14 @@
             entryIndex: o.entryIndex
           };
         });
-        const evalTurns = (insights.evalIdTurns || []);
-        const glueTurns = (insights.llmGlueTurns || []);
+        const evalTurns = (insights.evalIdTurns || []).map(o => Object.assign({ source: 'command' }, o));
+        const glueTurns = (insights.llmGlueTurns || []).map(o => Object.assign({ source: 'llm' }, o));
         const v2vTurns = (insights.v2vTranscriptions || []).map(o => ({
           speaker: o.speaker,
           turn: o.turn_id,
           ts: o.ts,
           text: o.text,
+          source: 'mllm',
           final: o.final,
           start_ms: o.start_ms,
           duration_ms: o.duration_ms,
@@ -2563,6 +2676,21 @@
           if (a === false || b === false) return false;
           return null;
         }
+        function chooseTurnSource(speaker, a, b) {
+          const av = a != null && String(a).trim() ? String(a) : null;
+          const bv = b != null && String(b).trim() ? String(b) : null;
+          if (!av) return bv;
+          if (!bv) return av;
+          const userOrder = ['asr', 'mllm', 'llm', 'command', 'tts', 'greeting'];
+          const agentOrder = ['llm', 'command', 'greeting', 'mllm', 'tts', 'asr'];
+          const order = speaker === 'user' ? userOrder : agentOrder;
+          const ar = order.indexOf(av.toLowerCase());
+          const br = order.indexOf(bv.toLowerCase());
+          if (ar === -1 && br === -1) return av;
+          if (ar === -1) return bv;
+          if (br === -1) return av;
+          return ar <= br ? av : bv;
+        }
         function addOne(row) {
           const k = (row.turn != null ? row.turn : '') + '|' + row.speaker;
           const existing = byKey[k];
@@ -2571,6 +2699,9 @@
           const oldText = (existing.text || '').trim();
           const merged = newText.length > oldText.length ? Object.assign({}, row) : existing;
           merged.final = strongerFinal(existing.final, row.final);
+          merged.interrupted = !!(existing.interrupted || row.interrupted);
+          merged.interruptReason = existing.interruptReason || row.interruptReason || null;
+          merged.source = chooseTurnSource(row.speaker, existing.source, row.source) || merged.source || null;
           // Confidence: prefer whichever source actually carries a number.
           // Never overwrite a real confidence with null.
           if (typeof merged.confidence !== 'number') {
@@ -2591,7 +2722,7 @@
         v2vTurns.forEach(addOne);
         userFromAsr.forEach(addOne);
         agentFromTts.forEach(addOne);
-        const list = Object.values(byKey);
+        const list = Object.values(byKey).map(applyTurnInterruption);
         list.sort((a, b) => {
           const ta = a.turn != null ? a.turn : 999999;
           const tb = b.turn != null ? b.turn : 999999;
@@ -3092,7 +3223,7 @@
         html += '<div class="insight-tab-panel" data-panel="turns">';
         if (turnsList.length) {
           html += '<div class="turns-toolbar"><label title="Hides user rows marked non-final (interim ASR). Agent and other turns stay listed."><input type="checkbox" id="turnsFinalOnly" /> Hide interim user ASR</label></div>';
-          html += '<table id="turnsTable" class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Turn','Speaker','Time','Text','Final','STT conf','Start (ms)','Duration (ms)','Language']) + '</tr></thead><tbody>';
+          html += '<table id="turnsTable" class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Turn','Speaker','Time','Source','Interrupted','Text','Final','STT conf','Start (ms)','Duration (ms)','Language']) + '</tr></thead><tbody>';
           for (const row of turnsList) {
             html += buildTurnRowHtml(row);
           }
@@ -5635,6 +5766,7 @@
             userAsr: extractUserAsrTranscripts(entries),
             evalIdTurns: extractEvalIdMessages(entries),
             llmGlueTurns: extractLlmGlueMessages(entries),
+            turnInterruptions: extractTurnInterruptions(entries),
             stt: extractStt(entries),
             rtc: extractRtcInsights(entries),
             rtmTab: extractRtmTab(entries),

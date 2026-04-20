@@ -1333,6 +1333,8 @@
     .insight-table .perf-median-row td { border-top: 2px solid var(--border); }
     .turn-row.turn-user td:nth-child(2) { color: var(--accent); font-weight: 500; }
     .turn-row.turn-agent td:nth-child(2) { color: var(--success); font-weight: 500; }
+    .turn-row.turn-interrupted td { background: rgba(248, 81, 73, 0.08); }
+    .turn-row.turn-interrupted td:nth-child(5) { color: var(--error); font-weight: 600; }
 
     /* ASR confidence pill: only authoritative "final frame" confidences get a
        solid fill; interim-frame values are dashed-outline so they're clearly
