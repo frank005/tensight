@@ -111,6 +111,39 @@
         return bestIdx;
       }
 
+      function entryMatchesInsightSource(entry, source) {
+        const src = source != null ? String(source).trim().toLowerCase() : '';
+        if (!src) return true;
+        const ext = entry && entry.ext != null ? String(entry.ext).trim().toLowerCase() : '';
+        const msg = entry && entry.msg != null ? String(entry.msg).toLowerCase() : '';
+        if (src === 'llm') return ext === 'llm' || msg.indexOf('[llm]') !== -1;
+        if (src === 'asr') return ext === 'asr' || ext === 'agora_stream_asr' || msg.indexOf('[asr]') !== -1;
+        if (src === 'tts') return ext === 'tts' || msg.indexOf('[tts]') !== -1;
+        if (src === 'mllm') return ext === 'v2v' || msg.indexOf('[v2v]') !== -1 || msg.indexOf('"source":"mllm"') !== -1 || msg.indexOf("'source': 'mllm'") !== -1;
+        if (src === 'command') return msg.indexOf('[command]') !== -1;
+        if (src === 'greeting') return msg.indexOf('greeting') !== -1;
+        return ext === src || msg.indexOf('[' + src + ']') !== -1;
+      }
+
+      function findLogIndexByTsAndSource(ts, source) {
+        if (!state.entries || !state.entries.length) return -1;
+        const t = parseLogTs(ts);
+        if (isNaN(t)) return -1;
+        let bestIdx = -1;
+        let bestDiff = Infinity;
+        for (let i = 0; i < state.entries.length; i++) {
+          const entry = state.entries[i];
+          if (!entryMatchesInsightSource(entry, source)) continue;
+          const diff = Math.abs(parseLogTs(entry.ts) - t);
+          if (diff < bestDiff) {
+            bestDiff = diff;
+            bestIdx = i;
+          }
+        }
+        if (bestIdx >= 0) return bestIdx;
+        return findLogIndexByTs(ts);
+      }
+
       /** Parse user date/time input (e.g. "1/1/1 9:01:01" or "2026-03-06 16:08:34") to ms */
       function parseUserDateTime(str) {
         if (!str || typeof str !== 'string') return NaN;
@@ -435,14 +468,15 @@
             const y = String(match[1] || '').split('/')[0];
             const yNum = parseInt(y, 10);
             inferredYear = isNaN(yNum) ? inferredYear : yNum;
+            const appMsg = redactInlineSecrets(`app_version: ${match[2].trim()}, commit: ${match[3]}, build_time: ${match[4].trim()}`);
             entries.push({
               ts: match[1],
               level: 'I',
               pid: '',
               tid: '',
               ext: 'app',
-              msg: `app_version: ${match[2].trim()}, commit: ${match[3]}, build_time: ${match[4].trim()}`,
-              raw: line,
+              msg: appMsg,
+              raw: redactInlineSecrets(line),
               json: null
             });
             i++;
@@ -452,14 +486,15 @@
           match = line.match(TAB_LINE);
           if (match) {
             const level = match[2] === 'ERROR' ? 'E' : match[2] === 'WARN' ? 'W' : match[2] === 'DEBUG' ? 'D' : 'I';
+            const tabMsg = redactInlineSecrets(match[3]);
             entries.push({
               ts: match[1],
               level,
               pid: '',
               tid: '',
               ext: extractExtension(match[3]) || 'go',
-              msg: match[3],
-              raw: line,
+              msg: tabMsg,
+              raw: redactInlineSecrets(line),
               json: null
             });
             i++;
@@ -506,7 +541,16 @@
                 if (fromMsg != null) json = fromMsg;
               }
             }
-            entries.push({ ts, level, pid, tid, ext: ext || 'runtime', msg, raw: line, json });
+            entries.push({
+              ts,
+              level,
+              pid,
+              tid,
+              ext: ext || 'runtime',
+              msg: redactInlineSecrets(msg),
+              raw: redactInlineSecrets(line),
+              json: json != null ? redactSecrets(json) : null
+            });
             continue;
           }
 
@@ -517,8 +561,8 @@
               pid: '',
               tid: '',
               ext: 'agora_sess_ctrl',
-              msg: line,
-              raw: line,
+              msg: redactInlineSecrets(line),
+              raw: redactInlineSecrets(line),
               json: null
             });
             i++;
@@ -531,8 +575,8 @@
             pid: '',
             tid: '',
             ext: 'raw',
-            msg: line,
-            raw: line,
+            msg: redactInlineSecrets(line),
+            raw: redactInlineSecrets(line),
             json: null
           });
           i++;
@@ -1763,34 +1807,6 @@
           }
         }
         if (lastRequest) requests.push(lastRequest);
-        if (requests.length === 0) {
-          // Fallback: synthesize per-turn requests from llm_text_chunk emissions when the
-          // log doesn't include explicit on_request_start/end markers (some session shapes).
-          let cfgUrl = null, cfgModel = null;
-          for (let i = 0; i < entries.length; i++) {
-            const e = entries[i];
-            if (!e.msg || !e.msg.includes('[llm]') || !e.msg.includes('GlueConfig')) continue;
-            const um = e.msg.match(/url='([^']+)'/);
-            const mm = e.msg.match(/params=\{[^}]*'model':\s*'([^']+)'/) || e.msg.match(/params=\{[^}]*"model":\s*"([^"]+)"/);
-            if (um) cfgUrl = um[1];
-            if (mm) cfgModel = mm[1];
-            break;
-          }
-          const seenTurns = new Set();
-          for (let i = 0; i < entries.length; i++) {
-            const e = entries[i];
-            if (!e.msg) continue;
-            if (e.msg.includes('_send_llm_text_chunk') && e.msg.includes("'turn_id'")) {
-              const tm = e.msg.match(/'turn_id'\s*:\s*(\d+)/);
-              if (tm) {
-                const tid = tm[1];
-                if (seenTurns.has(tid)) continue;
-                seenTurns.add(tid);
-                requests.push({ ts: e.ts, url: cfgUrl, status: null, error: null, model: cfgModel, finish_reason: null, duration_ms: null, entryIndex: i, synthesized: true, turn_id: Number(tid) });
-              }
-            }
-          }
-        }
         return requests;
       }
 
@@ -2973,6 +2989,9 @@
         const list = Object.values(byKey).map(applyTurnInterruption);
         const rowsWithTurnId = list.filter(function (row) { return row.turn != null; });
         const finalList = rowsWithTurnId.length ? rowsWithTurnId : list;
+        finalList.forEach(function (row) {
+          row.entryIndex = findLogIndexByTsAndSource(row.ts, row.source);
+        });
         finalList.sort((a, b) => {
           const ta = a.turn != null ? a.turn : 999999;
           const tb = b.turn != null ? b.turn : 999999;
@@ -3139,6 +3158,12 @@
         s = s.replace(/(['"]?(?:api[_-]?key|access[_-]?key|secret|password|authorization|bearer|token)['"]?\s*[:=]\s*)['"][^'"]*['"]/gi, '$1"***"');
         s = s.replace(/(\btoken\b\s*[:=]\s*)[^\s,}]+/gi, '$1***');
         return s;
+      }
+      function redactLogText(text) {
+        if (!text || typeof text !== 'string') return '';
+        return text.split(/\r?\n/).map(function (line) {
+          return redactInlineSecrets(line);
+        }).join('\n');
       }
       function openJsonModal(title, subtitle, obj, options) {
         const overlay = document.getElementById('jsonModal');
@@ -3898,9 +3923,7 @@
         if (sumForLlm.llmModel || sumForLlm.llmSystemPrompt || sumForLlm.llmSystemPromptEmpty) {
           let mpBody = '<p class="summary-json-hint"><strong>Model</strong>: ' + escapeHtml(sumForLlm.llmModel || '—') + '</p>';
           if (!sumForLlm.llmSystemPrompt && sumForLlm.llmSystemPromptEmpty) {
-            // Prompt key was observed in the graph config but empty — typical for
-            // workflow-style LLMs that host the prompt upstream (Dify, n8n, etc.).
-            mpBody += '<p class="insight-empty" style="margin-top:4px;">No system prompt configured in the TEN graph (empty <code>system_messages</code>). If this agent points at a hosted workflow, the prompt likely lives on the upstream service.</p>';
+            mpBody += '<p class="insight-empty" style="margin-top:4px;">No system prompt configured in the TEN graph (empty <code>system_messages</code>).</p>';
           }
           if (sumForLlm.llmSystemPrompt) {
             // Full prompt card — previously a 320-char preview. System prompts
@@ -5849,7 +5872,7 @@
             summary,
             extensions,
             insights: null,
-            rawLogText: text,
+            rawLogText: redactLogText(text),
             sourceFileName: fileName || 'ten.err.log',
             selectedIndex: null,
             contextRadius: null,
@@ -5978,7 +6001,7 @@
               fields.push(['Geo', [geo.city, geo.country, geo.region, geo.continent].filter(Boolean).join(' / ')]);
             }
             document.getElementById('sumEventStartFields').innerHTML = '<dl>' + fields.map(([k, v]) => '<dt>' + escapeHtml(k) + '</dt><dd>' + escapeHtml(String(v)) + '</dd>').join('') + '</dl>';
-            document.getElementById('sumEventStartJson').textContent = JSON.stringify(summary.eventStartInfo, null, 2);
+            document.getElementById('sumEventStartJson').textContent = JSON.stringify(redactSecrets(summary.eventStartInfo), null, 2);
           } else eventStartCard.style.display = 'none';
 
           const createReqCard = document.getElementById('summaryCreateReqCard');
