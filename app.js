@@ -120,6 +120,12 @@
         return isNaN(d.getTime()) ? NaN : d.getTime();
       }
 
+      function formatEpochMsAsLogTs(ms) {
+        const n = typeof ms === 'number' ? ms : Number(ms);
+        if (!isFinite(n)) return '';
+        return new Date(n).toISOString().replace('Z', '+00:00');
+      }
+
       function median(arr) {
         const nums = arr.filter(function (x) { return x != null && !isNaN(x); }).sort(function (a, b) { return a - b; });
         if (!nums.length) return null;
@@ -2772,6 +2778,7 @@
             turn: m.turn_id != null ? m.turn_id : null,
             text: m.text != null ? String(m.text).trim() : '',
             source: m.source != null ? String(m.source) : null,
+            ts: m.timestamp_ms != null ? formatEpochMsAsLogTs(m.timestamp_ms) : '',
             interrupted: !!m.interrupted,
             reason: m.interrupt_mode || null,
             entryIndex: m.entryIndex
@@ -2790,6 +2797,7 @@
           }
           if (matched) {
             if (matched.source) row.source = matched.source;
+            if (matched.ts) row.ts = matched.ts;
             if (matched.interrupted) {
               row.interrupted = true;
               row.interruptReason = matched.reason || row.interruptReason || null;
@@ -2894,17 +2902,54 @@
           if (br === -1) return av;
           return ar <= br ? av : bv;
         }
+        function turnSourceRank(speaker, source) {
+          const v = source != null ? String(source).trim().toLowerCase() : '';
+          if (!v) return 999;
+          const userOrder = ['asr', 'mllm', 'llm', 'command', 'tts', 'greeting'];
+          const agentOrder = ['llm', 'command', 'greeting', 'mllm', 'tts', 'asr'];
+          const order = speaker === 'user' ? userOrder : agentOrder;
+          const idx = order.indexOf(v);
+          return idx === -1 ? 999 : idx;
+        }
+        function chooseCarrierRow(existing, row, preferredSource) {
+          const speaker = row.speaker || existing.speaker;
+          const pref = preferredSource != null ? String(preferredSource).trim().toLowerCase() : '';
+          const exSource = existing.source != null ? String(existing.source).trim().toLowerCase() : '';
+          const rowSource = row.source != null ? String(row.source).trim().toLowerCase() : '';
+          const exMatches = pref && exSource === pref;
+          const rowMatches = pref && rowSource === pref;
+          if (exMatches !== rowMatches) return exMatches ? existing : row;
+          const exRank = turnSourceRank(speaker, existing.source);
+          const rowRank = turnSourceRank(speaker, row.source);
+          if (exRank !== rowRank) return exRank < rowRank ? existing : row;
+          const oldText = String(existing.text || '').trim();
+          const newText = String(row.text || '').trim();
+          if (oldText.length !== newText.length) return newText.length > oldText.length ? row : existing;
+          const exTs = parseLogTs(existing.ts);
+          const rowTs = parseLogTs(row.ts);
+          if (!isNaN(exTs) && !isNaN(rowTs)) return exTs <= rowTs ? existing : row;
+          if (!isNaN(exTs)) return existing;
+          if (!isNaN(rowTs)) return row;
+          return existing;
+        }
         function addOne(row) {
           const k = (row.turn != null ? row.turn : '') + '|' + row.speaker;
           const existing = byKey[k];
           if (!existing) { byKey[k] = Object.assign({}, row); return; }
           const newText = (row.text || '').trim();
           const oldText = (existing.text || '').trim();
-          const merged = newText.length > oldText.length ? Object.assign({}, row) : existing;
+          const preferredSource = chooseTurnSource(row.speaker, existing.source, row.source);
+          const carrier = chooseCarrierRow(existing, row, preferredSource);
+          const merged = Object.assign({}, carrier);
+          if (newText.length > oldText.length) merged.text = row.text;
+          else if (!merged.text && oldText) merged.text = existing.text;
           merged.final = strongerFinal(existing.final, row.final);
           merged.interrupted = !!(existing.interrupted || row.interrupted);
           merged.interruptReason = existing.interruptReason || row.interruptReason || null;
-          merged.source = chooseTurnSource(row.speaker, existing.source, row.source) || merged.source || null;
+          merged.source = preferredSource || merged.source || null;
+          if (merged.start_ms == null && row.start_ms != null) merged.start_ms = row.start_ms;
+          if (merged.duration_ms == null && row.duration_ms != null) merged.duration_ms = row.duration_ms;
+          if (!merged.language && row.language) merged.language = row.language;
           // Confidence: prefer whichever source actually carries a number.
           // Never overwrite a real confidence with null.
           if (typeof merged.confidence !== 'number') {
@@ -2926,7 +2971,9 @@
         userFromAsr.forEach(addOne);
         agentFromTts.forEach(addOne);
         const list = Object.values(byKey).map(applyTurnInterruption);
-        list.sort((a, b) => {
+        const rowsWithTurnId = list.filter(function (row) { return row.turn != null; });
+        const finalList = rowsWithTurnId.length ? rowsWithTurnId : list;
+        finalList.sort((a, b) => {
           const ta = a.turn != null ? a.turn : 999999;
           const tb = b.turn != null ? b.turn : 999999;
           if (ta !== tb) return ta - tb;
@@ -2934,7 +2981,7 @@
           const tsb = parseLogTs(b.ts);
           return (isNaN(tsa) ? 0 : tsa) - (isNaN(tsb) ? 0 : tsb);
         });
-        return list;
+        return finalList;
       }
 
       function renderEntry(entry, index, isSelected, searchRaw) {
