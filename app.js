@@ -5574,10 +5574,9 @@
       }
 
       /**
-       * Render one suffix group (.wav or .pcm). Shows the primary playable
-       * file first (inline <audio> for WAVs) and lists every other file from
-       * the archive with its own Download button so debugging any of the
-       * raw streams stays one click away.
+       * Render one suffix group (.wav or .pcm). Shows the primary file first
+       * and keeps every file from the archive accessible from the list. WAV
+       * rows get inline players so users can audition any clip directly.
        */
       function renderAudioGroup(container, audioType, data) {
         var suffix = audioType.suffix;
@@ -5656,7 +5655,7 @@
         meta.appendChild(nameEl);
         row.appendChild(meta);
 
-        if (isPrimary && suffix === '.wav') {
+        if (suffix === '.wav') {
           var audio = document.createElement('audio');
           audio.controls = true;
           audio.preload = 'none';
