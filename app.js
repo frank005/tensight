@@ -5529,6 +5529,10 @@
           { suffix: '.wav', label: 'WAV Audio' },
           { suffix: '.pcm', label: 'PCM Audio' }
         ];
+        var groupedAudio = {
+          '.wav': { suffix: '.wav', label: 'WAV Audio', files: [], primary: null, allUrl: null, totalSize: 0 },
+          '.pcm': { suffix: '.pcm', label: 'PCM Audio', files: [], primary: null, allUrl: null, totalSize: 0 }
+        };
 
         var foundAny = false;
         var pending = audioTypes.length;
@@ -5554,7 +5558,7 @@
             .then(function (data) {
               if (data && data.files && data.files.length) {
                 foundAny = true;
-                renderAudioGroup(audioPlayers, at, data);
+                mergeAudioResponse(groupedAudio, at, data);
               }
             })
             .catch(function () {})
@@ -5562,6 +5566,10 @@
               pending--;
               if (pending === 0) {
                 if (foundAny) {
+                  audioTypes.forEach(function (type) {
+                    var bucket = groupedAudio[type.suffix];
+                    if (bucket && bucket.files && bucket.files.length) renderAudioGroup(audioPlayers, bucket, bucket);
+                  });
                   audioStatus.className = 'audio-status';
                   audioStatus.textContent = '';
                 } else {
@@ -5571,6 +5579,46 @@
               }
             });
         });
+      }
+
+      function audioFileSuffix(name, fallbackSuffix) {
+        var n = String(name || '').toLowerCase();
+        if (n.endsWith('.wav')) return '.wav';
+        if (n.endsWith('.pcm')) return '.pcm';
+        return fallbackSuffix || '';
+      }
+
+      function mergeAudioResponse(groupedAudio, requestedType, data) {
+        if (!groupedAudio || !requestedType || !data || !Array.isArray(data.files)) return;
+        var seenByBucket = {};
+        var primaryName = data.primary || '';
+        var responseBucketSuffix = null;
+        var mixedBuckets = false;
+
+        data.files.forEach(function (file) {
+          if (!file || !file.name || !file.url) return;
+          var suffix = audioFileSuffix(file.name, requestedType.suffix);
+          if (!groupedAudio[suffix]) return;
+          if (responseBucketSuffix == null) responseBucketSuffix = suffix;
+          else if (responseBucketSuffix !== suffix) mixedBuckets = true;
+
+          var bucket = groupedAudio[suffix];
+          var dedupeKey = String(file.name) + '|' + String(file.url);
+          if (!seenByBucket[suffix]) seenByBucket[suffix] = new Set(bucket.files.map(function (f) {
+            return String(f.name) + '|' + String(f.url);
+          }));
+          if (seenByBucket[suffix].has(dedupeKey)) return;
+          seenByBucket[suffix].add(dedupeKey);
+          bucket.files.push(file);
+          if (!bucket.primary && primaryName && file.name === primaryName) bucket.primary = file.name;
+        });
+
+        if (!mixedBuckets && responseBucketSuffix && groupedAudio[responseBucketSuffix]) {
+          var target = groupedAudio[responseBucketSuffix];
+          if (!target.primary && primaryName) target.primary = primaryName;
+          if (!target.allUrl && data.allUrl) target.allUrl = data.allUrl;
+          if (typeof data.totalSize === 'number' && data.totalSize > 0) target.totalSize += data.totalSize;
+        }
       }
 
       /**
