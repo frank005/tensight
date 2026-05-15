@@ -52,6 +52,10 @@
     body.tenlr-host-github-pages #cstoolSessionIframe {
       display: none !important;
     }
+    body.tenlr-host-vercel .agent-proxy-details,
+    body.tenlr-host-vercel .cstool-proxy-override-hint {
+      display: none !important;
+    }
 
     .agent-fetch-wrap {
       display: flex;

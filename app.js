@@ -20,6 +20,15 @@
         }
       }
 
+      function isVercelHost() {
+        try {
+          const h = (window.location && window.location.hostname) || '';
+          return /\.vercel\.app$/i.test(h) || h === 'vercel.app';
+        } catch (e) {
+          return false;
+        }
+      }
+
       function trackUsageEvent(eventName, meta) {
         try {
           if (!window.location || window.location.protocol === 'file:') return;
@@ -59,6 +68,9 @@
       try {
         if (isGitHubPagesHost() && document.body) {
           document.body.classList.add('tenlr-host-github-pages');
+        }
+        if (isVercelHost() && document.body) {
+          document.body.classList.add('tenlr-host-vercel');
         }
       } catch (e) {}
 
@@ -5143,7 +5155,7 @@
         const hint = document.getElementById('cstoolProxyOverrideHint');
         if (!details && !hint) return;
         let hide =
-          !!(window.__TEN_LOG_READER_BUILTIN_CSTOOL__ || cstoolUsesBrowserSessionOnly());
+          !!(window.__TEN_LOG_READER_BUILTIN_CSTOOL__ || cstoolUsesBrowserSessionOnly() || isVercelHost());
         try {
           const saved = localStorage.getItem('tenLogReader_cstoolProxy');
           if (saved && String(saved).trim()) hide = false;
