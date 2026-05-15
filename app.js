@@ -4498,6 +4498,7 @@
         summary: {},
         extensions: [],
         insights: null,
+        archiveBundle: null,
         /** Original file text (for download); not modified by parsing. */
         rawLogText: '',
         sourceFileName: '',
@@ -5365,6 +5366,8 @@
           const type = String.fromCharCode(header[156] || 0);
           const sizeStr = readTarField(header, 124, 12).replace(/\0/g, '');
           const size = parseInt(sizeStr, 8) || 0;
+          const mtimeStr = readTarField(header, 136, 12).replace(/\0/g, '');
+          const mtime = parseInt(mtimeStr, 8) || 0;
           let shortName = readTarField(header, 0, 100).replace(/\0/g, '').trim();
           if (shortName.indexOf('./') === 0) shortName = shortName.slice(2);
 
@@ -5400,8 +5403,106 @@
           let name = pendingLongName || shortName;
           pendingLongName = null;
           if (!name) continue;
-          out.push({ name, data });
+          out.push({ name, data, size, typeFlag: type, mtime });
         }
+        return out;
+      }
+
+      function tarEntryBaseName(entry) {
+        return String(entry && entry.name || '').replace(/^.*\//, '');
+      }
+
+      function isPreferredErrName(name) {
+        const base = String(name || '').replace(/^.*\//, '').toLowerCase();
+        return base === 'ten.err' || /^ten[-_.].*\.err$/i.test(base);
+      }
+
+      function isLogLikeName(name) {
+        const base = String(name || '').replace(/^.*\//, '').toLowerCase();
+        return (
+          /\.err(?:\.log)?$/i.test(base) ||
+          base === 'ten.log' ||
+          base === 'agoraapi.log' ||
+          base === 'agorasdk.log'
+        );
+      }
+
+      function archiveLogPriority(name) {
+        const base = String(name || '').replace(/^.*\//, '').toLowerCase();
+        if (base === 'ten.err') return 1;
+        if (/^ten[-_.].*\.err$/i.test(base)) return 2;
+        if (/\.err$/i.test(base)) return 3;
+        if (base === 'ten.log') return 4;
+        if (base === 'agoraapi.log') return 5;
+        if (base === 'agorasdk.log') return 6;
+        if (/\.err(?:\.log)?$/i.test(base)) return 7;
+        return 9;
+      }
+
+      function findArchiveEntryByName(entries, wantedName) {
+        if (!entries || !entries.length || !wantedName) return null;
+        const wanted = String(wantedName).trim();
+        if (!wanted) return null;
+        const lowerWanted = wanted.toLowerCase();
+        let found = entries.find((e) => String(e && e.name || '').toLowerCase() === lowerWanted);
+        if (found) return found;
+        const wantedBase = wanted.replace(/^.*\//, '').toLowerCase();
+        found = entries.find((e) => tarEntryBaseName(e).toLowerCase() === wantedBase);
+        if (found) return found;
+        return entries.find((e) => String(e && e.name || '').toLowerCase().endsWith('/' + wantedBase)) || null;
+      }
+
+      function listArchiveLogCandidates(entries) {
+        if (!entries || !entries.length) return [];
+        const nonEmpty = entries.filter((e) => e && e.data && e.data.length);
+        if (!nonEmpty.length) return [];
+        const defaultEntry = pickErrEntry(entries);
+        const defaultName = defaultEntry ? String(defaultEntry.name || '') : '';
+        const seen = new Set();
+        const out = [];
+        for (const e of nonEmpty) {
+          const base = tarEntryBaseName(e);
+          if (!isLogLikeName(base)) continue;
+          const fullName = String(e.name || base);
+          const key = fullName.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const lowerBase = base.toLowerCase();
+          let kind = 'other';
+          if (lowerBase === 'ten.err') kind = 'main';
+          else if (/^ten[-_.].*\.err$/i.test(base)) kind = 'main-variant';
+          else if (/\.err$/i.test(base)) kind = 'err';
+          else if (lowerBase === 'ten.log') kind = 'ten-log';
+          else if (lowerBase === 'agoraapi.log') kind = 'agoraapi-log';
+          else if (lowerBase === 'agorasdk.log') kind = 'agorasdk-log';
+          out.push({
+            name: fullName,
+            base: base,
+            size: e.data.length,
+            mtime: e.mtime || 0,
+            kind: kind,
+            isDefault: defaultName && fullName === defaultName
+          });
+        }
+
+        if (!out.length && defaultEntry) {
+          const base = tarEntryBaseName(defaultEntry);
+          out.push({
+            name: String(defaultEntry.name || base),
+            base: base,
+            size: defaultEntry.data.length,
+            mtime: defaultEntry.mtime || 0,
+            kind: 'fallback',
+            isDefault: true
+          });
+          return out;
+        }
+
+        out.sort((a, b) => {
+          const pa = archiveLogPriority(a.name);
+          const pb = archiveLogPriority(b.name);
+          return pa - pb || (b.mtime || 0) - (a.mtime || 0) || (b.size || 0) - (a.size || 0) || a.name.localeCompare(b.name);
+        });
         return out;
       }
 
@@ -5409,18 +5510,23 @@
         if (!entries || !entries.length) return null;
         const nonEmpty = entries.filter((e) => e.data && e.data.length);
         if (!nonEmpty.length) return null;
-        let candidates = nonEmpty.filter((e) => {
-          const n = (e.name || '').toLowerCase();
-          return /\.(err|err\.log)$/i.test(n) || n.indexOf('ten.err') !== -1;
-        });
-        if (!candidates.length) candidates = nonEmpty.slice();
-        const ten = candidates.filter((e) => /(^|\/)ten\.err([^/]*)$/i.test(e.name));
-        if (ten.length) {
-          ten.sort((a, b) => b.data.length - a.data.length);
-          return ten[0];
+        const exactTenErr = nonEmpty.find((e) => tarEntryBaseName(e).toLowerCase() === 'ten.err');
+        if (exactTenErr) return exactTenErr;
+
+        const variantErrs = nonEmpty.filter((e) => isPreferredErrName(tarEntryBaseName(e)));
+        if (variantErrs.length) {
+          variantErrs.sort((a, b) => (b.mtime || 0) - (a.mtime || 0) || b.data.length - a.data.length);
+          return variantErrs[0];
         }
-        candidates.sort((a, b) => b.data.length - a.data.length);
-        return candidates[0];
+
+        const logLike = nonEmpty.filter((e) => isLogLikeName(tarEntryBaseName(e)));
+        if (logLike.length) {
+          logLike.sort((a, b) => (b.mtime || 0) - (a.mtime || 0) || b.data.length - a.data.length);
+          return logLike[0];
+        }
+
+        nonEmpty.sort((a, b) => (b.mtime || 0) - (a.mtime || 0) || b.data.length - a.data.length);
+        return nonEmpty[0];
       }
 
       function gunzipArrayBuffer(buf) {
@@ -5432,22 +5538,49 @@
         return new Response(stream).arrayBuffer();
       }
 
-      function extractErrTextFromTgz(tgzBytes) {
+      function extractErrTextFromTgz(tgzBytes, preferredName) {
         return gunzipArrayBuffer(tgzBytes).then((tarBuf) => {
           const entries = parseUstarTarEntries(tarBuf);
-          const picked = pickErrEntry(entries);
-          if (!picked) {
+          const candidates = listArchiveLogCandidates(entries);
+          const picked = preferredName ? findArchiveEntryByName(entries, preferredName) : null;
+          const finalPicked = picked || pickErrEntry(entries);
+          if (!finalPicked) {
             const names = entries.map((e) => e.name).slice(0, 20);
-            throw new Error('No .err file found in archive. Entries (sample): ' + (names.length ? names.join(', ') : '(empty)'));
+            throw new Error('No log file found in archive. Entries (sample): ' + (names.length ? names.join(', ') : '(empty)'));
           }
-          return new TextDecoder('utf-8', { fatal: false }).decode(picked.data);
+          return {
+            text: new TextDecoder('utf-8', { fatal: false }).decode(finalPicked.data),
+            fileName: tarEntryBaseName(finalPicked) || 'ten.err',
+            entries: entries,
+            candidates: candidates,
+            selectedName: String(finalPicked.name || tarEntryBaseName(finalPicked) || 'ten.err')
+          };
         });
+      }
+
+      function downloadAndExtractInvestigatorArchive(base, downloadUrl, preferredName, onStatus) {
+        const tunnelUrl = base + '/api/ten-investigator-tunnel?u=' + encodeURIComponent(downloadUrl);
+        onStatus('Downloading archive in browser…');
+        return fetch(tunnelUrl, {
+          credentials: 'omit',
+          mode: 'cors'
+        })
+          .then(function (res) {
+            if (!res.ok) {
+              throw new Error('Archive download failed (' + res.status + ')');
+            }
+            return res.arrayBuffer();
+          })
+          .then(function (ab) {
+            onStatus(preferredName ? ('Extracting ' + preferredName + '…') : 'Extracting best log file from archive…');
+            return extractErrTextFromTgz(ab, preferredName);
+          });
       }
 
       /**
        * Fetch log via TEN Investigator (token-based, no cookie needed).
-       * Server-side: downloads, extracts, and redacts sensitive keys.
-       * Returns { text, fileName } or throws.
+       * Server returns the archive URL; the browser downloads and extracts the
+       * best log file so large bundles do not hit a serverless timeout.
        */
       function fetchTenErrViaInvestigator(agentId, environment, opts) {
         const onStatus = opts && opts.onStatus ? opts.onStatus : function () {};
@@ -5456,7 +5589,7 @@
           return Promise.reject(new Error('TEN Investigator not available'));
         }
 
-        onStatus('Fetching log from TEN Investigator…');
+        onStatus('Preparing archive from TEN Investigator…');
         return fetch(base + '/api/ten-investigator-fetch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -5490,11 +5623,30 @@
             if (data.error) {
               throw new Error(data.error);
             }
-            if (!data.text) {
-              throw new Error('No log text returned');
+            if (data.text) {
+              onStatus('Log fetched and processed.');
+              return {
+                text: data.text,
+                fileName: data.fileName || ((agentId.slice(0, 12) || 'ten') + '-fetched.err'),
+                archiveBundle: null
+              };
             }
-            onStatus('Log fetched and processed.');
-            return { text: data.text, fileName: data.fileName || ((agentId.slice(0, 12) || 'ten') + '-fetched.err') };
+            if (!data.downloadUrl) {
+              throw new Error('No archive URL returned');
+            }
+            return downloadAndExtractInvestigatorArchive(base, data.downloadUrl, opts && opts.preferredLogName ? opts.preferredLogName : '', onStatus)
+              .then(function (extracted) {
+                onStatus('Log fetched and processed.');
+                return {
+                  text: extracted.text,
+                  fileName: extracted.fileName,
+                  archiveBundle: {
+                    downloadUrl: data.downloadUrl,
+                    candidates: extracted.candidates || [],
+                    selectedName: extracted.selectedName || extracted.fileName
+                  }
+                };
+              });
           });
       }
 
@@ -5874,6 +6026,47 @@
         btn.disabled = !ok;
       }
 
+      function archiveLogOptionLabel(candidate) {
+        if (!candidate) return '';
+        const parts = [candidate.name || candidate.base || 'ten.err'];
+        if (candidate.isDefault) parts.push('default');
+        if (candidate.size != null) parts.push(formatBytes(candidate.size));
+        return parts.join(' · ');
+      }
+
+      function clearArchiveLogSelector() {
+        const wrap = document.getElementById('archiveLogWrap');
+        const select = document.getElementById('archiveLogSelect');
+        if (select) {
+          select.innerHTML = '';
+          select.disabled = true;
+          select.value = '';
+        }
+        if (wrap) wrap.style.display = 'none';
+      }
+
+      function renderArchiveLogSelector(archiveBundle, selectedName) {
+        const wrap = document.getElementById('archiveLogWrap');
+        const select = document.getElementById('archiveLogSelect');
+        if (!wrap || !select) return;
+
+        const candidates = archiveBundle && Array.isArray(archiveBundle.candidates) ? archiveBundle.candidates : [];
+        if (!archiveBundle || !archiveBundle.downloadUrl || candidates.length <= 1) {
+          clearArchiveLogSelector();
+          return;
+        }
+
+        select.innerHTML = candidates.map(function (cand) {
+          const value = escapeHtml(cand.name || cand.base || '');
+          const label = escapeHtml(archiveLogOptionLabel(cand));
+          return '<option value="' + value + '">' + label + '</option>';
+        }).join('');
+        select.disabled = false;
+        const target = selectedName || (state && state.sourceFileName) || (candidates[0] && candidates[0].name) || '';
+        select.value = target;
+        wrap.style.display = 'flex';
+      }
+
       function downloadRawLogFile() {
         if (!state || typeof state.rawLogText !== 'string' || !state.rawLogText.length) return;
         const name = sanitizeLogDownloadFileName(state.sourceFileName || 'ten.err');
@@ -5889,7 +6082,7 @@
         URL.revokeObjectURL(url);
       }
 
-      function onFileLoad(text, fileName) {
+      function onFileLoad(text, fileName, archiveBundle) {
         document.getElementById('parseOverlayMsg').textContent = 'Parsing log…';
         document.getElementById('fileName').textContent = fileName || 'ten.err.log';
         document.getElementById('loading').style.display = 'block';
@@ -5919,6 +6112,11 @@
             summary,
             extensions,
             insights: null,
+            archiveBundle: archiveBundle && archiveBundle.downloadUrl ? {
+              downloadUrl: archiveBundle.downloadUrl,
+              candidates: Array.isArray(archiveBundle.candidates) ? archiveBundle.candidates.slice() : [],
+              selectedName: archiveBundle.selectedName || fileName || ''
+            } : null,
             rawLogText: redactLogText(text),
             sourceFileName: fileName || 'ten.err.log',
             selectedIndex: null,
@@ -6099,6 +6297,7 @@
           document.getElementById('badgeErrors').textContent = summary.errors + ' errors';
           document.getElementById('badgeWarnings').textContent = summary.warnings + ' warnings';
           document.getElementById('badgeEntries').textContent = entries.length + ' entries';
+          renderArchiveLogSelector(state.archiveBundle, state.archiveBundle && state.archiveBundle.selectedName ? state.archiveBundle.selectedName : state.sourceFileName);
 
           const extSelect = document.getElementById('extFilter');
           extSelect.innerHTML = '<option value="">All extensions</option>' +
@@ -6193,6 +6392,42 @@
       if (downloadRawLogBtn) {
         downloadRawLogBtn.addEventListener('click', function () {
           downloadRawLogFile();
+        });
+      }
+
+      const archiveLogSelect = document.getElementById('archiveLogSelect');
+      if (archiveLogSelect) {
+        archiveLogSelect.addEventListener('change', function () {
+          const wanted = (this.value || '').trim();
+          if (!wanted) return;
+          const bundle = state && state.archiveBundle ? state.archiveBundle : null;
+          if (!bundle || !bundle.downloadUrl) return;
+          if (wanted === bundle.selectedName) return;
+
+          const base = getInvestigatorBase();
+          if (!base) {
+            alert('TEN Investigator is not available for archive switching.');
+            return;
+          }
+
+          setParseOverlay(true, 'Switching archive log…');
+          downloadAndExtractInvestigatorArchive(base, bundle.downloadUrl, wanted, function (msg) {
+            setParseOverlay(true, msg);
+          })
+            .then(function (extracted) {
+              onFileLoad(extracted.text, extracted.fileName, {
+                downloadUrl: bundle.downloadUrl,
+                candidates: extracted.candidates || bundle.candidates || [],
+                selectedName: extracted.selectedName || extracted.fileName
+              });
+            })
+            .catch(function (err) {
+              console.error(err);
+              alert('Failed to switch log:\n' + (err && err.message ? err.message : String(err)));
+            })
+            .finally(function () {
+              setParseOverlay(false);
+            });
         });
       }
 
@@ -6478,7 +6713,7 @@
                 source: 'investigator',
                 fileName: result.fileName || ''
               });
-              onFileLoad(result.text, result.fileName);
+              onFileLoad(result.text, result.fileName, result.archiveBundle || null);
               // After log loads, try to fetch audio dumps in background
               fetchAudioDumps(raw, environment);
             })

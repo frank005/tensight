@@ -161,7 +161,7 @@ http.createServer(async (req, res) => {
     return;
   }
 
-  // TEN Investigator full fetch (server-side redaction)
+  // TEN Investigator archive resolution.
   if (url.pathname === '/api/ten-investigator-fetch' && req.method === 'POST') {
     if (!TEN_TOKEN) {
       res.writeHead(503, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
@@ -216,69 +216,14 @@ http.createServer(async (req, res) => {
       return;
     }
     
-    // Step 2: Download the .tgz
-    let dlResp;
-    try {
-      dlResp = await fetch(downloadUrl, { redirect: 'follow' });
-    } catch (e) {
-      res.writeHead(502, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
-      res.end(JSON.stringify({ error: 'Failed to download: ' + (e.message || e) }));
-      return;
-    }
-    if (!dlResp.ok) {
-      res.writeHead(dlResp.status, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
-      res.end(JSON.stringify({ error: 'Download failed: ' + dlResp.status }));
-      return;
-    }
-    const tgzBuf = Buffer.from(await dlResp.arrayBuffer());
-    
-    // Step 3: Decompress and extract
-    const { createGunzip } = await import('zlib');
-    const { promisify } = await import('util');
-    const gunzip = promisify(createGunzip().constructor.prototype.__proto__.constructor.prototype.unzip || require('zlib').gunzip);
-    let tarBuf;
-    try {
-      tarBuf = await new Promise((resolve, reject) => {
-        require('zlib').gunzip(tgzBuf, (err, result) => err ? reject(err) : resolve(result));
-      });
-    } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
-      res.end(JSON.stringify({ error: 'Failed to decompress: ' + (e.message || e) }));
-      return;
-    }
-    
-    // Parse tar
-    const entries = [];
-    let offset = 0;
-    while (offset < tarBuf.length - 512) {
-      const header = tarBuf.slice(offset, offset + 512);
-      if (header[0] === 0) break;
-      const name = header.slice(0, 100).toString('utf8').replace(/\0+$/, '');
-      const sizeOctal = header.slice(124, 136).toString('utf8').replace(/\0+$/, '').trim();
-      const size = parseInt(sizeOctal, 8) || 0;
-      offset += 512;
-      if (size > 0 && name) {
-        entries.push({ name, data: tarBuf.slice(offset, offset + size) });
-      }
-      offset += Math.ceil(size / 512) * 512;
-    }
-    
-    // Pick .err file
-    let errEntry = entries.find(e => /\.err$/i.test(e.name) || e.name.includes('ten.err'));
-    if (!errEntry && entries.length) errEntry = entries[0];
-    if (!errEntry) {
-      res.writeHead(404, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
-      res.end(JSON.stringify({ error: 'No .err file found', files: entries.map(e => e.name) }));
-      return;
-    }
-    
-    // Step 4: Redact
-    const { redactLog } = require('../lib/logRedaction.js');
-    const rawText = errEntry.data.toString('utf8');
-    const redactedText = redactLog(rawText);
-    
     res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders(allow, req, {}) });
-    res.end(JSON.stringify({ success: true, fileName: errEntry.name, text: redactedText }));
+    res.end(JSON.stringify({
+      success: true,
+      agentId,
+      environment,
+      downloadUrl,
+      fileName: extractData.fileName || null
+    }));
     return;
   }
 

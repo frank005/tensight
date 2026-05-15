@@ -2,23 +2,17 @@
  * POST /api/ten-investigator-fetch
  * Body: { agentId, environment?, prefix?, suffix? }
  * 
- * Full server-side pipeline:
+ * Lightweight resolution step:
  * 1. Call investigator extract API
- * 2. Download the .tgz
- * 3. Extract ten.err
- * 4. Redact sensitive keys
- * 5. Return redacted log text
+ * 2. Return the archive URL and metadata so the browser can do the long
+ *    download/extraction work without a serverless timeout.
  */
 const { pickAllowOrigin, applyCorsToRes, readBodyBuffer } = require('../lib/cstoolProxyCore');
 const {
   getInvestigatorHost,
   buildExtractPayload,
   isAllowedDownloadHost,
-  parseTar,
-  pickErrEntry,
 } = require('../lib/tenInvestigatorCore');
-const { redactLog } = require('../lib/logRedaction');
-const zlib = require('zlib');
 
 module.exports = async (req, res) => {
   const allow = pickAllowOrigin(req);
@@ -136,62 +130,17 @@ module.exports = async (req, res) => {
     return;
   }
 
-  // Step 2: Download the .tgz
-  let downloadResp;
-  try {
-    downloadResp = await fetch(downloadUrl, { redirect: 'follow' });
-  } catch (e) {
-    applyCorsToRes(res, allow, req, false);
-    res.statusCode = 502;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ error: 'Failed to download archive: ' + (e.message || e) }));
-    return;
-  }
-
-  if (!downloadResp.ok) {
-    applyCorsToRes(res, allow, req, false);
-    res.statusCode = downloadResp.status;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ error: 'Download failed: ' + downloadResp.status }));
-    return;
-  }
-
-  const tgzBuffer = Buffer.from(await downloadResp.arrayBuffer());
-
-  // Step 3: Extract .tgz (gunzip then parse tar)
-  let tarBuffer;
-  try {
-    tarBuffer = zlib.gunzipSync(tgzBuffer);
-  } catch (e) {
-    applyCorsToRes(res, allow, req, false);
-    res.statusCode = 500;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ error: 'Failed to decompress archive: ' + (e.message || e) }));
-    return;
-  }
-
-  const entries = parseTar(tarBuffer);
-  const errEntry = pickErrEntry(entries);
-
-  if (!errEntry) {
-    applyCorsToRes(res, allow, req, false);
-    res.statusCode = 404;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ error: 'No .err file found in archive', files: entries.map(e => e.name) }));
-    return;
-  }
-
-  // Step 4: Redact sensitive keys
-  const rawText = errEntry.data.toString('utf8');
-  const redactedText = redactLog(rawText);
-
-  // Step 5: Return redacted log
+  // Return a lightweight result so the browser can do the long fetch and
+  // archive extraction without a serverless timeout.
   applyCorsToRes(res, allow, req, false);
   res.statusCode = 200;
   res.setHeader('Content-Type', 'application/json');
   res.end(JSON.stringify({
     success: true,
-    fileName: errEntry.name,
-    text: redactedText
+    agentId,
+    environment,
+    downloadUrl,
+    fileName: extractData.fileName || null,
+    files: Array.isArray(extractData.files) ? extractData.files : undefined
   }));
 };
