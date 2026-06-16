@@ -1837,26 +1837,19 @@
       /**
        * New ten-runtime `key_point` events: `I key_point <func>@<file>:<line> [tag] <payload>`.
        * Purely additive — runs alongside `extractKeypointEvents` so the legacy "Events" tab is untouched.
-       * Categorizes lines into buckets the Keypoints tab knows how to render; anything we don't
-       * recognise lands in `generic` so future runtime additions stay visible.
+       * Only retains high-signal buckets for the Keypoints tab; routine extension/ASR/TTS/RTC
+       * key_point spam is ignored (search the raw log for those).
        */
       function extractTenKeyPoints(entries) {
         const out = {
           think: [],
           turnFinished: [],
           turnFinishedMetrics: [],
-          interruptPolicy: [],
-          independentState: [],
-          orchestrator: [],
-          soseos: [],
-          postTts: [],
-          preTts: [],
-          generic: []
+          interruptPolicy: []
         };
         // Anchored at "key_point <func>@<file>:<line>" so the word appearing inside other
         // payloads (e.g. an arbitrary JSON containing "key_point": ...) can't false-positive.
         const re = /\bkey_point\s+([A-Za-z_][\w]*)@([\w./-]+):(\d+)\s*(?:\[([^\]]+)\])?\s*(.*)$/;
-        const reIndependentHandoff = /handoff to playback turn_id=(\d+) for (\w+) state changed from (\w+) to (\w+)/;
         const reTurnTag = /\[turn\.finished(?:\.([\w_.]+))?\]/;
         for (let i = 0; i < entries.length; i++) {
           const e = entries[i];
@@ -1871,8 +1864,7 @@
           const base = { ts: e.ts, func: func, file: file, line: line, tag: tag, ext: e.ext, level: e.level, msg: e.msg, rest: rest, entryIndex: i };
 
           // Skip the legacy `KEYPOINT [event_type:...]` wrappers — those still belong to
-          // extractKeypointEvents and the Events tab; we shouldn't double-count them in the
-          // generic catch-all.
+          // extractKeypointEvents and the Events tab.
           if (/^KEYPOINT\s*\[event_type:/.test(rest)) continue;
 
           // /think decisions — JSON payload after the "think_api_decision" tag.
@@ -1907,44 +1899,10 @@
             continue;
           }
 
-          // Independent-state hand-off lines: not a snapshot themselves, but bind a turn_id
-          // to whichever axis flipped. We pair these with the parallel non-key_point
-          // `IndependentStateManager state changed` snapshots in extractIndependentStateTransitions.
-          if (func === '_handle_independent_state_changed') {
-            const hm = rest.match(reIndependentHandoff);
-            out.independentState.push(Object.assign({}, base, {
-              turn_id: hm ? parseInt(hm[1], 10) : null,
-              axis: hm ? hm[2] : null,
-              old: hm ? hm[3] : null,
-              new: hm ? hm[4] : null
-            }));
-            continue;
-          }
+          // Independent-state hand-off lines are joined in extractIndependentStateTransitions.
+          if (func === '_handle_independent_state_changed') continue;
 
-          // Orchestrator modules (only key_point-prefixed lines reach this branch).
-          if (/orchestrator\.py$/.test(file) || /_orchestrator$/.test(func)) {
-            out.orchestrator.push(Object.assign({}, base, { module: file.replace(/\.py$/, '') }));
-            continue;
-          }
-
-          // soseos config + per-utterance sos/eos summary lines.
-          if (func === '_setup_soseos_config' || func === '_send_soseos_event' || /soseos/i.test(rest)) {
-            out.soseos.push(base);
-            continue;
-          }
-
-          // Pre/post TTS process manager trackers.
-          if (/post_tts_process_manager\.py$/.test(file)) {
-            out.postTts.push(base);
-            continue;
-          }
-          if (/pre_tts_process_manager\.py$/.test(file)) {
-            out.preTts.push(base);
-            continue;
-          }
-
-          // Anything else — future-proof catch-all so new key_point lines stay visible.
-          out.generic.push(base);
+          // Routine pipeline / extension key_points — not surfaced in Keypoints (use log search).
         }
         return out;
       }
@@ -2022,10 +1980,9 @@
       }
 
       /** Render caps for ten-runtime key_point tables (500MB logs can have thousands of lines). */
-      const TEN_KP_GENERIC_RENDER_LIMIT = 300;
-      const TEN_KP_COMBO_RENDER_LIMIT = 300;
       const TEN_KP_IST_RENDER_LIMIT = 500;
       const TEN_KP_JSON_INLINE_MAX = 4096;
+      const TEN_KP_SECTION_DEFAULT_OPEN = false;
       let tenKeyPointsDomBuilt = false;
 
       function _tenkpClipText(s, n) {
@@ -2056,12 +2013,7 @@
         return !!(
           (tkp.think && tkp.think.length) ||
           (tkp.turnFinished && tkp.turnFinished.length) ||
-          (tkp.interruptPolicy && tkp.interruptPolicy.length) ||
-          (tkp.orchestrator && tkp.orchestrator.length) ||
-          (tkp.soseos && tkp.soseos.length) ||
-          (tkp.preTts && tkp.preTts.length) ||
-          (tkp.postTts && tkp.postTts.length) ||
-          (tkp.generic && tkp.generic.length)
+          (tkp.interruptPolicy && tkp.interruptPolicy.length)
         );
       }
 
@@ -2073,6 +2025,7 @@
         if (!tenKeyPointsHasRenderableContent(insights)) return '';
 
         let html = '';
+        const tkpSec = { defaultOpen: TEN_KP_SECTION_DEFAULT_OPEN };
         if (tkp && tkp.think && tkp.think.length) {
           let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
             + insightHeaderRow(['Time','Turn','Effective state','Selected action','Should interrupt','Should allocate turn','Source','Text preview','Payload'])
@@ -2105,7 +2058,7 @@
               + '</tr>';
           }
           body += '</tbody></table>';
-          html += insightSection('ncs:think', 'External /think decisions', tkp.think.length + ' decision' + (tkp.think.length === 1 ? '' : 's'), body);
+          html += insightSection('ncs:think', 'External /think decisions', tkp.think.length + ' decision' + (tkp.think.length === 1 ? '' : 's'), body, tkpSec);
         }
 
         if (tkp && tkp.turnFinished && tkp.turnFinished.length) {
@@ -2160,7 +2113,7 @@
             seg += '</tbody></table>';
             body += '<div class="insight-subtable">' + seg + '</div>';
           }
-          html += insightSection('ncs:turnFinished', 'Turn finished summary', tkp.turnFinished.length + ' turn' + (tkp.turnFinished.length === 1 ? '' : 's'), body);
+          html += insightSection('ncs:turnFinished', 'Turn finished summary', tkp.turnFinished.length + ' turn' + (tkp.turnFinished.length === 1 ? '' : 's'), body, tkpSec);
         }
 
         if (istAll.length) {
@@ -2187,7 +2140,7 @@
               + istAll.length + ' transitions.</td></tr>';
           }
           body += '</tbody></table>';
-          html += insightSection('ncs:independentState', 'IndependentStateManager transitions', istAll.length + ' transition' + (istAll.length === 1 ? '' : 's'), body);
+          html += insightSection('ncs:independentState', 'IndependentStateManager transitions', istAll.length + ' transition' + (istAll.length === 1 ? '' : 's'), body, tkpSec);
         }
 
         if (tkp && tkp.interruptPolicy && tkp.interruptPolicy.length) {
@@ -2207,70 +2160,7 @@
               + '</tr>';
           }
           body += '</tbody></table>';
-          html += insightSection('ncs:interruptPolicy', 'Assistant interrupt policy', tkp.interruptPolicy.length + ' policy event' + (tkp.interruptPolicy.length === 1 ? '' : 's'), body);
-        }
-
-        if (tkp) {
-          const combo = [];
-          for (const r of (tkp.orchestrator || [])) combo.push(Object.assign({}, r, { module: r.module || (r.file ? r.file.replace(/\.py$/, '') : 'orchestrator') }));
-          for (const r of (tkp.soseos || [])) combo.push(Object.assign({}, r, { module: 'soseos' }));
-          for (const r of (tkp.preTts || [])) combo.push(Object.assign({}, r, { module: 'pre_tts_process_manager' }));
-          for (const r of (tkp.postTts || [])) combo.push(Object.assign({}, r, { module: 'post_tts_process_manager' }));
-          if (combo.length) {
-            combo.sort(function (a, b) {
-              const ta = parseLogTs(a.ts || '') || 0;
-              const tb = parseLogTs(b.ts || '') || 0;
-              return ta - tb;
-            });
-            const comboAll = combo;
-            const comboShown = comboAll.length > TEN_KP_COMBO_RENDER_LIMIT ? comboAll.slice(0, TEN_KP_COMBO_RENDER_LIMIT) : comboAll;
-            let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
-              + insightHeaderRow(['Time','Module','Function','Message preview'])
-              + '</tr></thead><tbody>';
-            for (const r of comboShown) {
-              const tsAttr = escapeHtml(r.ts || '');
-              const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
-              body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
-                + '<td>' + escapeHtml(r.ts || '') + '</td>'
-                + '<td>' + escapeHtml(r.module || '—') + '</td>'
-                + '<td>' + escapeHtml(r.func || '—') + '</td>'
-                + '<td>' + escapeHtml(_tenkpClipText(r.rest || '', 160)) + '</td>'
-                + '</tr>';
-            }
-            if (comboAll.length > TEN_KP_COMBO_RENDER_LIMIT) {
-              body += '<tr><td colspan="4" class="insight-empty">Showing first ' + TEN_KP_COMBO_RENDER_LIMIT + ' of '
-                + comboAll.length + ' events.</td></tr>';
-            }
-            body += '</tbody></table>';
-            html += insightSection('ncs:orchestrator', 'Orchestrator / soseos / pre-/post-tts activity', comboAll.length + ' event' + (comboAll.length === 1 ? '' : 's'), body, { defaultOpen: false });
-          }
-        }
-
-        if (tkp && tkp.generic && tkp.generic.length) {
-          const genericAll = tkp.generic;
-          const genericShown = genericAll.length > TEN_KP_GENERIC_RENDER_LIMIT
-            ? genericAll.slice(0, TEN_KP_GENERIC_RENDER_LIMIT)
-            : genericAll;
-          let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
-            + insightHeaderRow(['Time','func','file:line','tag','payload preview'])
-            + '</tr></thead><tbody>';
-          for (const r of genericShown) {
-            const tsAttr = escapeHtml(r.ts || '');
-            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
-            body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
-              + '<td>' + escapeHtml(r.ts || '') + '</td>'
-              + '<td>' + escapeHtml(r.func || '—') + '</td>'
-              + '<td>' + escapeHtml((r.file || '') + ':' + (r.line != null ? r.line : '')) + '</td>'
-              + '<td>' + escapeHtml(r.tag || '—') + '</td>'
-              + '<td>' + escapeHtml(_tenkpClipText(r.rest || '', 160)) + '</td>'
-              + '</tr>';
-          }
-          if (genericAll.length > TEN_KP_GENERIC_RENDER_LIMIT) {
-            body += '<tr><td colspan="5" class="insight-empty">Showing first ' + TEN_KP_GENERIC_RENDER_LIMIT + ' of '
-              + genericAll.length + ' events. Search the Raw log for <code>key_point</code> to find the rest.</td></tr>';
-          }
-          body += '</tbody></table>';
-          html += insightSection('ncs:genericKeyPoints', 'Other key_point events', genericAll.length + ' event' + (genericAll.length === 1 ? '' : 's'), body, { defaultOpen: false });
+          html += insightSection('ncs:interruptPolicy', 'Assistant interrupt policy', tkp.interruptPolicy.length + ' policy event' + (tkp.interruptPolicy.length === 1 ? '' : 's'), body, tkpSec);
         }
 
         return html;
