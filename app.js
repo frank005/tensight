@@ -400,10 +400,34 @@
         return null;
       }
 
+      const INFERRED_FROM_LOG = '(unknown — not in log)';
+
+      function hasLogValue(v) {
+        if (v == null) return false;
+        if (typeof v === 'string') return v.trim() !== '';
+        if (Array.isArray(v)) return v.length > 0;
+        return true;
+      }
+
+      function fromLogOrUnknown(v) {
+        return hasLogValue(v) ? v : INFERRED_FROM_LOG;
+      }
+
+      function hasOwn(obj, key) {
+        return obj && typeof obj === 'object' && Object.prototype.hasOwnProperty.call(obj, key);
+      }
+
       function inferConvoAiJoinSchemaFromGraph(graph) {
         if (!graph || !Array.isArray(graph.nodes)) return null;
         function node(name) {
           return graph.nodes.find(function (n) { return n && n.name === name && n.property; }) || null;
+        }
+        function nodeAny(names) {
+          for (let i = 0; i < names.length; i++) {
+            const n = node(names[i]);
+            if (n) return n;
+          }
+          return null;
         }
         const context = node('context');
         const vad = node('vad');
@@ -420,6 +444,13 @@
         if (!graph || !Array.isArray(graph.nodes)) return null;
         function node(name) {
           return graph.nodes.find(function (n) { return n && n.name === name && n.property; }) || null;
+        }
+        function nodeAny(names) {
+          for (let i = 0; i < names.length; i++) {
+            const n = node(names[i]);
+            if (n) return n;
+          }
+          return null;
         }
         function clone(v) {
           if (v == null) return v;
@@ -446,8 +477,8 @@
           return out;
         }
 
-        const rtc = node('rtc');
-        const rtm = node('rtm');
+        const rtc = nodeAny(['rtc', 'agora_rtc']);
+        const rtm = nodeAny(['rtm', 'agora_rtm']);
         const llm = node('llm');
         const tts = node('tts');
         const asr = node('asr');
@@ -481,18 +512,27 @@
         const orchestrator = mainp.llm_orchestrator || {};
         const filler = orchestrator.filler_words || {};
 
+        const channelRaw = rtcp.channel || rtmp.channel || contextp.channel;
+        const tokenRaw = rtcp.token || rtmp.token;
+        const agentRtcUidRaw = rtmp.user_id != null && rtmp.user_id !== ''
+          ? String(rtmp.user_id)
+          : (rtcp.user_id != null && rtcp.user_id !== '' ? String(rtcp.user_id) : null);
+        const remoteRtcUidsRaw = Array.isArray(rtcp.subscribe_remote_user_ids) && rtcp.subscribe_remote_user_ids.length
+          ? clone(rtcp.subscribe_remote_user_ids)
+          : null;
+
         const props = {
-          channel: rtcp.channel || rtmp.channel || contextp.channel || '',
-          token: rtcp.token || rtmp.token || '',
-          agent_rtc_uid: rtmp.user_id != null && rtmp.user_id !== '' ? String(rtmp.user_id) : (rtcp.user_id != null ? String(rtcp.user_id) : ''),
-          remote_rtc_uids: Array.isArray(rtcp.subscribe_remote_user_ids) && rtcp.subscribe_remote_user_ids.length ? clone(rtcp.subscribe_remote_user_ids) : ['*'],
-          enable_string_uid: rtcp.enable_string_uid === true,
+          channel: fromLogOrUnknown(channelRaw),
+          token: fromLogOrUnknown(tokenRaw),
+          agent_rtc_uid: fromLogOrUnknown(agentRtcUidRaw),
+          remote_rtc_uids: remoteRtcUidsRaw != null ? remoteRtcUidsRaw : INFERRED_FROM_LOG,
+          enable_string_uid: hasOwn(rtcp, 'enable_string_uid') ? rtcp.enable_string_uid === true : INFERRED_FROM_LOG,
           idle_timeout: iftttp.idle_duration != null ? iftttp.idle_duration : null,
           parameters: {
             enable_dump: contextp.enable_dump === true
           },
           turn_detection: {
-            type: 'agora_vad',
+            type: vad ? 'agora_vad' : INFERRED_FROM_LOG,
             interrupt_mode: contextp.interrupt_mode || null,
             silence_duration_ms: eosAcoustic.silence_duration_ms != null ? eosAcoustic.silence_duration_ms : (eosSemantic.silence_duration_ms != null ? eosSemantic.silence_duration_ms : null),
             interrupt_duration_ms: sosVad.interrupt_duration_ms != null ? sosVad.interrupt_duration_ms : (sosSemantic.interrupt_duration_ms != null ? sosSemantic.interrupt_duration_ms : null),
@@ -500,12 +540,11 @@
             prefix_padding_ms: sosVad.prefix_padding_ms != null ? sosVad.prefix_padding_ms : (sosSemantic.prefix_padding_ms != null ? sosSemantic.prefix_padding_ms : null)
           },
           advanced_features: {
-            enable_aivad: aivadp.enable === true,
-            enable_rtm: rtmp.rtm_enabled === true
+            enable_aivad: hasOwn(aivadp, 'enable') ? aivadp.enable === true : INFERRED_FROM_LOG,
+            enable_rtm: hasOwn(rtmp, 'rtm_enabled') ? rtmp.rtm_enabled === true : INFERRED_FROM_LOG
           },
           llm: {
-            url: llmp.url || '',
-            api_key: llmp.api_key || '',
+            url: fromLogOrUnknown(llmp.url),
             system_messages: Array.isArray(llmp.system_messages) ? clone(llmp.system_messages) : [],
             greeting_message: iftttp.greeting_message || '',
             failure_message: iftttp.failure_message || '',
@@ -513,15 +552,15 @@
             params: llmp.params ? clone(llmp.params) : {}
           },
           asr: {
-            vendor: vendorFromAddon(asr && asr.addon),
-            params: pickObjectFields(asrp.params, ['url', 'model', 'language', 'key', 'api_key'])
+            vendor: vendorFromAddon(asr && asr.addon) || INFERRED_FROM_LOG,
+            params: pickObjectFields(asrp.params, ['url', 'model', 'language'])
           },
           tts: {
-            vendor: vendorFromAddon(tts && tts.addon),
-            params: pickObjectFields(ttsp.params, ['base_url', 'url', 'model', 'sample_rate', 'voice_id', 'voice', 'speaker', 'key', 'api_key'])
+            vendor: vendorFromAddon(tts && tts.addon) || INFERRED_FROM_LOG,
+            params: pickObjectFields(ttsp.params, ['base_url', 'url', 'model', 'sample_rate', 'voice_id', 'voice', 'speaker'])
           },
           filler_words: {
-            enable: filler.enable === true
+            enable: hasOwn(filler, 'enable') ? filler.enable === true : INFERRED_FROM_LOG
           }
         };
 
@@ -529,10 +568,10 @@
           if (props.turn_detection[k] == null) delete props.turn_detection[k];
         });
         if (props.idle_timeout == null) delete props.idle_timeout;
-        return {
-          name: collectorp.agent_name || contextp.agent_name || llmp.agent_name || '',
+        return redactSecrets({
+          name: fromLogOrUnknown(collectorp.agent_name || contextp.agent_name || llmp.agent_name),
           properties: props
-        };
+        });
       }
 
       function parseLines(text) {
@@ -1045,7 +1084,7 @@
               j = tryParsePythonDict(e.msg);
             }
             if (j && typeof j === 'object' && j.properties && typeof j.properties === 'object' && j.properties.llm && j.properties.tts && j.properties.asr) {
-              summary.createRequestBody = j;
+              summary.createRequestBody = redactSecrets(j);
               summary.createRequestBodySource = 'logged request body';
               summary.createRequestBodySchema = inferConvoAiJoinSchemaFromBody(j);
               const p = j.properties;
@@ -3777,7 +3816,7 @@
         function walk(v, k) {
           if (v == null) return v;
           const key = (k || '').toString();
-          if (key && /(api[_-]?key|token|authorization|access[_-]?key|secret|password|bearer)/i.test(key)) {
+          if (key && /^(api[_-]?key|token|authorization|access[_-]?key|secret|password|bearer|key|private[_-]?key|client[_-]?secret|credential|auth_token)$/i.test(key)) {
             return '***';
           }
           if (typeof v !== 'object') return v;
@@ -3794,7 +3833,9 @@
       function redactInlineSecrets(msg) {
         if (!msg || typeof msg !== 'string') return '';
         let s = msg;
-        s = s.replace(/(['"]?(?:api[_-]?key|access[_-]?key|secret|password|authorization|bearer|token)['"]?\s*[:=]\s*)['"][^'"]*['"]/gi, '$1"***"');
+        s = s.replace(/(['"]?(?:api[_-]?key|access[_-]?key|secret|password|authorization|bearer|token|key|client[_-]?secret|credential)['"]?\s*[:=]\s*)['"][^'"]*['"]/gi, '$1"***"');
+        s = s.replace(/\b(api[_-]?key|access[_-]?key|client[_-]?secret|credential)\s*=\s*([^\s,}'"]+)/gi, '$1=***');
+        s = s.replace(/\bkey\s*=\s*([^\s,}'"]+)/gi, 'key=***');
         s = s.replace(/(\btoken\b\s*[:=]\s*)[^\s,}]+/gi, '$1***');
         return s;
       }
