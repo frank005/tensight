@@ -1240,9 +1240,13 @@
     #insightPanels { flex: 1; min-height: 0; overflow: hidden; }
     .insight-tab-panel { display: none; padding: 16px; overflow-y: auto; height: 100%; }
     .insight-tab-panel.active { display: block; }
-    .turns-toolbar { margin-bottom: 10px; }
+    .turns-toolbar { margin-bottom: 10px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
     .turns-toolbar label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted); cursor: pointer; }
     .turns-toolbar input[type="checkbox"] { cursor: pointer; }
+    .turns-toolbar-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .turns-export-btn { font-size: 12px; padding: 6px 10px; border-radius: var(--radius); border: 1px solid var(--border); cursor: pointer; }
+    .turns-export-btn.secondary { background: var(--border); color: var(--text); }
+    .turns-export-btn.secondary:hover { border-color: var(--accent); color: var(--accent); }
     .insight-filter { margin-bottom: 12px; }
     .insight-filter input { width: 100%; max-width: 320px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 13px; }
     .log-view { min-height: 0; min-width: 0; display: none; flex-direction: column; overflow: hidden; flex: 1; }

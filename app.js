@@ -3524,6 +3524,51 @@
         return finalList;
       }
 
+      function getVisibleTurnsList() {
+        const insights = state && state.insights;
+        if (!insights) return [];
+        let list = buildTurnsList(insights);
+        const cb = document.getElementById('turnsFinalOnly');
+        if (cb && cb.checked) list = list.filter(function (r) { return r.final !== false; });
+        return list;
+      }
+
+      function formatTurnsTranscript(rows) {
+        if (!rows || !rows.length) return '';
+        const blocks = [];
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i];
+          const turn = row.turn != null ? row.turn : '—';
+          const speaker = row.speaker || '—';
+          const time = row.ts || '—';
+          const interrupted = row.interrupted ? 'yes' : 'no';
+          const text = String(row.text || '').replace(/\r\n/g, '\n').trim();
+          blocks.push('Turn ' + turn + ' | ' + speaker + ' | ' + time + ' | interrupted: ' + interrupted);
+          blocks.push(text || '(no text)');
+          blocks.push('');
+        }
+        return blocks.join('\n').trimEnd() + '\n';
+      }
+
+      function turnsTranscriptFileName() {
+        const base = sanitizeLogDownloadFileName(state && state.sourceFileName ? state.sourceFileName : 'ten.err');
+        const stem = base.replace(/\.[^.]+$/, '') || base;
+        return stem + '-turns-transcript.txt';
+      }
+
+      function downloadTextFile(fileName, content) {
+        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+
       function renderEntry(entry, index, isSelected, searchRaw) {
         const isRelevant = entry.msg && (
           /llm failure|Something went wrong|Request failed|on_request_exception|ncs on_agent_left|Failed too many times|No app certificate provided|TokenManager not initialized|Requested time .* exceeds timeline duration|vendor_error:|send asr_error:|tts_error:|send_tts_error|Websocket internal error|server rejected WebSocket|HTTP 401|base_dir of 'tts' is missing|500 Internal Server Error|Failed to send message/i.test(entry.msg)
@@ -4023,7 +4068,12 @@
         const turnsList = buildTurnsList(insights);
         html += '<div class="insight-tab-panel" data-panel="turns">';
         if (turnsList.length) {
-          html += '<div class="turns-toolbar"><label title="Hides user rows marked non-final (interim ASR). Agent and other turns stay listed."><input type="checkbox" id="turnsFinalOnly" /> Hide interim user ASR</label></div>';
+          html += '<div class="turns-toolbar">'
+            + '<label title="Hides user rows marked non-final (interim ASR). Agent and other turns stay listed."><input type="checkbox" id="turnsFinalOnly" /> Hide interim user ASR</label>'
+            + '<div class="turns-toolbar-actions">'
+            + '<button type="button" class="turns-export-btn secondary" id="exportTurnsTranscriptCopy" title="Copy turn, speaker, time, interrupted, and text as plain text">Copy transcript</button>'
+            + '<button type="button" class="turns-export-btn secondary" id="exportTurnsTranscriptDownload" title="Download turn transcript as a .txt file">Download transcript</button>'
+            + '</div></div>';
           html += '<table id="turnsTable" class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Turn','Speaker','Time','Source','Interrupted','Text','Final','STT conf','Start (ms)','Duration (ms)','Language']) + '</tr></thead><tbody>';
           for (const row of turnsList) {
             html += buildTurnRowHtml(row);
@@ -7807,6 +7857,25 @@
       });
 
       document.getElementById('insightsContent').addEventListener('click', function (ev) {
+        const exportCopyBtn = ev.target.closest && ev.target.closest('#exportTurnsTranscriptCopy');
+        if (exportCopyBtn) {
+          ev.stopPropagation();
+          const rows = getVisibleTurnsList();
+          if (!rows.length) return;
+          copyText(formatTurnsTranscript(rows));
+          const orig = exportCopyBtn.textContent;
+          exportCopyBtn.textContent = 'Copied!';
+          setTimeout(function () { exportCopyBtn.textContent = orig; }, 1200);
+          return;
+        }
+        const exportDlBtn = ev.target.closest && ev.target.closest('#exportTurnsTranscriptDownload');
+        if (exportDlBtn) {
+          ev.stopPropagation();
+          const rows = getVisibleTurnsList();
+          if (!rows.length) return;
+          downloadTextFile(turnsTranscriptFileName(), formatTurnsTranscript(rows));
+          return;
+        }
         // Copy / jump controls inside the System prompt card. Intercept first
         // so the generic table-row jump handler below doesn't also fire.
         const copyBtn = ev.target.closest && ev.target.closest('.system-prompt-copy');
