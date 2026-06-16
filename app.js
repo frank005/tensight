@@ -1835,6 +1835,193 @@
       }
 
       /**
+       * New ten-runtime `key_point` events: `I key_point <func>@<file>:<line> [tag] <payload>`.
+       * Purely additive — runs alongside `extractKeypointEvents` so the legacy "Events" tab is untouched.
+       * Categorizes lines into buckets the Keypoints tab knows how to render; anything we don't
+       * recognise lands in `generic` so future runtime additions stay visible.
+       */
+      function extractTenKeyPoints(entries) {
+        const out = {
+          think: [],
+          turnFinished: [],
+          turnFinishedMetrics: [],
+          interruptPolicy: [],
+          independentState: [],
+          orchestrator: [],
+          soseos: [],
+          postTts: [],
+          preTts: [],
+          generic: []
+        };
+        // Anchored at "key_point <func>@<file>:<line>" so the word appearing inside other
+        // payloads (e.g. an arbitrary JSON containing "key_point": ...) can't false-positive.
+        const re = /\bkey_point\s+([A-Za-z_][\w]*)@([\w./-]+):(\d+)\s*(?:\[([^\]]+)\])?\s*(.*)$/;
+        const reIndependentHandoff = /handoff to playback turn_id=(\d+) for (\w+) state changed from (\w+) to (\w+)/;
+        const reTurnTag = /\[turn\.finished(?:\.([\w_.]+))?\]/;
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i];
+          if (!e || !e.msg) continue;
+          const m = e.msg.match(re);
+          if (!m) continue;
+          const func = m[1];
+          const file = m[2];
+          const line = parseInt(m[3], 10);
+          const tag = m[4] || e.ext || null;
+          const rest = m[5] || '';
+          const base = { ts: e.ts, func: func, file: file, line: line, tag: tag, ext: e.ext, level: e.level, msg: e.msg, rest: rest, entryIndex: i };
+
+          // Skip the legacy `KEYPOINT [event_type:...]` wrappers — those still belong to
+          // extractKeypointEvents and the Events tab; we shouldn't double-count them in the
+          // generic catch-all.
+          if (/^KEYPOINT\s*\[event_type:/.test(rest)) continue;
+
+          // /think decisions — JSON payload after the "think_api_decision" tag.
+          if (func === '_log_external_think_decision' || /think_api_decision\b/.test(rest)) {
+            const j = tryParseJSON(rest);
+            out.think.push(Object.assign({}, base, { kind: 'think_api_decision', payload: j }));
+            continue;
+          }
+          if (file === 'think_api_manager.py' || /\bhandle_external_think\b/.test(func)) {
+            const j = tryParseJSON(rest);
+            out.think.push(Object.assign({}, base, { kind: 'think_api_event', payload: j }));
+            continue;
+          }
+
+          // Per-turn finished summary (and the parallel `metric_details` companion line).
+          if (func === '_log_key_point_event' && /turn_finished_event_emitter\.py$/.test(file)) {
+            const tm = rest.match(reTurnTag);
+            const variant = tm ? (tm[1] || 'summary') : 'summary';
+            const j = tryParseJSON(rest);
+            if (variant === 'metric_details') {
+              out.turnFinishedMetrics.push(Object.assign({}, base, { variant: variant, payload: j }));
+            } else {
+              out.turnFinished.push(Object.assign({}, base, { variant: variant, payload: j }));
+            }
+            continue;
+          }
+
+          // Per-turn interrupt policy — Python-dict literal (single-quoted keys).
+          if (func === '_send_assistant_interrupt_policy') {
+            const j = tryParsePythonDict(rest) || tryParseJSON(rest);
+            out.interruptPolicy.push(Object.assign({}, base, { payload: j }));
+            continue;
+          }
+
+          // Independent-state hand-off lines: not a snapshot themselves, but bind a turn_id
+          // to whichever axis flipped. We pair these with the parallel non-key_point
+          // `IndependentStateManager state changed` snapshots in extractIndependentStateTransitions.
+          if (func === '_handle_independent_state_changed') {
+            const hm = rest.match(reIndependentHandoff);
+            out.independentState.push(Object.assign({}, base, {
+              turn_id: hm ? parseInt(hm[1], 10) : null,
+              axis: hm ? hm[2] : null,
+              old: hm ? hm[3] : null,
+              new: hm ? hm[4] : null
+            }));
+            continue;
+          }
+
+          // Orchestrator modules (only key_point-prefixed lines reach this branch).
+          if (/orchestrator\.py$/.test(file) || /_orchestrator$/.test(func)) {
+            out.orchestrator.push(Object.assign({}, base, { module: file.replace(/\.py$/, '') }));
+            continue;
+          }
+
+          // soseos config + per-utterance sos/eos summary lines.
+          if (func === '_setup_soseos_config' || func === '_send_soseos_event' || /soseos/i.test(rest)) {
+            out.soseos.push(base);
+            continue;
+          }
+
+          // Pre/post TTS process manager trackers.
+          if (/post_tts_process_manager\.py$/.test(file)) {
+            out.postTts.push(base);
+            continue;
+          }
+          if (/pre_tts_process_manager\.py$/.test(file)) {
+            out.preTts.push(base);
+            continue;
+          }
+
+          // Anything else — future-proof catch-all so new key_point lines stay visible.
+          out.generic.push(base);
+        }
+        return out;
+      }
+
+      /**
+       * Multi-axis IndependentStateManager transitions. Two parallel sources, neither of
+       * which is captured by `extractStateTransitions`:
+       *  - `I _set_state@independent_state_manager.py:245 ... IndependentStateManager state changed: <axis> <old> -> <new>, snapshot={...}`
+       *  - `I key_point _handle_independent_state_changed@extension.py:2081 ... handoff to playback turn_id=N for <axis> ...`
+       * We join the two by timestamp proximity so each axis transition also reports its turn_id +
+       * effective_state. If no handoff line matches we still surface the snapshot — `turn_id` is null.
+       */
+      function extractIndependentStateTransitions(entries) {
+        const rows = [];
+        const handoffs = [];
+        const reSnapshot = /IndependentStateManager state changed:\s*(\w+)\s+(\w+)\s*->\s*(\w+)\s*,\s*snapshot=(\{[^}]*\})/;
+        const reHandoff = /key_point\s+_handle_independent_state_changed@\S+\s*(?:\[[^\]]+\])?\s*handoff to playback turn_id=(\d+) for (\w+) state changed from (\w+) to (\w+)/;
+        const reEffective = /'effective_state'\s*:\s*'([^']+)'/;
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i];
+          if (!e || !e.msg) continue;
+          if (e.msg.indexOf('IndependentStateManager state changed') >= 0) {
+            const sm = e.msg.match(reSnapshot);
+            if (sm) {
+              const snap = tryParseJSON(sm[4]) || {};
+              rows.push({
+                ts: e.ts,
+                tsMs: parseLogTs(e.ts),
+                axis: sm[1],
+                old: sm[2],
+                new: sm[3],
+                listening: !!snap.listening,
+                thinking: !!snap.thinking,
+                speaking: !!snap.speaking,
+                effective_state: null,
+                turn_id: null,
+                entryIndex: i
+              });
+            }
+            continue;
+          }
+          if (e.msg.indexOf('_handle_independent_state_changed') >= 0) {
+            const hm = e.msg.match(reHandoff);
+            if (hm) {
+              handoffs.push({
+                tsMs: parseLogTs(e.ts),
+                turn_id: parseInt(hm[1], 10),
+                axis: hm[2],
+                old: hm[3],
+                new: hm[4]
+              });
+            }
+            // Pick up the companion D-level snapshot that carries effective_state via Python dict.
+            const eff = e.msg.match(reEffective);
+            if (eff && rows.length) {
+              for (let r = rows.length - 1; r >= 0; r--) {
+                const dt = Math.abs(parseLogTs(e.ts) - rows[r].tsMs);
+                if (dt > 250) break;
+                if (rows[r].effective_state == null) { rows[r].effective_state = eff[1]; break; }
+              }
+            }
+          }
+        }
+        // Join handoffs to snapshots by axis + closest timestamp (within 250ms).
+        for (const h of handoffs) {
+          let best = -1, bestDt = Infinity;
+          for (let r = 0; r < rows.length; r++) {
+            if (rows[r].axis !== h.axis) continue;
+            const dt = Math.abs(rows[r].tsMs - h.tsMs);
+            if (dt < bestDt && dt <= 250) { bestDt = dt; best = r; }
+          }
+          if (best >= 0 && rows[best].turn_id == null) rows[best].turn_id = h.turn_id;
+        }
+        return rows;
+      }
+
+      /**
        * RTC / Agora: graph routing failures, cert/token manager, and SDK connection errors.
        * Skips routine I/D traffic; W-level SDK lines only when they look like real issues.
        */
@@ -2274,7 +2461,7 @@
        *    - report_controller JSON is the *reported* E2E, so it overwrites vad/bhvs_delay and sets end_to_end_reported_ms.
        *    - All other sources (metric_message, per-event regex) fill missing values but never overwrite.
        *  No synthetic defaults are ever inserted — if a value is not logged, it stays null (→ rendered as N/A). */
-      function extractPerformanceMetrics(entries) {
+      function extractPerformanceMetrics(entries, turnFinishedMetrics) {
         const byTurn = {};
         /* `connect times:` is logged on the llm extension thread without a turn_id; we pair it with the *next* glue ttfb
          * line on the same thread.  We also track when the pending value was captured so a stale one (e.g. after an aborted
@@ -2411,6 +2598,50 @@
               if (row.bhvs_delay == null) row.bhvs_delay = parseInt(latM[1], 10);
               setTs(turnId);
             }
+          }
+        }
+        // Additive second pass: enrich rows from the new ten-runtime
+        // `[turn.finished.metric_details]` payload. First-wins precedence is
+        // preserved — we only fill fields the existing pass left null, so the
+        // long-standing `[report_controller]` / metric_message wins keep winning.
+        // The 3 new fields (real_e2e_latency_ms, net_internal_e2e_latency_ms,
+        // playback_duration_ms) are not emitted by the old pipeline, so they
+        // simply stay null on older logs.
+        if (Array.isArray(turnFinishedMetrics) && turnFinishedMetrics.length) {
+          for (const m of turnFinishedMetrics) {
+            const p = m && m.payload;
+            if (!p || p.turn_id == null) continue;
+            const turnId = parseInt(p.turn_id, 10);
+            if (!Number.isFinite(turnId)) continue;
+            const row = ensure(turnId);
+            const md = p.metric_details || {};
+            const llmActual = md.llm_actual || {};
+            if (row.llm_ttfb == null && llmActual.ttft_ms != null) row.llm_ttfb = parseInt(llmActual.ttft_ms, 10);
+            if (row.llm_ttfs == null && llmActual.ftfs_ms != null) row.llm_ttfs = parseInt(llmActual.ftfs_ms, 10);
+            // Pull a tts_ttfb out of segmented_latency_ms when present.
+            if (row.tts_ttfb == null && Array.isArray(md.segmented_latency_ms)) {
+              for (const seg of md.segmented_latency_ms) {
+                if (!seg) continue;
+                const name = String(seg.name || '').toLowerCase();
+                if ((name === 'tts_ttfb' || name === 'tts_ttfa' || name === 'tts_first_byte') && seg.latency != null) {
+                  row.tts_ttfb = parseInt(seg.latency, 10);
+                  break;
+                }
+              }
+            }
+            // Authoritative e2e from metric_details, but only when the older
+            // `[report_controller]` pass left it blank.
+            const metrics = p.metrics || {};
+            if (row.end_to_end_reported_ms == null && metrics.e2e_latency_ms != null) {
+              row.end_to_end_reported_ms = parseInt(metrics.e2e_latency_ms, 10);
+            }
+            // Three new optional columns. Always assign — these have no
+            // legacy source, so there's no precedence to worry about.
+            if (md.real_e2e_latency_ms != null) row.real_e2e_latency_ms = parseInt(md.real_e2e_latency_ms, 10);
+            if (md.net_internal_e2e_latency_ms != null) row.net_internal_e2e_latency_ms = parseInt(md.net_internal_e2e_latency_ms, 10);
+            const end = p.end || {};
+            const endMeta = end.metadata || {};
+            if (endMeta.playback_duration_ms != null) row.playback_duration_ms = parseInt(endMeta.playback_duration_ms, 10);
           }
         }
         return Object.values(byTurn).sort((a, b) => a.turn_id - b.turn_id);
@@ -2766,7 +2997,16 @@
       }
 
       function buildTurnRowHtml(row) {
-        const textCell = insightLongTextCell(row.text || '');
+        const baseTextCell = insightLongTextCell(row.text || '');
+        // Optional ten-runtime /think badge prefix. When present, it renders as a small pill
+        // inside the existing Text cell so rows without a decision stay byte-identical.
+        let textCell = baseTextCell;
+        if (row.thinkBadge) {
+          const b = row.thinkBadge;
+          const title = b.title ? ' title="' + escapeHtml(b.title) + '"' : '';
+          const labelText = 'think: ' + (b.action || '?') + (b.effectiveState ? ' (' + b.effectiveState + ')' : '');
+          textCell = '<span class="turn-think-badge"' + title + '>' + escapeHtml(labelText) + '</span> ' + baseTextCell;
+        }
         const finalStr = row.final === true ? 'yes' : row.final === false ? 'no' : '—';
         const interruptedStr = row.interrupted ? 'yes' : '—';
         const interruptedTitle = row.interruptReason ? ' title="' + escapeHtml('Interrupted: ' + row.interruptReason) + '"' : '';
@@ -3004,6 +3244,48 @@
         finalList.forEach(function (row) {
           row.entryIndex = findLogIndexByTsAndSource(row.ts, row.source);
         });
+        // Attach /think decisions to matching turn rows (keyed by legacy_state.turn_id, falling
+        // back to plan.turn_id). Old logs without `tenKeyPoints.think` skip this entirely.
+        const thinkList = (insights.tenKeyPoints && insights.tenKeyPoints.think) || [];
+        if (thinkList.length) {
+          const thinkByTurn = {};
+          for (const t of thinkList) {
+            const p = t.payload || {};
+            const legacy = p.legacy_state || {};
+            const plan = p.plan || {};
+            const tid = legacy.turn_id != null ? legacy.turn_id : (plan.turn_id != null ? plan.turn_id : null);
+            if (tid == null) continue;
+            const key = String(tid);
+            if (!thinkByTurn[key]) thinkByTurn[key] = [];
+            thinkByTurn[key].push({
+              ts: t.ts,
+              action: p.selected_action || plan.action || null,
+              effectiveState: (p.independent_state && p.independent_state.effective_state)
+                || plan.effective_state
+                || legacy.state
+                || null,
+              text: p.text || ''
+            });
+          }
+          for (const row of finalList) {
+            if (row.turn == null) continue;
+            const bucket = thinkByTurn[String(row.turn)];
+            if (!bucket || !bucket.length) continue;
+            // If multiple think decisions hit the same turn, prefer the earliest one — that's the
+            // decision that actually shaped the turn. Later ones are usually refinements.
+            const pick = bucket[0];
+            const titleBits = [];
+            if (pick.action) titleBits.push('action: ' + pick.action);
+            if (pick.effectiveState) titleBits.push('effective_state: ' + pick.effectiveState);
+            if (pick.ts) titleBits.push('@ ' + pick.ts);
+            if (pick.text) titleBits.push('"' + (pick.text.length > 200 ? pick.text.slice(0, 200) + '…' : pick.text) + '"');
+            row.thinkBadge = {
+              action: pick.action,
+              effectiveState: pick.effectiveState,
+              title: titleBits.join('\n')
+            };
+          }
+        }
         finalList.sort((a, b) => {
           const ta = a.turn != null ? a.turn : 999999;
           const tb = b.turn != null ? b.turn : 999999;
@@ -3686,7 +3968,13 @@
             svg += '</svg></div></div>';
             html += svg;
           })();
-          html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightPerfHeaderRow([
+          // Only surface the three new ten-runtime columns when at least one perf row
+          // actually has a value. Old logs (no [turn.finished.metric_details]) keep the
+          // historical 10-column table layout unchanged.
+          const hasRealE2e = perf.some(function (r) { return r.real_e2e_latency_ms != null; });
+          const hasNetE2e = perf.some(function (r) { return r.net_internal_e2e_latency_ms != null; });
+          const hasPlayback = perf.some(function (r) { return r.playback_duration_ms != null; });
+          const perfHeaders = [
             { label: 'Turn ID', title: 'Turn index for this user-speech segment (matches turn_detector / metrics in the log).' },
             { label: 'VAD (ms)', title: 'Voice Activity Detection window: silence duration after speech ends plus fixed padding (from EOS / E2E report when logged). Not shown if that line is missing for the turn.' },
             { label: 'AIVAD Delay (ms)', title: 'AIVAD (AI VAD) extra delay when that extension is enabled; N/A when disabled.' },
@@ -3697,7 +3985,11 @@
             { label: 'LLM TTFS (ms)', title: 'LLM Time To First Sentence: until the first chunk sent to TTS (first speakable sentence).' },
             { label: 'TTS TTFB (ms)', title: 'TTS Time To First Byte: from TTS request to first audio frame out of the synthesizer.' },
             { label: 'TTeRTC (ms)', title: 'Total time excluding RTC: backend end-to-end when logged; else sum of VAD + AIVAD + BHVS + ASR TTLW + LLM TTFS + TTS TTFB. ~…† = partial when VAD missing.' }
-          ]) + '</tr></thead><tbody>';
+          ];
+          if (hasRealE2e) perfHeaders.push({ label: 'Real E2E (ms)', title: 'real_e2e_latency_ms from [turn.finished.metric_details] — the ten runtime\'s authoritative end-to-end excluding any internal masking.' });
+          if (hasNetE2e) perfHeaders.push({ label: 'Net Internal E2E (ms)', title: 'net_internal_e2e_latency_ms from [turn.finished.metric_details] — pipeline-internal latency excluding transport.' });
+          if (hasPlayback) perfHeaders.push({ label: 'Playback (ms)', title: 'playback_duration_ms from the [turn.finished] end metadata — how long the rendered TTS audio actually played.' });
+          html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightPerfHeaderRow(perfHeaders) + '</tr></thead><tbody>';
           for (const row of perf) {
             const vad = row.vad != null ? row.vad + ' ms' : '—';
             const aivad = row.aivad_delay != null ? row.aivad_delay + ' ms' : 'N/A';
@@ -3712,7 +4004,11 @@
             let totalStr = '—';
             if (row.end_to_end_reported_ms != null) totalStr = totalExclRtc + ' ms';
             else if (sumParts > 0) totalStr = (row.vad == null ? '~' : '') + sumParts + ' ms' + (row.vad == null ? ' †' : '');
-            html += `<tr class="perf-table-row" data-turn-id="${row.turn_id}"><td>${row.turn_id}</td><td>${vad}</td><td>${aivad}</td><td>${bhvs}</td><td>${asrTtlw}</td><td>${llmConn}</td><td>${llmTtfb}</td><td>${llmTtfs}</td><td>${ttsTtfb}</td><td>${totalStr}</td></tr>`;
+            let extraCells = '';
+            if (hasRealE2e) extraCells += '<td>' + (row.real_e2e_latency_ms != null ? row.real_e2e_latency_ms + ' ms' : '—') + '</td>';
+            if (hasNetE2e) extraCells += '<td>' + (row.net_internal_e2e_latency_ms != null ? row.net_internal_e2e_latency_ms + ' ms' : '—') + '</td>';
+            if (hasPlayback) extraCells += '<td>' + (row.playback_duration_ms != null ? row.playback_duration_ms + ' ms' : '—') + '</td>';
+            html += `<tr class="perf-table-row" data-turn-id="${row.turn_id}"><td>${row.turn_id}</td><td>${vad}</td><td>${aivad}</td><td>${bhvs}</td><td>${asrTtlw}</td><td>${llmConn}</td><td>${llmTtfb}</td><td>${llmTtfs}</td><td>${ttsTtfb}</td><td>${totalStr}</td>${extraCells}</tr>`;
           }
           const medVad = median(perf.map(function (r) { return r.vad; }));
           const medAivad = median(perf.map(function (r) { return r.aivad_delay; }));
@@ -3727,8 +4023,15 @@
             return (r.vad || 0) + (r.aivad_delay || 0) + (r.bhvs_delay || 0) + (r.asr_ttlw || 0) + (r.llm_ttfs || 0) + (r.tts_ttfb || 0);
           };
           const medTotal = median(perf.map(totalV));
+          const medRealE2e = hasRealE2e ? median(perf.map(function (r) { return r.real_e2e_latency_ms; })) : null;
+          const medNetE2e = hasNetE2e ? median(perf.map(function (r) { return r.net_internal_e2e_latency_ms; })) : null;
+          const medPlayback = hasPlayback ? median(perf.map(function (r) { return r.playback_duration_ms; })) : null;
           const fmt = function (v) { return v != null ? Math.round(v) + ' ms' : '—'; };
-          html += '</tbody><tfoot><tr class="perf-median-row"><td>Median</td><td>' + fmt(medVad) + '</td><td>' + fmt(medAivad) + '</td><td>' + fmt(medBhvs) + '</td><td>' + fmt(medAsr) + '</td><td>' + fmt(medLlmConn) + '</td><td>' + fmt(medLlmTtfb) + '</td><td>' + fmt(medLlmTtfs) + '</td><td>' + fmt(medTts) + '</td><td>' + fmt(medTotal) + '</td></tr></tfoot></table>';
+          let extraMedians = '';
+          if (hasRealE2e) extraMedians += '<td>' + fmt(medRealE2e) + '</td>';
+          if (hasNetE2e) extraMedians += '<td>' + fmt(medNetE2e) + '</td>';
+          if (hasPlayback) extraMedians += '<td>' + fmt(medPlayback) + '</td>';
+          html += '</tbody><tfoot><tr class="perf-median-row"><td>Median</td><td>' + fmt(medVad) + '</td><td>' + fmt(medAivad) + '</td><td>' + fmt(medBhvs) + '</td><td>' + fmt(medAsr) + '</td><td>' + fmt(medLlmConn) + '</td><td>' + fmt(medLlmTtfb) + '</td><td>' + fmt(medLlmTtfs) + '</td><td>' + fmt(medTts) + '</td><td>' + fmt(medTotal) + '</td>' + extraMedians + '</tr></tfoot></table>';
           html += '<p class="perf-table-footnote"><strong>Note:</strong> TTeRTC = backend E2E when logged; else sum(VAD+AIVAD+BHVS+ASR+LLM_TTFS+TTS). <strong>~</strong> + <strong>†</strong> = partial total when VAD (ms) is — for that turn—same as adding only the row’s numeric ms columns (not —/N/A). Not a negative time. <strong>†</strong> = incomplete vs full pipeline; <strong>~</strong> = same idea (can look like “−” in some fonts).</p>';
         } else html += '<p class="insight-empty">No performance metrics found.</p>';
         html += '</div>';
@@ -4162,6 +4465,220 @@
             intBody += '</tbody></table>';
             html += insightSection('ncs:interrupted', 'Interrupted items', '', intBody);
           }
+        }
+
+        // --- New ten-runtime key_point sections (Keypoints tab) ---
+        // Each block renders nothing when empty, so old logs without these payloads
+        // remain byte-identical to before the additive sweep was introduced.
+        const tkp = insights.tenKeyPoints || null;
+        const istRows = insights.independentStateTransitions || [];
+
+        function _tenkpClipText(s, n) {
+          if (s == null) return '';
+          s = String(s);
+          if (s.length <= n) return s;
+          return s.slice(0, n) + '…';
+        }
+        function _tenkpJsonAttr(obj) {
+          if (obj == null) return '';
+          try { return escapeHtml(JSON.stringify(obj)); } catch (_) { return ''; }
+        }
+        function _tenkpJsonCell(obj) {
+          if (obj == null) return '—';
+          let raw;
+          try { raw = JSON.stringify(obj, null, 2); } catch (_) { return '—'; }
+          const safe = escapeHtml(raw);
+          const preview = escapeHtml(_tenkpClipText(raw, 80));
+          return '<details class="insight-json-expand"><summary>' + preview + '</summary><pre class="insight-json-pre">' + safe + '</pre></details>';
+        }
+
+        // 1. External /think decisions
+        if (tkp && tkp.think && tkp.think.length) {
+          let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
+            + insightHeaderRow(['Time','Turn','Effective state','Selected action','Should interrupt','Should allocate turn','Source','Text preview','Payload'])
+            + '</tr></thead><tbody>';
+          for (const r of tkp.think) {
+            const tsAttr = escapeHtml(r.ts || '');
+            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
+            const p = r.payload || {};
+            const legacy = p.legacy_state || {};
+            const indSt = p.independent_state || {};
+            const plan = p.plan || {};
+            const meta = p.metadata || {};
+            const turnId = legacy.turn_id != null ? legacy.turn_id : (plan.turn_id != null ? plan.turn_id : null);
+            const effState = indSt.effective_state || plan.effective_state || legacy.state || '—';
+            const action = p.selected_action || plan.action || '—';
+            const interrupt = plan.should_interrupt != null ? (plan.should_interrupt ? 'yes' : 'no') : '—';
+            const alloc = plan.should_allocate_turn != null ? (plan.should_allocate_turn ? 'yes' : 'no') : '—';
+            const source = meta.source || meta.transport || '—';
+            const text = _tenkpClipText(p.text || '', 80) || '—';
+            body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
+              + '<td>' + escapeHtml(r.ts || '') + '</td>'
+              + '<td>' + (turnId != null ? escapeHtml(String(turnId)) : '—') + '</td>'
+              + '<td>' + escapeHtml(effState) + '</td>'
+              + '<td>' + escapeHtml(action) + '</td>'
+              + '<td>' + interrupt + '</td>'
+              + '<td>' + alloc + '</td>'
+              + '<td>' + escapeHtml(source) + '</td>'
+              + '<td title="' + (p.text ? escapeHtml(p.text) : '') + '">' + escapeHtml(text) + '</td>'
+              + '<td>' + _tenkpJsonCell(p) + '</td>'
+              + '</tr>';
+          }
+          body += '</tbody></table>';
+          html += insightSection('ncs:think', 'External /think decisions', tkp.think.length + ' decision' + (tkp.think.length === 1 ? '' : 's'), body);
+        }
+
+        // 2. Turn finished summary (+ segmented latencies)
+        if (tkp && tkp.turnFinished && tkp.turnFinished.length) {
+          let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
+            + insightHeaderRow(['Time','Turn','Start type','End type','e2e_latency_ms','playback_duration_ms','real_e2e_latency_ms','net_internal_e2e_latency_ms','prefetch.is_reused'])
+            + '</tr></thead><tbody>';
+          // Map of turn_id -> metric_details payload for the secondary table.
+          const metricsByTurn = {};
+          for (const m of (tkp.turnFinishedMetrics || [])) {
+            const p = m.payload || {};
+            if (p.turn_id != null) metricsByTurn[p.turn_id] = p.metric_details || null;
+          }
+          const segmentedByTurn = {};
+          for (const r of tkp.turnFinished) {
+            const tsAttr = escapeHtml(r.ts || '');
+            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
+            const p = r.payload || {};
+            const start = p.start || {};
+            const end = p.end || {};
+            const metrics = p.metrics || {};
+            const md = (p.turn_id != null && metricsByTurn[p.turn_id]) || null;
+            const prefetch = md && md.prefetch ? md.prefetch : null;
+            const playback = (end.metadata && end.metadata.playback_duration_ms != null) ? end.metadata.playback_duration_ms : null;
+            if (md && Array.isArray(md.segmented_latency_ms) && p.turn_id != null) {
+              segmentedByTurn[p.turn_id] = md.segmented_latency_ms;
+            }
+            body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
+              + '<td>' + escapeHtml(r.ts || '') + '</td>'
+              + '<td>' + (p.turn_id != null ? escapeHtml(String(p.turn_id)) : '—') + '</td>'
+              + '<td>' + escapeHtml(start.type || '—') + '</td>'
+              + '<td>' + escapeHtml(end.type || '—') + '</td>'
+              + '<td>' + (metrics.e2e_latency_ms != null ? escapeHtml(String(metrics.e2e_latency_ms)) : '—') + '</td>'
+              + '<td>' + (playback != null ? escapeHtml(String(playback)) : '—') + '</td>'
+              + '<td>' + (md && md.real_e2e_latency_ms != null ? escapeHtml(String(md.real_e2e_latency_ms)) : '—') + '</td>'
+              + '<td>' + (md && md.net_internal_e2e_latency_ms != null ? escapeHtml(String(md.net_internal_e2e_latency_ms)) : '—') + '</td>'
+              + '<td>' + (prefetch && prefetch.is_reused != null ? (prefetch.is_reused ? 'yes' : 'no') : '—') + '</td>'
+              + '</tr>';
+          }
+          body += '</tbody></table>';
+          // Secondary table — segmented latencies per turn, when metric_details is present.
+          const segTurns = Object.keys(segmentedByTurn).sort(function (a, b) { return parseInt(a, 10) - parseInt(b, 10); });
+          if (segTurns.length) {
+            let seg = '<table class="insight-table insight-filterable"><thead><tr>'
+              + insightHeaderRow(['Turn','Segment','Group','Latency (ms)'])
+              + '</tr></thead><tbody>';
+            for (const tId of segTurns) {
+              for (const s of segmentedByTurn[tId]) {
+                seg += '<tr><td>' + escapeHtml(String(tId)) + '</td>'
+                  + '<td>' + escapeHtml(s.name || '—') + '</td>'
+                  + '<td>' + escapeHtml(s.group || '—') + '</td>'
+                  + '<td>' + (s.latency != null ? escapeHtml(String(s.latency)) : '—') + '</td></tr>';
+              }
+            }
+            seg += '</tbody></table>';
+            body += '<div class="insight-subtable">' + seg + '</div>';
+          }
+          html += insightSection('ncs:turnFinished', 'Turn finished summary', tkp.turnFinished.length + ' turn' + (tkp.turnFinished.length === 1 ? '' : 's'), body);
+        }
+
+        // 3. Independent state transitions
+        if (istRows.length) {
+          let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
+            + insightHeaderRow(['Time','Turn','Axis','Old → New','listening','thinking','speaking','effective_state'])
+            + '</tr></thead><tbody>';
+          for (const r of istRows) {
+            const tsAttr = escapeHtml(r.ts || '');
+            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
+            body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
+              + '<td>' + escapeHtml(r.ts || '') + '</td>'
+              + '<td>' + (r.turn_id != null ? escapeHtml(String(r.turn_id)) : '—') + '</td>'
+              + '<td>' + escapeHtml(r.axis || '—') + '</td>'
+              + '<td>' + escapeHtml((r.old || '—') + ' → ' + (r.new || '—')) + '</td>'
+              + '<td>' + (r.listening ? 'true' : 'false') + '</td>'
+              + '<td>' + (r.thinking ? 'true' : 'false') + '</td>'
+              + '<td>' + (r.speaking ? 'true' : 'false') + '</td>'
+              + '<td>' + escapeHtml(r.effective_state || '—') + '</td>'
+              + '</tr>';
+          }
+          body += '</tbody></table>';
+          html += insightSection('ncs:independentState', 'IndependentStateManager transitions', istRows.length + ' transition' + (istRows.length === 1 ? '' : 's'), body);
+        }
+
+        // 4. Assistant interrupt policy
+        if (tkp && tkp.interruptPolicy && tkp.interruptPolicy.length) {
+          let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
+            + insightHeaderRow(['Time','Turn','interruptable','start_type','interrupt_mode'])
+            + '</tr></thead><tbody>';
+          for (const r of tkp.interruptPolicy) {
+            const tsAttr = escapeHtml(r.ts || '');
+            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
+            const p = r.payload || {};
+            body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
+              + '<td>' + escapeHtml(r.ts || '') + '</td>'
+              + '<td>' + (p.turn_id != null ? escapeHtml(String(p.turn_id)) : '—') + '</td>'
+              + '<td>' + (p.interruptable != null ? (p.interruptable ? 'true' : 'false') : '—') + '</td>'
+              + '<td>' + escapeHtml(p.start_type || '—') + '</td>'
+              + '<td>' + escapeHtml(p.interrupt_mode || '—') + '</td>'
+              + '</tr>';
+          }
+          body += '</tbody></table>';
+          html += insightSection('ncs:interruptPolicy', 'Assistant interrupt policy', tkp.interruptPolicy.length + ' policy event' + (tkp.interruptPolicy.length === 1 ? '' : 's'), body);
+        }
+
+        // 5. Orchestrator / soseos / pre-/post-tts combined (collapsed by default)
+        if (tkp) {
+          const combo = [];
+          for (const r of (tkp.orchestrator || [])) combo.push(Object.assign({}, r, { module: r.module || (r.file ? r.file.replace(/\.py$/, '') : 'orchestrator') }));
+          for (const r of (tkp.soseos || [])) combo.push(Object.assign({}, r, { module: 'soseos' }));
+          for (const r of (tkp.preTts || [])) combo.push(Object.assign({}, r, { module: 'pre_tts_process_manager' }));
+          for (const r of (tkp.postTts || [])) combo.push(Object.assign({}, r, { module: 'post_tts_process_manager' }));
+          if (combo.length) {
+            combo.sort(function (a, b) {
+              const ta = parseLogTs(a.ts || '') || 0;
+              const tb = parseLogTs(b.ts || '') || 0;
+              return ta - tb;
+            });
+            let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
+              + insightHeaderRow(['Time','Module','Function','Message preview'])
+              + '</tr></thead><tbody>';
+            for (const r of combo) {
+              const tsAttr = escapeHtml(r.ts || '');
+              const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
+              body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
+                + '<td>' + escapeHtml(r.ts || '') + '</td>'
+                + '<td>' + escapeHtml(r.module || '—') + '</td>'
+                + '<td>' + escapeHtml(r.func || '—') + '</td>'
+                + '<td>' + escapeHtml(_tenkpClipText(r.rest || '', 160)) + '</td>'
+                + '</tr>';
+            }
+            body += '</tbody></table>';
+            html += insightSection('ncs:orchestrator', 'Orchestrator / soseos / pre-/post-tts activity', combo.length + ' event' + (combo.length === 1 ? '' : 's'), body, { defaultOpen: false });
+          }
+        }
+
+        // 6. Catch-all for any future unrecognised key_point lines
+        if (tkp && tkp.generic && tkp.generic.length) {
+          let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
+            + insightHeaderRow(['Time','func','file:line','tag','payload preview'])
+            + '</tr></thead><tbody>';
+          for (const r of tkp.generic) {
+            const tsAttr = escapeHtml(r.ts || '');
+            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
+            body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
+              + '<td>' + escapeHtml(r.ts || '') + '</td>'
+              + '<td>' + escapeHtml(r.func || '—') + '</td>'
+              + '<td>' + escapeHtml((r.file || '') + ':' + (r.line != null ? r.line : '')) + '</td>'
+              + '<td>' + escapeHtml(r.tag || '—') + '</td>'
+              + '<td>' + escapeHtml(_tenkpClipText(r.rest || '', 160)) + '</td>'
+              + '</tr>';
+          }
+          body += '</tbody></table>';
+          html += insightSection('ncs:genericKeyPoints', 'Other key_point events', tkp.generic.length + ' event' + (tkp.generic.length === 1 ? '' : 's'), body, { defaultOpen: false });
         }
 
         html += '</div>';
@@ -6330,10 +6847,17 @@
           // Strict behavior requested: when ENABLE_MLLM is present and false, keep MLLM tab empty.
           // If the flag is absent, allow fallback to observed v2v/mllm signals.
           const mllmEnabled = hasExplicitMllmFlag ? flagTrue : hasV2vSignal;
+          // New ten-runtime extractors. Computed up-front so extractPerformanceMetrics can
+          // consume `turnFinishedMetrics` for its additive enrichment pass without changing
+          // any existing extractor's signature or first-wins precedence.
+          const tenKeyPoints = extractTenKeyPoints(entries);
+          const independentStateTransitions = extractIndependentStateTransitions(entries);
           state.insights = {
             summary: summary,
             stateTransitions: extractStateTransitions(entries),
             stateReports: extractStateReports(entries),
+            tenKeyPoints: tenKeyPoints,
+            independentStateTransitions: independentStateTransitions,
             tts: extractTts(entries),
             ttsIssues: extractTtsIssues(entries),
             userAsr: extractUserAsrTranscripts(entries),
@@ -6351,7 +6875,7 @@
             llm: extractLlm(entries),
             ncs: extractNcsInsights(entries),
             keypointEvents: extractKeypointEvents(entries),
-            performanceMetrics: extractPerformanceMetrics(entries),
+            performanceMetrics: extractPerformanceMetrics(entries, tenKeyPoints.turnFinishedMetrics),
             callStartTs: summary.startTs != null ? summary.startTs : (entries.length ? parseLogTs(entries[0].ts) / 1000 : null),
             callEndTs: summary.stopTs != null ? summary.stopTs : (entries.length ? parseLogTs(entries[entries.length - 1].ts) / 1000 : null)
           };
