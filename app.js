@@ -2021,6 +2021,291 @@
         return rows;
       }
 
+      /** Render caps for ten-runtime key_point tables (500MB logs can have thousands of lines). */
+      const TEN_KP_GENERIC_RENDER_LIMIT = 300;
+      const TEN_KP_COMBO_RENDER_LIMIT = 300;
+      const TEN_KP_IST_RENDER_LIMIT = 500;
+      const TEN_KP_JSON_INLINE_MAX = 4096;
+      let tenKeyPointsDomBuilt = false;
+
+      function _tenkpClipText(s, n) {
+        if (s == null) return '';
+        s = String(s);
+        if (s.length <= n) return s;
+        return s.slice(0, n) + '…';
+      }
+
+      function _tenkpJsonCell(obj) {
+        if (obj == null) return '—';
+        let raw;
+        try { raw = JSON.stringify(obj, null, 2); } catch (_) { return '—'; }
+        const preview = escapeHtml(_tenkpClipText(raw, 80));
+        if (raw.length > TEN_KP_JSON_INLINE_MAX) {
+          return preview + ' <span class="insight-empty">(large payload — open log line for full JSON)</span>';
+        }
+        const safe = escapeHtml(raw);
+        return '<details class="insight-json-expand"><summary>' + preview + '</summary><pre class="insight-json-pre">' + safe + '</pre></details>';
+      }
+
+      function tenKeyPointsHasRenderableContent(insights) {
+        if (!insights) return false;
+        const ist = insights.independentStateTransitions;
+        if (ist && ist.length) return true;
+        const tkp = insights.tenKeyPoints;
+        if (!tkp) return false;
+        return !!(
+          (tkp.think && tkp.think.length) ||
+          (tkp.turnFinished && tkp.turnFinished.length) ||
+          (tkp.interruptPolicy && tkp.interruptPolicy.length) ||
+          (tkp.orchestrator && tkp.orchestrator.length) ||
+          (tkp.soseos && tkp.soseos.length) ||
+          (tkp.preTts && tkp.preTts.length) ||
+          (tkp.postTts && tkp.postTts.length) ||
+          (tkp.generic && tkp.generic.length)
+        );
+      }
+
+      /** Build HTML for ten-runtime key_point sections (Keypoints tab only). */
+      function buildTenKeyPointSectionsHtml(insights) {
+        if (!insights) return '';
+        const tkp = insights.tenKeyPoints || null;
+        const istAll = insights.independentStateTransitions || [];
+        if (!tenKeyPointsHasRenderableContent(insights)) return '';
+
+        let html = '';
+        if (tkp && tkp.think && tkp.think.length) {
+          let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
+            + insightHeaderRow(['Time','Turn','Effective state','Selected action','Should interrupt','Should allocate turn','Source','Text preview','Payload'])
+            + '</tr></thead><tbody>';
+          for (const r of tkp.think) {
+            const tsAttr = escapeHtml(r.ts || '');
+            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
+            const p = r.payload || {};
+            const legacy = p.legacy_state || {};
+            const indSt = p.independent_state || {};
+            const plan = p.plan || {};
+            const meta = p.metadata || {};
+            const turnId = legacy.turn_id != null ? legacy.turn_id : (plan.turn_id != null ? plan.turn_id : null);
+            const effState = indSt.effective_state || plan.effective_state || legacy.state || '—';
+            const action = p.selected_action || plan.action || '—';
+            const interrupt = plan.should_interrupt != null ? (plan.should_interrupt ? 'yes' : 'no') : '—';
+            const alloc = plan.should_allocate_turn != null ? (plan.should_allocate_turn ? 'yes' : 'no') : '—';
+            const source = meta.source || meta.transport || '—';
+            const text = _tenkpClipText(p.text || '', 80) || '—';
+            body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
+              + '<td>' + escapeHtml(r.ts || '') + '</td>'
+              + '<td>' + (turnId != null ? escapeHtml(String(turnId)) : '—') + '</td>'
+              + '<td>' + escapeHtml(effState) + '</td>'
+              + '<td>' + escapeHtml(action) + '</td>'
+              + '<td>' + interrupt + '</td>'
+              + '<td>' + alloc + '</td>'
+              + '<td>' + escapeHtml(source) + '</td>'
+              + '<td title="' + (p.text ? escapeHtml(p.text) : '') + '">' + escapeHtml(text) + '</td>'
+              + '<td>' + _tenkpJsonCell(p) + '</td>'
+              + '</tr>';
+          }
+          body += '</tbody></table>';
+          html += insightSection('ncs:think', 'External /think decisions', tkp.think.length + ' decision' + (tkp.think.length === 1 ? '' : 's'), body);
+        }
+
+        if (tkp && tkp.turnFinished && tkp.turnFinished.length) {
+          let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
+            + insightHeaderRow(['Time','Turn','Start type','End type','e2e_latency_ms','playback_duration_ms','real_e2e_latency_ms','net_internal_e2e_latency_ms','prefetch.is_reused'])
+            + '</tr></thead><tbody>';
+          const metricsByTurn = {};
+          for (const m of (tkp.turnFinishedMetrics || [])) {
+            const p = m.payload || {};
+            if (p.turn_id != null) metricsByTurn[p.turn_id] = p.metric_details || null;
+          }
+          const segmentedByTurn = {};
+          for (const r of tkp.turnFinished) {
+            const tsAttr = escapeHtml(r.ts || '');
+            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
+            const p = r.payload || {};
+            const start = p.start || {};
+            const end = p.end || {};
+            const metrics = p.metrics || {};
+            const md = (p.turn_id != null && metricsByTurn[p.turn_id]) || null;
+            const prefetch = md && md.prefetch ? md.prefetch : null;
+            const playback = (end.metadata && end.metadata.playback_duration_ms != null) ? end.metadata.playback_duration_ms : null;
+            if (md && Array.isArray(md.segmented_latency_ms) && p.turn_id != null) {
+              segmentedByTurn[p.turn_id] = md.segmented_latency_ms;
+            }
+            body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
+              + '<td>' + escapeHtml(r.ts || '') + '</td>'
+              + '<td>' + (p.turn_id != null ? escapeHtml(String(p.turn_id)) : '—') + '</td>'
+              + '<td>' + escapeHtml(start.type || '—') + '</td>'
+              + '<td>' + escapeHtml(end.type || '—') + '</td>'
+              + '<td>' + (metrics.e2e_latency_ms != null ? escapeHtml(String(metrics.e2e_latency_ms)) : '—') + '</td>'
+              + '<td>' + (playback != null ? escapeHtml(String(playback)) : '—') + '</td>'
+              + '<td>' + (md && md.real_e2e_latency_ms != null ? escapeHtml(String(md.real_e2e_latency_ms)) : '—') + '</td>'
+              + '<td>' + (md && md.net_internal_e2e_latency_ms != null ? escapeHtml(String(md.net_internal_e2e_latency_ms)) : '—') + '</td>'
+              + '<td>' + (prefetch && prefetch.is_reused != null ? (prefetch.is_reused ? 'yes' : 'no') : '—') + '</td>'
+              + '</tr>';
+          }
+          body += '</tbody></table>';
+          const segTurns = Object.keys(segmentedByTurn).sort(function (a, b) { return parseInt(a, 10) - parseInt(b, 10); });
+          if (segTurns.length) {
+            let seg = '<table class="insight-table insight-filterable"><thead><tr>'
+              + insightHeaderRow(['Turn','Segment','Group','Latency (ms)'])
+              + '</tr></thead><tbody>';
+            for (const tId of segTurns) {
+              for (const s of segmentedByTurn[tId]) {
+                seg += '<tr><td>' + escapeHtml(String(tId)) + '</td>'
+                  + '<td>' + escapeHtml(s.name || '—') + '</td>'
+                  + '<td>' + escapeHtml(s.group || '—') + '</td>'
+                  + '<td>' + (s.latency != null ? escapeHtml(String(s.latency)) : '—') + '</td></tr>';
+              }
+            }
+            seg += '</tbody></table>';
+            body += '<div class="insight-subtable">' + seg + '</div>';
+          }
+          html += insightSection('ncs:turnFinished', 'Turn finished summary', tkp.turnFinished.length + ' turn' + (tkp.turnFinished.length === 1 ? '' : 's'), body);
+        }
+
+        if (istAll.length) {
+          const istShown = istAll.length > TEN_KP_IST_RENDER_LIMIT ? istAll.slice(0, TEN_KP_IST_RENDER_LIMIT) : istAll;
+          let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
+            + insightHeaderRow(['Time','Turn','Axis','Old → New','listening','thinking','speaking','effective_state'])
+            + '</tr></thead><tbody>';
+          for (const r of istShown) {
+            const tsAttr = escapeHtml(r.ts || '');
+            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
+            body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
+              + '<td>' + escapeHtml(r.ts || '') + '</td>'
+              + '<td>' + (r.turn_id != null ? escapeHtml(String(r.turn_id)) : '—') + '</td>'
+              + '<td>' + escapeHtml(r.axis || '—') + '</td>'
+              + '<td>' + escapeHtml((r.old || '—') + ' → ' + (r.new || '—')) + '</td>'
+              + '<td>' + (r.listening ? 'true' : 'false') + '</td>'
+              + '<td>' + (r.thinking ? 'true' : 'false') + '</td>'
+              + '<td>' + (r.speaking ? 'true' : 'false') + '</td>'
+              + '<td>' + escapeHtml(r.effective_state || '—') + '</td>'
+              + '</tr>';
+          }
+          if (istAll.length > TEN_KP_IST_RENDER_LIMIT) {
+            body += '<tr><td colspan="8" class="insight-empty">Showing first ' + TEN_KP_IST_RENDER_LIMIT + ' of '
+              + istAll.length + ' transitions.</td></tr>';
+          }
+          body += '</tbody></table>';
+          html += insightSection('ncs:independentState', 'IndependentStateManager transitions', istAll.length + ' transition' + (istAll.length === 1 ? '' : 's'), body);
+        }
+
+        if (tkp && tkp.interruptPolicy && tkp.interruptPolicy.length) {
+          let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
+            + insightHeaderRow(['Time','Turn','interruptable','start_type','interrupt_mode'])
+            + '</tr></thead><tbody>';
+          for (const r of tkp.interruptPolicy) {
+            const tsAttr = escapeHtml(r.ts || '');
+            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
+            const p = r.payload || {};
+            body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
+              + '<td>' + escapeHtml(r.ts || '') + '</td>'
+              + '<td>' + (p.turn_id != null ? escapeHtml(String(p.turn_id)) : '—') + '</td>'
+              + '<td>' + (p.interruptable != null ? (p.interruptable ? 'true' : 'false') : '—') + '</td>'
+              + '<td>' + escapeHtml(p.start_type || '—') + '</td>'
+              + '<td>' + escapeHtml(p.interrupt_mode || '—') + '</td>'
+              + '</tr>';
+          }
+          body += '</tbody></table>';
+          html += insightSection('ncs:interruptPolicy', 'Assistant interrupt policy', tkp.interruptPolicy.length + ' policy event' + (tkp.interruptPolicy.length === 1 ? '' : 's'), body);
+        }
+
+        if (tkp) {
+          const combo = [];
+          for (const r of (tkp.orchestrator || [])) combo.push(Object.assign({}, r, { module: r.module || (r.file ? r.file.replace(/\.py$/, '') : 'orchestrator') }));
+          for (const r of (tkp.soseos || [])) combo.push(Object.assign({}, r, { module: 'soseos' }));
+          for (const r of (tkp.preTts || [])) combo.push(Object.assign({}, r, { module: 'pre_tts_process_manager' }));
+          for (const r of (tkp.postTts || [])) combo.push(Object.assign({}, r, { module: 'post_tts_process_manager' }));
+          if (combo.length) {
+            combo.sort(function (a, b) {
+              const ta = parseLogTs(a.ts || '') || 0;
+              const tb = parseLogTs(b.ts || '') || 0;
+              return ta - tb;
+            });
+            const comboAll = combo;
+            const comboShown = comboAll.length > TEN_KP_COMBO_RENDER_LIMIT ? comboAll.slice(0, TEN_KP_COMBO_RENDER_LIMIT) : comboAll;
+            let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
+              + insightHeaderRow(['Time','Module','Function','Message preview'])
+              + '</tr></thead><tbody>';
+            for (const r of comboShown) {
+              const tsAttr = escapeHtml(r.ts || '');
+              const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
+              body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
+                + '<td>' + escapeHtml(r.ts || '') + '</td>'
+                + '<td>' + escapeHtml(r.module || '—') + '</td>'
+                + '<td>' + escapeHtml(r.func || '—') + '</td>'
+                + '<td>' + escapeHtml(_tenkpClipText(r.rest || '', 160)) + '</td>'
+                + '</tr>';
+            }
+            if (comboAll.length > TEN_KP_COMBO_RENDER_LIMIT) {
+              body += '<tr><td colspan="4" class="insight-empty">Showing first ' + TEN_KP_COMBO_RENDER_LIMIT + ' of '
+                + comboAll.length + ' events.</td></tr>';
+            }
+            body += '</tbody></table>';
+            html += insightSection('ncs:orchestrator', 'Orchestrator / soseos / pre-/post-tts activity', comboAll.length + ' event' + (comboAll.length === 1 ? '' : 's'), body, { defaultOpen: false });
+          }
+        }
+
+        if (tkp && tkp.generic && tkp.generic.length) {
+          const genericAll = tkp.generic;
+          const genericShown = genericAll.length > TEN_KP_GENERIC_RENDER_LIMIT
+            ? genericAll.slice(0, TEN_KP_GENERIC_RENDER_LIMIT)
+            : genericAll;
+          let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
+            + insightHeaderRow(['Time','func','file:line','tag','payload preview'])
+            + '</tr></thead><tbody>';
+          for (const r of genericShown) {
+            const tsAttr = escapeHtml(r.ts || '');
+            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
+            body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
+              + '<td>' + escapeHtml(r.ts || '') + '</td>'
+              + '<td>' + escapeHtml(r.func || '—') + '</td>'
+              + '<td>' + escapeHtml((r.file || '') + ':' + (r.line != null ? r.line : '')) + '</td>'
+              + '<td>' + escapeHtml(r.tag || '—') + '</td>'
+              + '<td>' + escapeHtml(_tenkpClipText(r.rest || '', 160)) + '</td>'
+              + '</tr>';
+          }
+          if (genericAll.length > TEN_KP_GENERIC_RENDER_LIMIT) {
+            body += '<tr><td colspan="5" class="insight-empty">Showing first ' + TEN_KP_GENERIC_RENDER_LIMIT + ' of '
+              + genericAll.length + ' events. Search the Raw log for <code>key_point</code> to find the rest.</td></tr>';
+          }
+          body += '</tbody></table>';
+          html += insightSection('ncs:genericKeyPoints', 'Other key_point events', genericAll.length + ' event' + (genericAll.length === 1 ? '' : 's'), body, { defaultOpen: false });
+        }
+
+        return html;
+      }
+
+      function mountTenKeyPointSections(insights) {
+        if (tenKeyPointsDomBuilt) return;
+        const mount = document.getElementById('tenKeyPointsLazyMount');
+        if (!mount || mount.getAttribute('data-pending') !== '1') return;
+        const payload = insights || (state && state.insights);
+        if (!payload || !tenKeyPointsHasRenderableContent(payload)) {
+          mount.remove();
+          tenKeyPointsDomBuilt = true;
+          return;
+        }
+        const html = buildTenKeyPointSectionsHtml(payload);
+        if (!html) {
+          mount.remove();
+          tenKeyPointsDomBuilt = true;
+          return;
+        }
+        mount.outerHTML = html;
+        tenKeyPointsDomBuilt = true;
+        if (typeof applyInsightFilter === 'function') applyInsightFilter();
+      }
+
+      function scheduleTenKeyPointSectionsMount(insights) {
+        if (tenKeyPointsDomBuilt) return;
+        const run = function () {
+          try { mountTenKeyPointSections(insights); }
+          catch (e) { console.error('Ten keypoint sections mount failed:', e); }
+        };
+        setTimeout(run, 0);
+      }
+
       /**
        * RTC / Agora: graph routing failures, cert/token manager, and SDK connection errors.
        * Skips routine I/D traffic; W-level SDK lines only when they look like real issues.
@@ -3742,6 +4027,7 @@
       function renderInsights(insights) {
         const root = document.getElementById('insightsContent');
         if (!insights) { root.innerHTML = '<p class="insight-empty">Load a log file to see extracted insights.</p>'; return; }
+        tenKeyPointsDomBuilt = false;
         insightColumnFilter = {};
 
         const tabs = [
@@ -4467,218 +4753,12 @@
           }
         }
 
-        // --- New ten-runtime key_point sections (Keypoints tab) ---
-        // Each block renders nothing when empty, so old logs without these payloads
-        // remain byte-identical to before the additive sweep was introduced.
-        const tkp = insights.tenKeyPoints || null;
-        const istRows = insights.independentStateTransitions || [];
-
-        function _tenkpClipText(s, n) {
-          if (s == null) return '';
-          s = String(s);
-          if (s.length <= n) return s;
-          return s.slice(0, n) + '…';
-        }
-        function _tenkpJsonAttr(obj) {
-          if (obj == null) return '';
-          try { return escapeHtml(JSON.stringify(obj)); } catch (_) { return ''; }
-        }
-        function _tenkpJsonCell(obj) {
-          if (obj == null) return '—';
-          let raw;
-          try { raw = JSON.stringify(obj, null, 2); } catch (_) { return '—'; }
-          const safe = escapeHtml(raw);
-          const preview = escapeHtml(_tenkpClipText(raw, 80));
-          return '<details class="insight-json-expand"><summary>' + preview + '</summary><pre class="insight-json-pre">' + safe + '</pre></details>';
-        }
-
-        // 1. External /think decisions
-        if (tkp && tkp.think && tkp.think.length) {
-          let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
-            + insightHeaderRow(['Time','Turn','Effective state','Selected action','Should interrupt','Should allocate turn','Source','Text preview','Payload'])
-            + '</tr></thead><tbody>';
-          for (const r of tkp.think) {
-            const tsAttr = escapeHtml(r.ts || '');
-            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
-            const p = r.payload || {};
-            const legacy = p.legacy_state || {};
-            const indSt = p.independent_state || {};
-            const plan = p.plan || {};
-            const meta = p.metadata || {};
-            const turnId = legacy.turn_id != null ? legacy.turn_id : (plan.turn_id != null ? plan.turn_id : null);
-            const effState = indSt.effective_state || plan.effective_state || legacy.state || '—';
-            const action = p.selected_action || plan.action || '—';
-            const interrupt = plan.should_interrupt != null ? (plan.should_interrupt ? 'yes' : 'no') : '—';
-            const alloc = plan.should_allocate_turn != null ? (plan.should_allocate_turn ? 'yes' : 'no') : '—';
-            const source = meta.source || meta.transport || '—';
-            const text = _tenkpClipText(p.text || '', 80) || '—';
-            body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
-              + '<td>' + escapeHtml(r.ts || '') + '</td>'
-              + '<td>' + (turnId != null ? escapeHtml(String(turnId)) : '—') + '</td>'
-              + '<td>' + escapeHtml(effState) + '</td>'
-              + '<td>' + escapeHtml(action) + '</td>'
-              + '<td>' + interrupt + '</td>'
-              + '<td>' + alloc + '</td>'
-              + '<td>' + escapeHtml(source) + '</td>'
-              + '<td title="' + (p.text ? escapeHtml(p.text) : '') + '">' + escapeHtml(text) + '</td>'
-              + '<td>' + _tenkpJsonCell(p) + '</td>'
-              + '</tr>';
-          }
-          body += '</tbody></table>';
-          html += insightSection('ncs:think', 'External /think decisions', tkp.think.length + ' decision' + (tkp.think.length === 1 ? '' : 's'), body);
-        }
-
-        // 2. Turn finished summary (+ segmented latencies)
-        if (tkp && tkp.turnFinished && tkp.turnFinished.length) {
-          let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
-            + insightHeaderRow(['Time','Turn','Start type','End type','e2e_latency_ms','playback_duration_ms','real_e2e_latency_ms','net_internal_e2e_latency_ms','prefetch.is_reused'])
-            + '</tr></thead><tbody>';
-          // Map of turn_id -> metric_details payload for the secondary table.
-          const metricsByTurn = {};
-          for (const m of (tkp.turnFinishedMetrics || [])) {
-            const p = m.payload || {};
-            if (p.turn_id != null) metricsByTurn[p.turn_id] = p.metric_details || null;
-          }
-          const segmentedByTurn = {};
-          for (const r of tkp.turnFinished) {
-            const tsAttr = escapeHtml(r.ts || '');
-            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
-            const p = r.payload || {};
-            const start = p.start || {};
-            const end = p.end || {};
-            const metrics = p.metrics || {};
-            const md = (p.turn_id != null && metricsByTurn[p.turn_id]) || null;
-            const prefetch = md && md.prefetch ? md.prefetch : null;
-            const playback = (end.metadata && end.metadata.playback_duration_ms != null) ? end.metadata.playback_duration_ms : null;
-            if (md && Array.isArray(md.segmented_latency_ms) && p.turn_id != null) {
-              segmentedByTurn[p.turn_id] = md.segmented_latency_ms;
-            }
-            body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
-              + '<td>' + escapeHtml(r.ts || '') + '</td>'
-              + '<td>' + (p.turn_id != null ? escapeHtml(String(p.turn_id)) : '—') + '</td>'
-              + '<td>' + escapeHtml(start.type || '—') + '</td>'
-              + '<td>' + escapeHtml(end.type || '—') + '</td>'
-              + '<td>' + (metrics.e2e_latency_ms != null ? escapeHtml(String(metrics.e2e_latency_ms)) : '—') + '</td>'
-              + '<td>' + (playback != null ? escapeHtml(String(playback)) : '—') + '</td>'
-              + '<td>' + (md && md.real_e2e_latency_ms != null ? escapeHtml(String(md.real_e2e_latency_ms)) : '—') + '</td>'
-              + '<td>' + (md && md.net_internal_e2e_latency_ms != null ? escapeHtml(String(md.net_internal_e2e_latency_ms)) : '—') + '</td>'
-              + '<td>' + (prefetch && prefetch.is_reused != null ? (prefetch.is_reused ? 'yes' : 'no') : '—') + '</td>'
-              + '</tr>';
-          }
-          body += '</tbody></table>';
-          // Secondary table — segmented latencies per turn, when metric_details is present.
-          const segTurns = Object.keys(segmentedByTurn).sort(function (a, b) { return parseInt(a, 10) - parseInt(b, 10); });
-          if (segTurns.length) {
-            let seg = '<table class="insight-table insight-filterable"><thead><tr>'
-              + insightHeaderRow(['Turn','Segment','Group','Latency (ms)'])
-              + '</tr></thead><tbody>';
-            for (const tId of segTurns) {
-              for (const s of segmentedByTurn[tId]) {
-                seg += '<tr><td>' + escapeHtml(String(tId)) + '</td>'
-                  + '<td>' + escapeHtml(s.name || '—') + '</td>'
-                  + '<td>' + escapeHtml(s.group || '—') + '</td>'
-                  + '<td>' + (s.latency != null ? escapeHtml(String(s.latency)) : '—') + '</td></tr>';
-              }
-            }
-            seg += '</tbody></table>';
-            body += '<div class="insight-subtable">' + seg + '</div>';
-          }
-          html += insightSection('ncs:turnFinished', 'Turn finished summary', tkp.turnFinished.length + ' turn' + (tkp.turnFinished.length === 1 ? '' : 's'), body);
-        }
-
-        // 3. Independent state transitions
-        if (istRows.length) {
-          let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
-            + insightHeaderRow(['Time','Turn','Axis','Old → New','listening','thinking','speaking','effective_state'])
-            + '</tr></thead><tbody>';
-          for (const r of istRows) {
-            const tsAttr = escapeHtml(r.ts || '');
-            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
-            body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
-              + '<td>' + escapeHtml(r.ts || '') + '</td>'
-              + '<td>' + (r.turn_id != null ? escapeHtml(String(r.turn_id)) : '—') + '</td>'
-              + '<td>' + escapeHtml(r.axis || '—') + '</td>'
-              + '<td>' + escapeHtml((r.old || '—') + ' → ' + (r.new || '—')) + '</td>'
-              + '<td>' + (r.listening ? 'true' : 'false') + '</td>'
-              + '<td>' + (r.thinking ? 'true' : 'false') + '</td>'
-              + '<td>' + (r.speaking ? 'true' : 'false') + '</td>'
-              + '<td>' + escapeHtml(r.effective_state || '—') + '</td>'
-              + '</tr>';
-          }
-          body += '</tbody></table>';
-          html += insightSection('ncs:independentState', 'IndependentStateManager transitions', istRows.length + ' transition' + (istRows.length === 1 ? '' : 's'), body);
-        }
-
-        // 4. Assistant interrupt policy
-        if (tkp && tkp.interruptPolicy && tkp.interruptPolicy.length) {
-          let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
-            + insightHeaderRow(['Time','Turn','interruptable','start_type','interrupt_mode'])
-            + '</tr></thead><tbody>';
-          for (const r of tkp.interruptPolicy) {
-            const tsAttr = escapeHtml(r.ts || '');
-            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
-            const p = r.payload || {};
-            body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
-              + '<td>' + escapeHtml(r.ts || '') + '</td>'
-              + '<td>' + (p.turn_id != null ? escapeHtml(String(p.turn_id)) : '—') + '</td>'
-              + '<td>' + (p.interruptable != null ? (p.interruptable ? 'true' : 'false') : '—') + '</td>'
-              + '<td>' + escapeHtml(p.start_type || '—') + '</td>'
-              + '<td>' + escapeHtml(p.interrupt_mode || '—') + '</td>'
-              + '</tr>';
-          }
-          body += '</tbody></table>';
-          html += insightSection('ncs:interruptPolicy', 'Assistant interrupt policy', tkp.interruptPolicy.length + ' policy event' + (tkp.interruptPolicy.length === 1 ? '' : 's'), body);
-        }
-
-        // 5. Orchestrator / soseos / pre-/post-tts combined (collapsed by default)
-        if (tkp) {
-          const combo = [];
-          for (const r of (tkp.orchestrator || [])) combo.push(Object.assign({}, r, { module: r.module || (r.file ? r.file.replace(/\.py$/, '') : 'orchestrator') }));
-          for (const r of (tkp.soseos || [])) combo.push(Object.assign({}, r, { module: 'soseos' }));
-          for (const r of (tkp.preTts || [])) combo.push(Object.assign({}, r, { module: 'pre_tts_process_manager' }));
-          for (const r of (tkp.postTts || [])) combo.push(Object.assign({}, r, { module: 'post_tts_process_manager' }));
-          if (combo.length) {
-            combo.sort(function (a, b) {
-              const ta = parseLogTs(a.ts || '') || 0;
-              const tb = parseLogTs(b.ts || '') || 0;
-              return ta - tb;
-            });
-            let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
-              + insightHeaderRow(['Time','Module','Function','Message preview'])
-              + '</tr></thead><tbody>';
-            for (const r of combo) {
-              const tsAttr = escapeHtml(r.ts || '');
-              const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
-              body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
-                + '<td>' + escapeHtml(r.ts || '') + '</td>'
-                + '<td>' + escapeHtml(r.module || '—') + '</td>'
-                + '<td>' + escapeHtml(r.func || '—') + '</td>'
-                + '<td>' + escapeHtml(_tenkpClipText(r.rest || '', 160)) + '</td>'
-                + '</tr>';
-            }
-            body += '</tbody></table>';
-            html += insightSection('ncs:orchestrator', 'Orchestrator / soseos / pre-/post-tts activity', combo.length + ' event' + (combo.length === 1 ? '' : 's'), body, { defaultOpen: false });
-          }
-        }
-
-        // 6. Catch-all for any future unrecognised key_point lines
-        if (tkp && tkp.generic && tkp.generic.length) {
-          let body = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
-            + insightHeaderRow(['Time','func','file:line','tag','payload preview'])
-            + '</tr></thead><tbody>';
-          for (const r of tkp.generic) {
-            const tsAttr = escapeHtml(r.ts || '');
-            const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
-            body += '<tr data-ts="' + tsAttr + '"' + idxAttr + '>'
-              + '<td>' + escapeHtml(r.ts || '') + '</td>'
-              + '<td>' + escapeHtml(r.func || '—') + '</td>'
-              + '<td>' + escapeHtml((r.file || '') + ':' + (r.line != null ? r.line : '')) + '</td>'
-              + '<td>' + escapeHtml(r.tag || '—') + '</td>'
-              + '<td>' + escapeHtml(_tenkpClipText(r.rest || '', 160)) + '</td>'
-              + '</tr>';
-          }
-          body += '</tbody></table>';
-          html += insightSection('ncs:genericKeyPoints', 'Other key_point events', tkp.generic.length + ' event' + (tkp.generic.length === 1 ? '' : 's'), body, { defaultOpen: false });
+        // Ten-runtime key_point sections: data extracted in onFileLoad with other insights;
+        // heavy tables mount lazily when the Keypoints tab is opened (avoids freezing 500MB+ logs).
+        if (tenKeyPointsHasRenderableContent(insights)) {
+          html += '<div id="tenKeyPointsLazyMount" class="ten-keypoints-lazy" data-pending="1">'
+            + '<p class="insight-empty ten-keypoints-lazy-msg">Additional key_point sections load when you open this tab…</p>'
+            + '</div>';
         }
 
         html += '</div>';
@@ -4871,6 +4951,11 @@
             root.querySelectorAll('.insight-tab-panel').forEach(p => {
               p.classList.toggle('active', p.getAttribute('data-panel') === tab);
             });
+            if (tab === 'ncs') {
+              const lazyMsg = root.querySelector('.ten-keypoints-lazy-msg');
+              if (lazyMsg) lazyMsg.textContent = 'Loading key_point sections…';
+              scheduleTenKeyPointSectionsMount(insights);
+            }
             applyInsightFilter();
           });
         });
@@ -6847,9 +6932,6 @@
           // Strict behavior requested: when ENABLE_MLLM is present and false, keep MLLM tab empty.
           // If the flag is absent, allow fallback to observed v2v/mllm signals.
           const mllmEnabled = hasExplicitMllmFlag ? flagTrue : hasV2vSignal;
-          // New ten-runtime extractors. Computed up-front so extractPerformanceMetrics can
-          // consume `turnFinishedMetrics` for its additive enrichment pass without changing
-          // any existing extractor's signature or first-wins precedence.
           const tenKeyPoints = extractTenKeyPoints(entries);
           const independentStateTransitions = extractIndependentStateTransitions(entries);
           state.insights = {
@@ -6884,6 +6966,7 @@
           document.getElementById('loading').style.display = 'none';
           updateRawLogDownloadButton();
           applyFilters();
+          setParseOverlay(false);
             } catch (err) {
               console.error(err);
               alert('Failed to parse log: ' + (err && err.message ? err.message : String(err)));
