@@ -106,9 +106,16 @@
         return new Date(s).getTime();
       }
 
-      /** Find log entry index whose ts is closest to the given timestamp string. Returns -1 if no entries or ts invalid. */
-      function findLogIndexByTs(ts) {
-        if (!state.entries || !state.entries.length) return -1;
+      /** Find log entry index for a timestamp. Exact string match first, then closest by parsed time. */
+      function findLogIndexByTs(ts, source) {
+        if (!state.entries || !state.entries.length || ts == null || ts === '') return -1;
+        const tsStr = String(ts);
+        for (let i = 0; i < state.entries.length; i++) {
+          const entry = state.entries[i];
+          if (entry.ts !== tsStr) continue;
+          if (!source || entryMatchesInsightSource(entry, source)) return i;
+        }
+        if (source) return findLogIndexByTsAndSource(ts, source);
         const t = parseLogTs(ts);
         if (isNaN(t)) return -1;
         let bestIdx = 0;
@@ -154,6 +161,28 @@
         }
         if (bestIdx >= 0) return bestIdx;
         return findLogIndexByTs(ts);
+      }
+
+      /** Resolve log line index from an Insights table row (data-index preferred, ts+source fallback). */
+      function resolveInsightJumpIndex(row) {
+        if (!row || !state.entries || !state.entries.length) return -1;
+        const ts = row.getAttribute('data-ts') || '';
+        let source = row.getAttribute('data-source');
+        if (!source && row.className) {
+          const m = row.className.match(/\bsource-([\w-]+)/);
+          if (m) source = m[1];
+        }
+        const dataIndex = row.getAttribute('data-index');
+        if (dataIndex != null && dataIndex !== '') {
+          const idx = parseInt(dataIndex, 10);
+          if (!isNaN(idx) && idx >= 0 && idx < state.entries.length) {
+            if (!ts || state.entries[idx].ts === ts) return idx;
+            const byTs = findLogIndexByTs(ts, source || null);
+            return byTs >= 0 ? byTs : idx;
+          }
+        }
+        if (!ts) return -1;
+        return findLogIndexByTs(ts, source || null);
       }
 
       /** Parse user date/time input (e.g. "1/1/1 9:01:01" or "2026-03-06 16:08:34") to ms */
@@ -2066,9 +2095,13 @@
             + insightHeaderRow(['Time','Turn','Start type','End type','e2e_latency_ms','playback_duration_ms','real_e2e_latency_ms','net_internal_e2e_latency_ms','prefetch.is_reused'])
             + '</tr></thead><tbody>';
           const metricsByTurn = {};
+          const metricEntryByTurn = {};
           for (const m of (tkp.turnFinishedMetrics || [])) {
             const p = m.payload || {};
-            if (p.turn_id != null) metricsByTurn[p.turn_id] = p.metric_details || null;
+            if (p.turn_id != null) {
+              metricsByTurn[p.turn_id] = p.metric_details || null;
+              if (m.entryIndex != null) metricEntryByTurn[p.turn_id] = m.entryIndex;
+            }
           }
           const segmentedByTurn = {};
           for (const r of tkp.turnFinished) {
@@ -2099,12 +2132,13 @@
           body += '</tbody></table>';
           const segTurns = Object.keys(segmentedByTurn).sort(function (a, b) { return parseInt(a, 10) - parseInt(b, 10); });
           if (segTurns.length) {
-            let seg = '<table class="insight-table insight-filterable"><thead><tr>'
+            let seg = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>'
               + insightHeaderRow(['Turn','Segment','Group','Latency (ms)'])
               + '</tr></thead><tbody>';
             for (const tId of segTurns) {
+              const segIdxAttr = metricEntryByTurn[tId] != null ? ' data-index="' + metricEntryByTurn[tId] + '"' : '';
               for (const s of segmentedByTurn[tId]) {
-                seg += '<tr><td>' + escapeHtml(String(tId)) + '</td>'
+                seg += '<tr' + segIdxAttr + '><td>' + escapeHtml(String(tId)) + '</td>'
                   + '<td>' + escapeHtml(s.name || '—') + '</td>'
                   + '<td>' + escapeHtml(s.group || '—') + '</td>'
                   + '<td>' + (s.latency != null ? escapeHtml(String(s.latency)) : '—') + '</td></tr>';
@@ -2782,6 +2816,16 @@
         // The 3 new fields (real_e2e_latency_ms, net_internal_e2e_latency_ms,
         // playback_duration_ms) are not emitted by the old pipeline, so they
         // simply stay null on older logs.
+        function segmentLatencyMs(md, names) {
+          if (!md || !Array.isArray(md.segmented_latency_ms)) return null;
+          const want = names.map(function (n) { return String(n).toLowerCase(); });
+          for (const seg of md.segmented_latency_ms) {
+            if (!seg || seg.latency == null) continue;
+            const name = String(seg.name || '').toLowerCase();
+            if (want.indexOf(name) >= 0) return parseInt(seg.latency, 10);
+          }
+          return null;
+        }
         if (Array.isArray(turnFinishedMetrics) && turnFinishedMetrics.length) {
           for (const m of turnFinishedMetrics) {
             const p = m && m.payload;
@@ -2793,30 +2837,35 @@
             const llmActual = md.llm_actual || {};
             if (row.llm_ttfb == null && llmActual.ttft_ms != null) row.llm_ttfb = parseInt(llmActual.ttft_ms, 10);
             if (row.llm_ttfs == null && llmActual.ftfs_ms != null) row.llm_ttfs = parseInt(llmActual.ftfs_ms, 10);
-            // Pull a tts_ttfb out of segmented_latency_ms when present.
-            if (row.tts_ttfb == null && Array.isArray(md.segmented_latency_ms)) {
-              for (const seg of md.segmented_latency_ms) {
-                if (!seg) continue;
-                const name = String(seg.name || '').toLowerCase();
-                if ((name === 'tts_ttfb' || name === 'tts_ttfa' || name === 'tts_first_byte') && seg.latency != null) {
-                  row.tts_ttfb = parseInt(seg.latency, 10);
-                  break;
-                }
-              }
+            if (row.asr_ttlw == null) {
+              const asrSeg = segmentLatencyMs(md, ['asr_ttlw']);
+              if (asrSeg != null) row.asr_ttlw = asrSeg;
             }
+            if (row.aivad_delay == null) {
+              const aivadSeg = segmentLatencyMs(md, ['aivad_delay_ms']);
+              if (aivadSeg != null) row.aivad_delay = aivadSeg;
+            }
+            if (row.tts_ttfb == null) {
+              const ttsSeg = segmentLatencyMs(md, ['tts_ttfb', 'tts_ttfa', 'tts_first_byte']);
+              if (ttsSeg != null) row.tts_ttfb = ttsSeg;
+            }
+            const transportSeg = segmentLatencyMs(md, ['transport']);
+            if (transportSeg != null) row.transport_latency = transportSeg;
             // Authoritative e2e from metric_details, but only when the older
             // `[report_controller]` pass left it blank.
-            const metrics = p.metrics || {};
-            if (row.end_to_end_reported_ms == null && metrics.e2e_latency_ms != null) {
-              row.end_to_end_reported_ms = parseInt(metrics.e2e_latency_ms, 10);
+            if (row.end_to_end_reported_ms == null && md.e2e_latency_ms != null) {
+              row.end_to_end_reported_ms = parseInt(md.e2e_latency_ms, 10);
             }
-            // Three new optional columns. Always assign — these have no
-            // legacy source, so there's no precedence to worry about.
+            if (row.end_to_end_reported_ms == null) {
+              const metrics = p.metrics || {};
+              if (metrics.e2e_latency_ms != null) row.end_to_end_reported_ms = parseInt(metrics.e2e_latency_ms, 10);
+            }
             if (md.real_e2e_latency_ms != null) row.real_e2e_latency_ms = parseInt(md.real_e2e_latency_ms, 10);
             if (md.net_internal_e2e_latency_ms != null) row.net_internal_e2e_latency_ms = parseInt(md.net_internal_e2e_latency_ms, 10);
             const end = p.end || {};
             const endMeta = end.metadata || {};
             if (endMeta.playback_duration_ms != null) row.playback_duration_ms = parseInt(endMeta.playback_duration_ms, 10);
+            if (m.entryIndex != null) row.entry_index = m.entryIndex;
           }
         }
         return Object.values(byTurn).sort((a, b) => a.turn_id - b.turn_id);
@@ -3187,9 +3236,10 @@
         const interruptedTitle = row.interruptReason ? ' title="' + escapeHtml('Interrupted: ' + row.interruptReason) + '"' : '';
         const tsAttr = escapeHtml(row.ts || '');
         const idxAttr = row.entryIndex != null ? ' data-index="' + row.entryIndex + '"' : '';
+        const sourceAttr = row.source ? ' data-source="' + escapeHtml(String(row.source)) + '"' : '';
         const confCell = row.speaker === 'user' ? (renderConfidencePill(row) || '—') : '—';
         const classes = ['turn-row', 'turn-' + row.speaker, row.interrupted ? 'turn-interrupted' : ''].filter(Boolean).join(' ');
-        return `<tr class="${classes}" data-ts="${tsAttr}"${idxAttr}><td>${row.turn != null ? row.turn : '—'}</td><td>${escapeHtml(row.speaker)}</td><td>${escapeHtml(row.ts)}</td><td>${escapeHtml(row.source || '—')}</td><td${interruptedTitle}>${interruptedStr}</td><td>${textCell}</td><td>${finalStr}</td><td class="stt-conf-cell">${confCell}</td><td>${row.start_ms != null ? row.start_ms : '—'}</td><td>${row.duration_ms != null ? row.duration_ms : '—'}</td><td>${escapeHtml(row.language || '—')}</td></tr>`;
+        return `<tr class="${classes}" data-ts="${tsAttr}"${idxAttr}${sourceAttr}><td>${row.turn != null ? row.turn : '—'}</td><td>${escapeHtml(row.speaker)}</td><td>${escapeHtml(row.ts)}</td><td>${escapeHtml(row.source || '—')}</td><td${interruptedTitle}>${interruptedStr}</td><td>${textCell}</td><td>${finalStr}</td><td class="stt-conf-cell">${confCell}</td><td>${row.start_ms != null ? row.start_ms : '—'}</td><td>${row.duration_ms != null ? row.duration_ms : '—'}</td><td>${escapeHtml(row.language || '—')}</td></tr>`;
       }
 
       function buildTurnsList(insights) {
@@ -3417,7 +3467,9 @@
         const rowsWithTurnId = list.filter(function (row) { return row.turn != null; });
         const finalList = rowsWithTurnId.length ? rowsWithTurnId : list;
         finalList.forEach(function (row) {
-          row.entryIndex = findLogIndexByTsAndSource(row.ts, row.source);
+          if (row.entryIndex == null) {
+            row.entryIndex = findLogIndexByTsAndSource(row.ts, row.source);
+          }
         });
         // Attach /think decisions to matching turn rows (keyed by legacy_state.turn_id, falling
         // back to plan.turn_id). Old logs without `tenKeyPoints.think` skip this entirely.
@@ -3961,7 +4013,8 @@
             const finalStr = row.final === true ? 'yes' : row.final === false ? 'no' : '—';
             const tsAttr = escapeHtml(row.ts || '');
             const idxAttr = row.entryIndex != null ? ' data-index="' + row.entryIndex + '"' : '';
-            html += `<tr class="msg-row source-${row.source}" data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(row.ts)}</td><td>${escapeHtml(row.source)}</td><td>${textCell}</td><td>${finalStr}</td><td>${row.turn_id != null ? row.turn_id : '—'}</td><td>${row.start_ms != null ? row.start_ms : '—'}</td><td>${row.duration_ms != null ? row.duration_ms : '—'}</td></tr>`;
+            const sourceAttr = row.source ? ' data-source="' + escapeHtml(String(row.source)) + '"' : '';
+            html += `<tr class="msg-row source-${row.source}" data-ts="${tsAttr}"${idxAttr}${sourceAttr}><td>${escapeHtml(row.ts)}</td><td>${escapeHtml(row.source)}</td><td>${textCell}</td><td>${finalStr}</td><td>${row.turn_id != null ? row.turn_id : '—'}</td><td>${row.start_ms != null ? row.start_ms : '—'}</td><td>${row.duration_ms != null ? row.duration_ms : '—'}</td></tr>`;
           }
           html += '</tbody></table>';
         } else html += '<p class="insight-empty">No text messages found.</p>';
@@ -4008,6 +4061,8 @@
         if (perf.length) {
           html += '<p class="insight-formula">Module timings by turn; see <strong>Note</strong> under the table for TTeRTC and <strong>~</strong>/<strong>†</strong>.</p>';
           (function () {
+            const hasRealE2e = perf.some(function (r) { return r.real_e2e_latency_ms != null; });
+            const hasTransport = perf.some(function (r) { return r.transport_latency != null; });
             const series = [
               { key: 'vad', label: 'VAD (ms)', color: '#67e8f9', marker: 'circle' },
               { key: 'aivad_delay', label: 'AIVAD Delay (ms)', color: '#93c5fd', marker: 'circle' },
@@ -4019,6 +4074,8 @@
               { key: 'tts_ttfb', label: 'TTS TTFB (ms)', color: '#fca5a5', marker: 'circle' },
               { key: 'total', label: 'Total Time Exclude RTC', color: '#e9d5ff', marker: 'circle' }
             ];
+            if (hasTransport) series.push({ key: 'transport_latency', label: 'Transport (ms)', color: '#f9a8d4', marker: 'circle' });
+            if (hasRealE2e) series.push({ key: 'real_e2e_latency_ms', label: 'Real E2E (ms)', color: '#f472b6', marker: 'triangle' });
             const n = perf.length;
             const maxTurnId = n ? Math.max.apply(null, perf.map(function (r) { return r.turn_id; })) : 1;
             const pointsBySeries = {};
@@ -4150,6 +4207,7 @@
           const hasRealE2e = perf.some(function (r) { return r.real_e2e_latency_ms != null; });
           const hasNetE2e = perf.some(function (r) { return r.net_internal_e2e_latency_ms != null; });
           const hasPlayback = perf.some(function (r) { return r.playback_duration_ms != null; });
+          const hasTransport = perf.some(function (r) { return r.transport_latency != null; });
           const perfHeaders = [
             { label: 'Turn ID', title: 'Turn index for this user-speech segment (matches turn_detector / metrics in the log).' },
             { label: 'VAD (ms)', title: 'Voice Activity Detection window: silence duration after speech ends plus fixed padding (from EOS / E2E report when logged). Not shown if that line is missing for the turn.' },
@@ -4162,6 +4220,7 @@
             { label: 'TTS TTFB (ms)', title: 'TTS Time To First Byte: from TTS request to first audio frame out of the synthesizer.' },
             { label: 'TTeRTC (ms)', title: 'Total time excluding RTC: backend end-to-end when logged; else sum of VAD + AIVAD + BHVS + ASR TTLW + LLM TTFS + TTS TTFB. ~…† = partial when VAD missing.' }
           ];
+          if (hasTransport) perfHeaders.push({ label: 'Transport (ms)', title: 'transport latency from [turn.finished.metric_details] segmented_latency_ms (name: transport).' });
           if (hasRealE2e) perfHeaders.push({ label: 'Real E2E (ms)', title: 'real_e2e_latency_ms from [turn.finished.metric_details] — the ten runtime\'s authoritative end-to-end excluding any internal masking.' });
           if (hasNetE2e) perfHeaders.push({ label: 'Net Internal E2E (ms)', title: 'net_internal_e2e_latency_ms from [turn.finished.metric_details] — pipeline-internal latency excluding transport.' });
           if (hasPlayback) perfHeaders.push({ label: 'Playback (ms)', title: 'playback_duration_ms from the [turn.finished] end metadata — how long the rendered TTS audio actually played.' });
@@ -4181,10 +4240,13 @@
             if (row.end_to_end_reported_ms != null) totalStr = totalExclRtc + ' ms';
             else if (sumParts > 0) totalStr = (row.vad == null ? '~' : '') + sumParts + ' ms' + (row.vad == null ? ' †' : '');
             let extraCells = '';
+            if (hasTransport) extraCells += '<td>' + (row.transport_latency != null ? row.transport_latency + ' ms' : '—') + '</td>';
             if (hasRealE2e) extraCells += '<td>' + (row.real_e2e_latency_ms != null ? row.real_e2e_latency_ms + ' ms' : '—') + '</td>';
             if (hasNetE2e) extraCells += '<td>' + (row.net_internal_e2e_latency_ms != null ? row.net_internal_e2e_latency_ms + ' ms' : '—') + '</td>';
             if (hasPlayback) extraCells += '<td>' + (row.playback_duration_ms != null ? row.playback_duration_ms + ' ms' : '—') + '</td>';
-            html += `<tr class="perf-table-row" data-turn-id="${row.turn_id}"><td>${row.turn_id}</td><td>${vad}</td><td>${aivad}</td><td>${bhvs}</td><td>${asrTtlw}</td><td>${llmConn}</td><td>${llmTtfb}</td><td>${llmTtfs}</td><td>${ttsTtfb}</td><td>${totalStr}</td>${extraCells}</tr>`;
+            const jumpIdx = row.entry_index != null ? row.entry_index : (insights.perfJumpByTurn && insights.perfJumpByTurn[row.turn_id]);
+            const idxAttr = jumpIdx != null ? ' data-index="' + jumpIdx + '"' : '';
+            html += `<tr class="perf-table-row" data-turn-id="${row.turn_id}"${idxAttr}><td>${row.turn_id}</td><td>${vad}</td><td>${aivad}</td><td>${bhvs}</td><td>${asrTtlw}</td><td>${llmConn}</td><td>${llmTtfb}</td><td>${llmTtfs}</td><td>${ttsTtfb}</td><td>${totalStr}</td>${extraCells}</tr>`;
           }
           const medVad = median(perf.map(function (r) { return r.vad; }));
           const medAivad = median(perf.map(function (r) { return r.aivad_delay; }));
@@ -4194,6 +4256,7 @@
           const medLlmTtfb = median(perf.map(function (r) { return r.llm_ttfb; }));
           const medLlmTtfs = median(perf.map(function (r) { return r.llm_ttfs; }));
           const medTts = median(perf.map(function (r) { return r.tts_ttfb; }));
+          const medTransport = hasTransport ? median(perf.map(function (r) { return r.transport_latency; })) : null;
           const totalV = function (r) {
             if (r.end_to_end_reported_ms != null) return r.end_to_end_reported_ms;
             return (r.vad || 0) + (r.aivad_delay || 0) + (r.bhvs_delay || 0) + (r.asr_ttlw || 0) + (r.llm_ttfs || 0) + (r.tts_ttfb || 0);
@@ -4204,6 +4267,7 @@
           const medPlayback = hasPlayback ? median(perf.map(function (r) { return r.playback_duration_ms; })) : null;
           const fmt = function (v) { return v != null ? Math.round(v) + ' ms' : '—'; };
           let extraMedians = '';
+          if (hasTransport) extraMedians += '<td>' + fmt(medTransport) + '</td>';
           if (hasRealE2e) extraMedians += '<td>' + fmt(medRealE2e) + '</td>';
           if (hasNetE2e) extraMedians += '<td>' + fmt(medNetE2e) + '</td>';
           if (hasPlayback) extraMedians += '<td>' + fmt(medPlayback) + '</td>';
@@ -5223,6 +5287,14 @@
           visible.push({ entry: e, globalIdx });
         }
 
+        if (state.pendingScrollToSelection && selectedIndex != null && selectedIndex >= 0 && selectedIndex < state.entries.length) {
+          const already = visible.some(function (v) { return v.globalIdx === selectedIndex; });
+          if (!already) {
+            visible.push({ entry: state.entries[selectedIndex], globalIdx: selectedIndex });
+            visible.sort(function (a, b) { return a.globalIdx - b.globalIdx; });
+          }
+        }
+
         const foundCountEl = document.getElementById('foundCount');
         if (foundCountEl) {
           const n = visible.length;
@@ -5326,6 +5398,27 @@
             setParseOverlay(false);
           }
         }, 250);
+      }
+
+      /** Insights jump-to-log: skip debounce so scroll/highlight isn't lost to a stale render. */
+      function applyFiltersImmediate() {
+        applyFiltersSeq++;
+        if (applyFiltersDebounceTimer) clearTimeout(applyFiltersDebounceTimer);
+        applyFiltersDebounceTimer = null;
+        if (applyFiltersSpinnerTimer) clearTimeout(applyFiltersSpinnerTimer);
+        setParseOverlay(true, 'Updating view…');
+        try {
+          const p = doApplyFilters();
+          if (p && typeof p.finally === 'function') {
+            p.finally(function () {
+              setParseOverlay(false);
+            });
+          } else {
+            setParseOverlay(false);
+          }
+        } catch (_) {
+          setParseOverlay(false);
+        }
       }
 
       function goToFirstMatch() {
@@ -6824,12 +6917,24 @@
           const mllmEnabled = hasExplicitMllmFlag ? flagTrue : hasV2vSignal;
           const tenKeyPoints = extractTenKeyPoints(entries);
           const independentStateTransitions = extractIndependentStateTransitions(entries);
+          const perfJumpByTurn = {};
+          for (const m of tenKeyPoints.turnFinishedMetrics || []) {
+            if (m.payload && m.payload.turn_id != null && m.entryIndex != null) {
+              perfJumpByTurn[m.payload.turn_id] = m.entryIndex;
+            }
+          }
+          for (const m of tenKeyPoints.turnFinished || []) {
+            if (m.payload && m.payload.turn_id != null && m.entryIndex != null && perfJumpByTurn[m.payload.turn_id] == null) {
+              perfJumpByTurn[m.payload.turn_id] = m.entryIndex;
+            }
+          }
           state.insights = {
             summary: summary,
             stateTransitions: extractStateTransitions(entries),
             stateReports: extractStateReports(entries),
             tenKeyPoints: tenKeyPoints,
             independentStateTransitions: independentStateTransitions,
+            perfJumpByTurn: perfJumpByTurn,
             tts: extractTts(entries),
             ttsIssues: extractTtsIssues(entries),
             userAsr: extractUserAsrTranscripts(entries),
@@ -7727,24 +7832,22 @@
             state.selectedIndex = idx;
             state.contextRadius = 50;
             state.pendingScrollToSelection = true;
-            applyFilters();
+            applyFiltersImmediate();
           }
           return;
         }
         if (window.getSelection().toString().trim()) return;
         if (ev.target.closest && ev.target.closest('details.insight-text-expand')) return;
         if (ev.target.closest && ev.target.closest('.system-prompt-card')) return;
-        const row = ev.target.closest('tr[data-ts], tr[data-index]');
+        const row = ev.target.closest('tr[data-index], tr[data-ts], tr[data-turn-id]');
         if (!row) return;
-        let idx = -1;
-        const dataIndex = row.getAttribute('data-index');
-        if (dataIndex != null && dataIndex !== '') {
-          idx = parseInt(dataIndex, 10);
-        }
+        let idx = resolveInsightJumpIndex(row);
         if (idx < 0) {
-          const ts = row.getAttribute('data-ts');
-          if (!ts) return;
-          idx = findLogIndexByTs(ts);
+          const turnIdRaw = row.getAttribute('data-turn-id');
+          if (turnIdRaw != null && turnIdRaw !== '' && state.insights && state.insights.perfJumpByTurn) {
+            const turnIdx = state.insights.perfJumpByTurn[parseInt(turnIdRaw, 10)];
+            if (turnIdx != null) idx = turnIdx;
+          }
         }
         if (idx < 0) return;
         document.querySelector('.view-tabs button[data-view="log"]').click();
@@ -7752,7 +7855,7 @@
         state.selectedIndex = idx;
         state.contextRadius = 50;
         state.pendingScrollToSelection = true;
-        applyFilters();
+        applyFiltersImmediate();
       });
 
       document.getElementById('ctxShow50').addEventListener('click', function () {
