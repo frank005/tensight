@@ -332,6 +332,61 @@
         return null;
       }
 
+      /** Voice / speaker id from TTS provider params (Rime uses `speaker`, others often `voice_id`). */
+      function pickTtsVoiceFromParams(params) {
+        if (!params || typeof params !== 'object') return null;
+        const keys = ['voice_id', 'voiceId', 'voice', 'speaker'];
+        for (let ki = 0; ki < keys.length; ki++) {
+          const v = params[keys[ki]];
+          if (v != null && String(v).trim() !== '') return String(v).trim();
+        }
+        return null;
+      }
+
+      function parseDictAfterEqualsPrefix(msg, prefix) {
+        if (!msg || typeof msg !== 'string') return null;
+        const idx = msg.indexOf(prefix);
+        if (idx === -1) return null;
+        const start = msg.indexOf('{', idx + prefix.length);
+        if (start === -1) return null;
+        let depth = 0;
+        for (let i = start; i < msg.length; i++) {
+          if (msg[i] === '{') depth++;
+          else if (msg[i] === '}') {
+            depth--;
+            if (depth === 0) return tryParsePythonDict(msg.slice(start, i + 1)) || tryParseJSON(msg.slice(start, i + 1));
+          }
+        }
+        return null;
+      }
+
+      /** `key_point on_init@... [tts] ... params={'speaker': '...', ...}` (Rime and similar). */
+      function extractTtsVoiceFromOnInitKeyPoint(msg) {
+        if (!msg || !/\bkey_point\b/.test(msg) || !/\bon_init@/.test(msg) || !/\[tts\]/.test(msg)) return null;
+        const params = parseDictAfterEqualsPrefix(msg, 'params=');
+        if (params) {
+          const fromParams = pickTtsVoiceFromParams(params);
+          if (fromParams) return fromParams;
+        }
+        const patterns = [
+          /['"]speaker['"]\s*:\s*['"]([^'"]+)['"]/,
+          /['"]voice_id['"]\s*:\s*['"]([^'"]+)['"]/,
+          /['"]voiceId['"]\s*:\s*['"]([^'"]+)['"]/,
+          /['"]voice['"]\s*:\s*['"]([^'"]+)['"]/
+        ];
+        for (let pi = 0; pi < patterns.length; pi++) {
+          const m = msg.match(patterns[pi]);
+          if (m && m[1]) return m[1];
+        }
+        return null;
+      }
+
+      function resolveTtsSummaryDetail(summary, props) {
+        const src = summary && summary.providerSource ? summary.providerSource : {};
+        const p = props && props.tts && props.tts.params ? props.tts.params : null;
+        return (summary && summary.ttsVoice) || pickTtsVoiceFromParams(p) || src.tts || '';
+      }
+
       function inferConvoAiJoinSchemaFromBody(body) {
         const p = body && body.properties && typeof body.properties === 'object' ? body.properties : {};
         const td = p.turn_detection && typeof p.turn_detection === 'object' ? p.turn_detection : null;
@@ -378,6 +433,7 @@
           if (s.indexOf('openai') !== -1) return 'openai';
           if (s.indexOf('cartesia') !== -1) return 'cartesia';
           if (s.indexOf('soniox') !== -1) return 'soniox';
+          if (s.indexOf('rime') !== -1) return 'rime';
           if (s.indexOf('agora') !== -1) return 'agora';
           return addon || null;
         }
@@ -462,7 +518,7 @@
           },
           tts: {
             vendor: vendorFromAddon(tts && tts.addon),
-            params: pickObjectFields(ttsp.params, ['base_url', 'url', 'model', 'sample_rate', 'voice_id', 'key', 'api_key'])
+            params: pickObjectFields(ttsp.params, ['base_url', 'url', 'model', 'sample_rate', 'voice_id', 'voice', 'speaker', 'key', 'api_key'])
           },
           filler_words: {
             enable: filler.enable === true
@@ -644,6 +700,7 @@
           llmModel: null, llmSystemPrompt: null, llmSystemPromptEntryIndex: null, llmSystemPromptEmpty: false,
           mllmVendor: null, mllmModel: null, mllmUrl: null,
           ttsModule: null,
+          ttsVoice: null,
           sttModule: null,
           avatarVendor: null,
           avatarId: null,
@@ -670,6 +727,10 @@
           // Authoritative sources (graph JSON `addon`, taskInfo ASR/TTS/AVATAR_VENDOR, etc.) overwrite these below.
           if (!summary.sttModule && e.msg && e.msg.includes('[deepgram_asr_python]')) summary.sttModule = 'deepgram_asr_python';
           if (!summary.ttsModule && e.msg && e.msg.includes('[minimax_tts_websocket]')) summary.ttsModule = 'minimax_tts_websocket';
+          if (!summary.ttsVoice && e.msg) {
+            const voiceFromInit = extractTtsVoiceFromOnInitKeyPoint(e.msg);
+            if (voiceFromInit) summary.ttsVoice = voiceFromInit;
+          }
           if (!summary.llmModule && e.msg && e.msg.includes('[glue_python_async]')) summary.llmModule = 'glue_python_async';
           if (!summary.avatarVendor && e.msg && e.msg.includes('[heygen_avatar_python]')) summary.avatarVendor = 'heygen_avatar_python';
 
@@ -781,6 +842,9 @@
               if (ttsNode) {
                 const ttsAddon = ttsNode.addon || ttsNode.name || null;
                 if (ttsAddon) summary.ttsModule = ttsAddon;
+                if (!summary.ttsVoice && ttsNode.property && ttsNode.property.params) {
+                  summary.ttsVoice = pickTtsVoiceFromParams(ttsNode.property.params);
+                }
               }
               if (asrNode) {
                 const asrAddon = asrNode.addon || asrNode.name || null;
@@ -836,7 +900,13 @@
                   }
                 }
               }
-              { const n2 = g.nodes.find(nn => nn.name === 'tts'); if (n2) { const a = n2.addon || n2.name; if (a) summary.ttsModule = a; } }
+              { const n2 = g.nodes.find(nn => nn.name === 'tts'); if (n2) {
+                const a = n2.addon || n2.name;
+                if (a) summary.ttsModule = a;
+                if (!summary.ttsVoice && n2.property && n2.property.params) {
+                  summary.ttsVoice = pickTtsVoiceFromParams(n2.property.params);
+                }
+              } }
               { const n2 = g.nodes.find(nn => nn.name === 'asr'); if (n2) { const a = n2.addon || n2.name; if (a) summary.sttModule = a; } }
             }
           }
@@ -1134,6 +1204,9 @@
         const presets = summary.providerSource && Array.isArray(summary.providerSource.presets)
           ? summary.providerSource.presets
           : [];
+        if (!summary.ttsVoice && props.tts && props.tts.params) {
+          summary.ttsVoice = pickTtsVoiceFromParams(props.tts.params);
+        }
         summary.providerSource.llm = inferProviderSourceBySignals(info, 'llm', props.llm, presets);
         summary.providerSource.tts = inferProviderSourceBySignals(info, 'tts', props.tts, presets);
         summary.providerSource.asr = inferProviderSourceBySignals(info, 'asr', props.asr, presets);
@@ -3885,6 +3958,7 @@
         const asrVendor = info.ASR_VENDOR || (props && props.asr && (props.asr.vendor || props.asr.vendor_name)) || summary.sttModule || '—';
         const asrLang = info.ASR_LANGUAGE || (props && props.asr && props.asr.language) || '—';
         const ttsVendor = info.TTS_VENDOR || (props && props.tts && (props.tts.vendor || props.tts.vendor_name)) || summary.ttsModule || '—';
+        const ttsDetail = resolveTtsSummaryDetail(summary, props);
         const llmStr = (props && props.llm && (props.llm.url || props.llm.vendor || (typeof props.llm === 'string' ? props.llm : null))) || summary.llmUrl || summary.llmModule || '—';
         const llmModel = summary.llmModel || (props && props.llm && props.llm.params && props.llm.params.model) || '—';
         const src = summary.providerSource || {};
@@ -3920,7 +3994,7 @@
             html += kvCard('MLLM URL', '<span>' + mono(mllmUrl) + '</span><span>' + mono('') + '</span>');
           }
         }
-        html += kvCard('TTS', '<span>' + mono(ttsVendor) + '</span><span>' + mono(src.tts || '') + '</span>');
+        html += kvCard('TTS', '<span>' + mono(ttsVendor) + '</span><span>' + mono(ttsDetail) + '</span>');
         html += kvCard('Service', '<span>' + mono(ti && ti.service) + '</span><span>' + mono(ti && ti.apiVersion) + '</span>');
         html += kvCard('GeoLocation', '<span>' + mono(geoStr) + '</span><span>' + mono(geo && geo.continent) + '</span>');
         html += kvCard('Channel', '<span>' + mono((ti && ti.taskLabels && ti.taskLabels.channel) || summary.channel) + '</span><span>' + mono('') + '</span>');
@@ -6816,8 +6890,10 @@
           }
           document.getElementById('sumGraphId').textContent = summary.graphId || '—';
           const src = summary.providerSource || {};
+          const createProps = summary.createRequestBody && summary.createRequestBody.properties ? summary.createRequestBody.properties : null;
+          const ttsDetail = resolveTtsSummaryDetail(summary, createProps);
           document.getElementById('sumLlm').textContent = (summary.llmUrl || summary.llmModule || '—') + (src.llm ? ' (' + src.llm + ')' : '');
-          document.getElementById('sumTts').textContent = (summary.ttsModule || '—') + (src.tts ? ' (' + src.tts + ')' : '');
+          document.getElementById('sumTts').textContent = (summary.ttsModule || '—') + (ttsDetail ? ' (' + ttsDetail + ')' : '');
           document.getElementById('sumStt').textContent = (summary.sttModule || '—') + (src.asr ? ' (' + src.asr + ')' : '');
           document.getElementById('sumAvatar').textContent = [summary.avatarVendor || '—', summary.avatarId ? ('id=' + summary.avatarId) : ''].filter(Boolean).join(' ');
           const stopCard = document.getElementById('summaryStopCard');
@@ -6913,6 +6989,10 @@
               fields.push(['LLM', url ? url.replace(/^https?:\/\//, '').slice(0, 60) + (url.length > 60 ? '…' : '') : (p.llm.vendor || '—')]);
             }
             if (p.tts && (p.tts.vendor || p.tts.vendor_name)) fields.push(['TTS', p.tts.vendor || p.tts.vendor_name]);
+            if (summary.ttsVoice || (p.tts && p.tts.params)) {
+              const voice = summary.ttsVoice || pickTtsVoiceFromParams(p.tts.params);
+              if (voice) fields.push(['TTS voice', voice]);
+            }
             if (p.asr && (p.asr.vendor || p.asr.vendor_name)) fields.push(['ASR (STT)', p.asr.vendor || p.asr.vendor_name]);
             if (p.asr && (p.asr.language || (p.asr.params && p.asr.params.language))) fields.push(['ASR language', p.asr.language || p.asr.params.language]);
             if (p.idle_timeout != null) fields.push(['Idle timeout', p.idle_timeout + 's']);
