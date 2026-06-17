@@ -1382,6 +1382,8 @@
     .insight-table .perf-median-row td { border-top: 2px solid var(--border); }
     .turn-row.turn-user td:nth-child(2) { color: var(--accent); font-weight: 500; }
     .turn-row.turn-agent td:nth-child(2) { color: var(--success); font-weight: 500; }
+    .turn-row.turn-think td:nth-child(2) { color: #a371f7; font-weight: 600; }
+    .turn-row.turn-think td { background: rgba(163, 113, 247, 0.04); }
     .turn-row.turn-interrupted td { background: rgba(248, 81, 73, 0.08); }
     .turn-row.turn-interrupted td:nth-child(5) { color: var(--error); font-weight: 600; }
 
@@ -1401,13 +1403,6 @@
       border: 1px solid rgba(88, 166, 255, 0.35);
       white-space: nowrap;
       vertical-align: middle;
-    }
-    .turn-think-badge.turn-think-badge-interrupt {
-      border-color: rgba(248, 81, 73, 0.45);
-      background: rgba(248, 81, 73, 0.12);
-    }
-    .turn-think-badge.turn-think-badge-interrupt .turn-think-outcome {
-      color: var(--error);
     }
     .turn-think-label {
       font-weight: 700;
