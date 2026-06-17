@@ -79,7 +79,7 @@ If KV is not configured, Vercel functions fall back to in-memory storage, which 
 | **Summary** | Pretty summary cards + options + task versions |
 | **Keypoints** | NCS joined/left/memory events **plus new ten-runtime `key_point` lines: external `/think` decisions, `[turn.finished]` summary (+ segmented latencies), `IndependentStateManager` multi-axis transitions, assistant interrupt policy, orchestrator / soseos / pre-/post-tts activity, and a catch-all for any unrecognized `key_point func@file:line` line so future runtime additions stay visible** |
 | **Text messages** | ASR/TTS/turn text stream |
-| **Turns (user & agent)** | Consolidated turn timeline; external **`/think`** rows (`source: command`) sorted by decision time with action, agent state, and full payload text |
+| **Turns (user & agent)** | Consolidated turn timeline; compact **`/think`** badges on the transcript row before each decision (action + agent state; decision time in tooltip; full payload in Keypoints) |
 | **States / State reports** | State transitions and reporter outputs |
 | **Performance** | Per-turn latency graph/table (ASR/LLM/TTS/VAD/AIVAD/BHVS + totals). **When `[turn.finished.metric_details]` is emitted, three extra columns appear: Real E2E (ms), Net Internal E2E (ms), and Playback (ms). Older logs that don't emit those payloads render the original 10-column layout unchanged.** |
 | **RTC / Agora** | RTC warnings/errors by category |

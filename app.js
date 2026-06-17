@@ -3332,24 +3332,60 @@
         return '<span class="stt-conf-pill conf-' + tier + ' ' + sourceClass + '" title="' + escapeHtml(tip) + '">' + display + '</span>';
       }
 
-      function buildTurnRowHtml(row) {
-        let textCell;
-        if (row.isThinkRow) {
-          const meta = '<span class="turn-think-inline-meta">' + escapeHtml((row.thinkAction || '?') + ' · agent ' + (row.thinkState || '?')) + '</span><br>';
-          textCell = meta + insightLongTextCell(row.text || '');
-        } else {
-          textCell = insightLongTextCell(row.text || '');
+      function pickThinkAnchorRow(candidates, thinkTs) {
+        if (!candidates || !candidates.length) return null;
+        const thinkMs = parseLogTs(thinkTs);
+        if (isNaN(thinkMs)) return candidates[0];
+        let best = null;
+        let bestMs = -Infinity;
+        for (const r of candidates) {
+          const rowMs = parseLogTs(r.ts);
+          if (isNaN(rowMs)) continue;
+          if (rowMs <= thinkMs && rowMs > bestMs) {
+            bestMs = rowMs;
+            best = r;
+          }
         }
+        if (best) return best;
+        let earliest = candidates[0];
+        let earliestMs = parseLogTs(earliest.ts);
+        for (const r of candidates) {
+          const rowMs = parseLogTs(r.ts);
+          if (!isNaN(rowMs) && (isNaN(earliestMs) || rowMs < earliestMs)) {
+            earliestMs = rowMs;
+            earliest = r;
+          }
+        }
+        return earliest;
+      }
+
+      function renderThinkBadgeInline(row) {
+        const b = row && row.thinkBadge;
+        if (!b) return '';
+        const title = b.title ? ' title="' + escapeHtml(b.title) + '"' : '';
+        const action = b.action || '?';
+        const state = b.effectiveState ? String(b.effectiveState) : '';
+        const interruptClass = action === 'interrupt' ? ' turn-think-badge-interrupt' : '';
+        let html = '<span class="turn-think-badge' + interruptClass + '"' + title + '>';
+        html += '<span class="turn-think-label">/think</span>';
+        html += '<span class="turn-think-outcome">' + escapeHtml(action) + '</span>';
+        if (state) html += '<span class="turn-think-ctx">' + escapeHtml(state) + '</span>';
+        html += '</span> ';
+        return html;
+      }
+
+      function buildTurnRowHtml(row) {
+        const baseTextCell = insightLongTextCell(row.text || '');
+        const textCell = renderThinkBadgeInline(row) + baseTextCell;
         const finalStr = row.final === true ? 'yes' : row.final === false ? 'no' : '—';
         const interruptedStr = row.interrupted ? 'yes' : '—';
-        const interruptedTitle = row.interruptReason ? ' title="' + escapeHtml('Interrupted: ' + row.interruptReason) + '"' : (row.isThinkRow && row.thinkTitle ? ' title="' + escapeHtml(row.thinkTitle) + '"' : '');
+        const interruptedTitle = row.interruptReason ? ' title="' + escapeHtml('Interrupted: ' + row.interruptReason) + '"' : '';
         const tsAttr = escapeHtml(row.ts || '');
         const idxAttr = row.entryIndex != null ? ' data-index="' + row.entryIndex + '"' : '';
         const sourceAttr = row.source ? ' data-source="' + escapeHtml(String(row.source)) + '"' : '';
         const confCell = row.speaker === 'user' ? (renderConfidencePill(row) || '—') : '—';
-        const speakerLabel = row.isThinkRow ? '/think' : row.speaker;
-        const classes = ['turn-row', 'turn-' + (row.isThinkRow ? 'think' : row.speaker), row.interrupted ? 'turn-interrupted' : '', row.isThinkRow && row.thinkAction === 'interrupt' ? 'turn-think-interrupt' : ''].filter(Boolean).join(' ');
-        return `<tr class="${classes}" data-ts="${tsAttr}"${idxAttr}${sourceAttr}><td>${row.turn != null ? row.turn : '—'}</td><td>${escapeHtml(speakerLabel)}</td><td>${escapeHtml(row.ts)}</td><td>${escapeHtml(row.source || '—')}</td><td${interruptedTitle}>${interruptedStr}</td><td>${textCell}</td><td>${finalStr}</td><td class="stt-conf-cell">${confCell}</td><td>${row.start_ms != null ? row.start_ms : '—'}</td><td>${row.duration_ms != null ? row.duration_ms : '—'}</td><td>${escapeHtml(row.language || '—')}</td></tr>`;
+        const classes = ['turn-row', 'turn-' + row.speaker, row.interrupted ? 'turn-interrupted' : ''].filter(Boolean).join(' ');
+        return `<tr class="${classes}" data-ts="${tsAttr}"${idxAttr}${sourceAttr}><td>${row.turn != null ? row.turn : '—'}</td><td>${escapeHtml(row.speaker)}</td><td>${escapeHtml(row.ts)}</td><td>${escapeHtml(row.source || '—')}</td><td${interruptedTitle}>${interruptedStr}</td><td>${textCell}</td><td>${finalStr}</td><td class="stt-conf-cell">${confCell}</td><td>${row.start_ms != null ? row.start_ms : '—'}</td><td>${row.duration_ms != null ? row.duration_ms : '—'}</td><td>${escapeHtml(row.language || '—')}</td></tr>`;
       }
 
       function buildTurnsList(insights) {
@@ -3581,41 +3617,65 @@
             row.entryIndex = findLogIndexByTsAndSource(row.ts, row.source);
           }
         });
-        // External /think decisions are first-class turn rows (source command, real timestamp).
+        // Pin each external /think decision to the transcript row immediately before it in time (same turn).
         const thinkList = (insights.tenKeyPoints && insights.tenKeyPoints.think) || [];
-        for (const t of thinkList) {
-          if (t.kind === 'think_api_event') continue;
-          const p = t.payload || {};
-          const legacy = p.legacy_state || {};
-          const plan = p.plan || {};
-          const meta = p.metadata || {};
-          const tid = legacy.turn_id != null ? legacy.turn_id : (plan.turn_id != null ? plan.turn_id : null);
-          if (tid == null) continue;
-          const action = p.selected_action || plan.action || null;
-          const effectiveState = (p.independent_state && p.independent_state.effective_state)
-            || plan.effective_state
-            || legacy.state
-            || null;
-          const titleBits = [
-            'External /think API (turn ' + tid + ').',
-            'Selected action: ' + (action || '?') + '.',
-            'Agent effective_state: ' + (effectiveState || '?') + '.'
-          ];
-          if (meta.source) titleBits.push('Source: ' + meta.source);
-          if (plan.should_interrupt != null) titleBits.push('should_interrupt: ' + plan.should_interrupt);
-          if (plan.should_allocate_turn != null) titleBits.push('should_allocate_turn: ' + plan.should_allocate_turn);
-          finalList.push({
-            isThinkRow: true,
-            speaker: 'think',
-            turn: tid,
-            ts: t.ts,
-            source: meta.source || meta.transport || 'command',
-            text: p.text || '',
-            thinkAction: action,
-            thinkState: effectiveState,
-            thinkTitle: titleBits.join('\n'),
-            entryIndex: t.entryIndex
+        if (thinkList.length) {
+          const decisions = [];
+          for (const t of thinkList) {
+            if (t.kind === 'think_api_event') continue;
+            const p = t.payload || {};
+            const legacy = p.legacy_state || {};
+            const plan = p.plan || {};
+            const meta = p.metadata || {};
+            const tid = legacy.turn_id != null ? legacy.turn_id : (plan.turn_id != null ? plan.turn_id : null);
+            if (tid == null) continue;
+            decisions.push({
+              ts: t.ts,
+              turnId: tid,
+              action: p.selected_action || plan.action || null,
+              effectiveState: (p.independent_state && p.independent_state.effective_state)
+                || plan.effective_state
+                || legacy.state
+                || null,
+              shouldInterrupt: plan.should_interrupt != null ? plan.should_interrupt : null,
+              shouldAllocate: plan.should_allocate_turn != null ? plan.should_allocate_turn : null,
+              source: meta.source || meta.transport || null,
+              text: p.text || ''
+            });
+          }
+          decisions.sort(function (a, b) {
+            const ta = parseLogTs(a.ts);
+            const tb = parseLogTs(b.ts);
+            return (isNaN(ta) ? 0 : ta) - (isNaN(tb) ? 0 : tb);
           });
+          for (const pick of decisions) {
+            const candidates = finalList.filter(function (r) {
+              return r.turn != null && String(r.turn) === String(pick.turnId);
+            });
+            const best = pickThinkAnchorRow(candidates, pick.ts);
+            if (!best) continue;
+            const titleBits = [
+              'External /think API (turn ' + pick.turnId + ').',
+              'Runtime selected: ' + (pick.action || '?') + ' (agent was ' + (pick.effectiveState || '?') + ').',
+              'Not spoken text — orchestration for the /think payload.'
+            ];
+            if (pick.source) titleBits.push('Source: ' + pick.source);
+            if (pick.shouldInterrupt != null) titleBits.push('should_interrupt: ' + pick.shouldInterrupt);
+            if (pick.shouldAllocate != null) titleBits.push('should_allocate_turn: ' + pick.shouldAllocate);
+            if (pick.ts) titleBits.push('Decision @ ' + pick.ts);
+            if (pick.text) titleBits.push('Payload: "' + (pick.text.length > 240 ? pick.text.slice(0, 240) + '…' : pick.text) + '"');
+            titleBits.push('Full detail: Keypoints → External /think decisions');
+            const badge = {
+              action: pick.action,
+              effectiveState: pick.effectiveState,
+              title: titleBits.join('\n')
+            };
+            if (!best.thinkBadge) {
+              best.thinkBadge = badge;
+            } else if (best.thinkBadge.title) {
+              best.thinkBadge.title += '\n\n— also —\n' + badge.title;
+            }
+          }
         }
         finalList.sort((a, b) => {
           const ta = a.turn != null ? a.turn : 999999;
@@ -3643,12 +3703,14 @@
         for (let i = 0; i < rows.length; i++) {
           const row = rows[i];
           const turn = row.turn != null ? row.turn : '—';
-          const speaker = row.isThinkRow ? '/think' : (row.speaker || '—');
+          const speaker = row.speaker || '—';
           const time = row.ts || '—';
           const interrupted = row.interrupted ? 'yes' : 'no';
           let text = String(row.text || '').replace(/\r\n/g, '\n').trim();
-          if (row.isThinkRow) {
-            text = (row.thinkAction || '?') + ' · agent ' + (row.thinkState || '?') + '\n' + text;
+          if (row.thinkBadge) {
+            const b = row.thinkBadge;
+            const prefix = '[/think ' + (b.action || '?') + (b.effectiveState ? ' · ' + b.effectiveState : '') + '] ';
+            text = prefix + text;
           }
           blocks.push('Turn ' + turn + ' | ' + speaker + ' | ' + time + ' | interrupted: ' + interrupted);
           blocks.push(text || '(no text)');

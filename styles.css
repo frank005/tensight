@@ -1382,18 +1382,50 @@
     .insight-table .perf-median-row td { border-top: 2px solid var(--border); }
     .turn-row.turn-user td:nth-child(2) { color: var(--accent); font-weight: 500; }
     .turn-row.turn-agent td:nth-child(2) { color: var(--success); font-weight: 500; }
-    .turn-row.turn-think td:nth-child(2) { color: #a371f7; font-weight: 600; }
-    .turn-row.turn-think td { background: rgba(163, 113, 247, 0.04); }
-    .turn-row.turn-think-interrupt .turn-think-inline-meta { color: var(--error); }
-    .turn-think-inline-meta {
-      display: inline-block;
-      margin-bottom: 0.25rem;
-      font-size: 0.88em;
-      font-weight: 600;
-      color: #a371f7;
-    }
     .turn-row.turn-interrupted td { background: rgba(248, 81, 73, 0.08); }
     .turn-row.turn-interrupted td:nth-child(5) { color: var(--error); font-weight: 600; }
+
+    /* Inline /think badge in Turns "Text" — orchestration, not transcript. */
+    .turn-think-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-right: 6px;
+      padding: 1px 6px;
+      font-size: 0.78em;
+      font-weight: 500;
+      line-height: 1.35;
+      border-radius: 3px;
+      background: rgba(88, 166, 255, 0.15);
+      color: var(--accent);
+      border: 1px solid rgba(88, 166, 255, 0.35);
+      white-space: nowrap;
+      vertical-align: middle;
+    }
+    .turn-think-badge.turn-think-badge-interrupt {
+      border-color: rgba(248, 81, 73, 0.45);
+      background: rgba(248, 81, 73, 0.12);
+    }
+    .turn-think-badge.turn-think-badge-interrupt .turn-think-outcome {
+      color: var(--error);
+    }
+    .turn-think-label {
+      font-weight: 700;
+      opacity: 0.95;
+    }
+    .turn-think-outcome {
+      font-weight: 600;
+      text-transform: lowercase;
+    }
+    .turn-think-ctx::before {
+      content: '·';
+      margin-right: 4px;
+      opacity: 0.55;
+    }
+    .turn-think-ctx {
+      color: var(--muted);
+      font-weight: 500;
+    }
 
     /* Secondary table nested under the "Turn finished summary" Keypoints section
        (segmented latencies). Indents so it visually belongs to the parent table. */
