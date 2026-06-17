@@ -1385,23 +1385,58 @@
     .turn-row.turn-interrupted td { background: rgba(248, 81, 73, 0.08); }
     .turn-row.turn-interrupted td:nth-child(5) { color: var(--error); font-weight: 600; }
 
-    /* /think decision badge prepended into the Turns "Text" cell. Sized to feel
-       like an inline tag — never wraps, never grows. Only renders when the
-       ten runtime emitted a key_point _log_external_think_decision row whose
-       legacy_state.turn_id matches this turn. */
+    .turn-think-legend {
+      margin: 0 0 0.75rem;
+      padding: 0.55rem 0.75rem;
+      font-size: 0.88em;
+      line-height: 1.45;
+      color: var(--muted);
+      background: rgba(88, 166, 255, 0.06);
+      border: 1px solid rgba(88, 166, 255, 0.2);
+      border-radius: 6px;
+    }
+    .turn-think-legend code {
+      font-size: 0.95em;
+      color: var(--accent);
+    }
+    /* Inline /think badge in Turns "Text" — orchestration, not transcript. */
     .turn-think-badge {
-      display: inline-block;
-      padding: 1px 6px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
       margin-right: 6px;
+      padding: 1px 6px;
       font-size: 0.78em;
       font-weight: 500;
-      line-height: 1.3;
+      line-height: 1.35;
       border-radius: 3px;
       background: rgba(88, 166, 255, 0.15);
       color: var(--accent);
       border: 1px solid rgba(88, 166, 255, 0.35);
       white-space: nowrap;
       vertical-align: middle;
+    }
+    .turn-think-label {
+      font-weight: 700;
+      opacity: 0.95;
+    }
+    .turn-think-outcome {
+      font-weight: 600;
+      text-transform: lowercase;
+    }
+    .turn-think-ctx::before {
+      content: '·';
+      margin-right: 4px;
+      opacity: 0.55;
+    }
+    .turn-think-ctx {
+      color: var(--muted);
+      font-weight: 500;
+    }
+    .turn-think-delta {
+      font-size: 0.92em;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
     }
 
     /* Secondary table nested under the "Turn finished summary" Keypoints section

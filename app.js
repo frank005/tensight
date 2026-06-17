@@ -3332,17 +3332,36 @@
         return '<span class="stt-conf-pill conf-' + tier + ' ' + sourceClass + '" title="' + escapeHtml(tip) + '">' + display + '</span>';
       }
 
+      function formatThinkTimeDelta(thinkTs, rowTs) {
+        const thinkMs = parseLogTs(thinkTs);
+        const rowMs = parseLogTs(rowTs);
+        if (isNaN(thinkMs) || isNaN(rowMs)) return '';
+        const d = thinkMs - rowMs;
+        const sign = d >= 0 ? '+' : '-';
+        const abs = Math.abs(d);
+        if (abs < 1000) return sign + Math.round(abs) + 'ms';
+        return sign + (abs / 1000).toFixed(2) + 's';
+      }
+
+      function renderThinkBadgeInline(row) {
+        const b = row && row.thinkBadge;
+        if (!b) return '';
+        const title = b.title ? ' title="' + escapeHtml(b.title) + '"' : '';
+        const action = b.action || '?';
+        const state = b.effectiveState ? String(b.effectiveState) : '';
+        const delta = b.deltaLabel ? String(b.deltaLabel) : '';
+        let html = '<span class="turn-think-badge"' + title + '>';
+        html += '<span class="turn-think-label">/think</span>';
+        html += '<span class="turn-think-outcome">' + escapeHtml(action) + '</span>';
+        if (state) html += '<span class="turn-think-ctx">' + escapeHtml(state) + '</span>';
+        if (delta) html += '<span class="turn-think-delta">' + escapeHtml(delta) + '</span>';
+        html += '</span> ';
+        return html;
+      }
+
       function buildTurnRowHtml(row) {
         const baseTextCell = insightLongTextCell(row.text || '');
-        // Optional ten-runtime /think badge prefix. When present, it renders as a small pill
-        // inside the existing Text cell so rows without a decision stay byte-identical.
-        let textCell = baseTextCell;
-        if (row.thinkBadge) {
-          const b = row.thinkBadge;
-          const title = b.title ? ' title="' + escapeHtml(b.title) + '"' : '';
-          const labelText = 'think: ' + (b.action || '?') + (b.effectiveState ? ' (' + b.effectiveState + ')' : '');
-          textCell = '<span class="turn-think-badge"' + title + '>' + escapeHtml(labelText) + '</span> ' + baseTextCell;
-        }
+        const textCell = renderThinkBadgeInline(row) + baseTextCell;
         const finalStr = row.final === true ? 'yes' : row.final === false ? 'no' : '—';
         const interruptedStr = row.interrupted ? 'yes' : '—';
         const interruptedTitle = row.interruptReason ? ' title="' + escapeHtml('Interrupted: ' + row.interruptReason) + '"' : '';
@@ -3583,46 +3602,73 @@
             row.entryIndex = findLogIndexByTsAndSource(row.ts, row.source);
           }
         });
-        // Attach /think decisions to matching turn rows (keyed by legacy_state.turn_id, falling
-        // back to plan.turn_id). Old logs without `tenKeyPoints.think` skip this entirely.
+        // Pin each external /think decision to the turn row closest in time (same turn_id).
+        // The badge is what the runtime did when the API call landed — not spoken transcript.
         const thinkList = (insights.tenKeyPoints && insights.tenKeyPoints.think) || [];
         if (thinkList.length) {
-          const thinkByTurn = {};
+          const decisions = [];
           for (const t of thinkList) {
+            if (t.kind === 'think_api_event') continue;
             const p = t.payload || {};
             const legacy = p.legacy_state || {};
             const plan = p.plan || {};
+            const meta = p.metadata || {};
             const tid = legacy.turn_id != null ? legacy.turn_id : (plan.turn_id != null ? plan.turn_id : null);
             if (tid == null) continue;
-            const key = String(tid);
-            if (!thinkByTurn[key]) thinkByTurn[key] = [];
-            thinkByTurn[key].push({
+            decisions.push({
               ts: t.ts,
+              turnId: tid,
               action: p.selected_action || plan.action || null,
               effectiveState: (p.independent_state && p.independent_state.effective_state)
                 || plan.effective_state
                 || legacy.state
                 || null,
+              shouldInterrupt: plan.should_interrupt != null ? plan.should_interrupt : null,
+              shouldAllocate: plan.should_allocate_turn != null ? plan.should_allocate_turn : null,
+              source: meta.source || meta.transport || null,
               text: p.text || ''
             });
           }
-          for (const row of finalList) {
-            if (row.turn == null) continue;
-            const bucket = thinkByTurn[String(row.turn)];
-            if (!bucket || !bucket.length) continue;
-            // If multiple think decisions hit the same turn, prefer the earliest one — that's the
-            // decision that actually shaped the turn. Later ones are usually refinements.
-            const pick = bucket[0];
-            const titleBits = [];
-            if (pick.action) titleBits.push('action: ' + pick.action);
-            if (pick.effectiveState) titleBits.push('effective_state: ' + pick.effectiveState);
-            if (pick.ts) titleBits.push('@ ' + pick.ts);
-            if (pick.text) titleBits.push('"' + (pick.text.length > 200 ? pick.text.slice(0, 200) + '…' : pick.text) + '"');
-            row.thinkBadge = {
+          decisions.sort(function (a, b) {
+            const ta = parseLogTs(a.ts);
+            const tb = parseLogTs(b.ts);
+            return (isNaN(ta) ? 0 : ta) - (isNaN(tb) ? 0 : tb);
+          });
+          for (const pick of decisions) {
+            const candidates = finalList.filter(function (r) {
+              return r.turn != null && String(r.turn) === String(pick.turnId);
+            });
+            if (!candidates.length) continue;
+            let best = candidates[0];
+            let bestDt = Infinity;
+            for (const r of candidates) {
+              const dt = Math.abs(parseLogTs(pick.ts) - parseLogTs(r.ts));
+              if (dt < bestDt) { bestDt = dt; best = r; }
+            }
+            const titleBits = [
+              'External /think API arrived during turn ' + pick.turnId + '.',
+              'Runtime selected: ' + (pick.action || '?') + ' (agent was ' + (pick.effectiveState || '?') + ').',
+              'This is not spoken text — it is orchestration for the manual /think payload.',
+              'Badge is on the nearest transcript line by timestamp.'
+            ];
+            if (pick.source) titleBits.push('Source: ' + pick.source);
+            if (pick.shouldInterrupt != null) titleBits.push('should_interrupt: ' + pick.shouldInterrupt);
+            if (pick.shouldAllocate != null) titleBits.push('should_allocate_turn: ' + pick.shouldAllocate);
+            if (pick.ts) titleBits.push('Decision @ ' + pick.ts);
+            if (best.ts) titleBits.push('Nearest row @ ' + best.ts + ' (' + formatThinkTimeDelta(pick.ts, best.ts) + ')');
+            if (pick.text) titleBits.push('Payload: "' + (pick.text.length > 240 ? pick.text.slice(0, 240) + '…' : pick.text) + '"');
+            titleBits.push('Full detail: Keypoints → External /think decisions');
+            const badge = {
               action: pick.action,
               effectiveState: pick.effectiveState,
+              deltaLabel: formatThinkTimeDelta(pick.ts, best.ts),
               title: titleBits.join('\n')
             };
+            if (!best.thinkBadge) {
+              best.thinkBadge = badge;
+            } else if (best.thinkBadge.title) {
+              best.thinkBadge.title += '\n\n— also —\n' + badge.title;
+            }
           }
         }
         finalList.sort((a, b) => {
@@ -4189,6 +4235,10 @@
             + '<button type="button" class="turns-export-btn secondary" id="exportTurnsTranscriptCopy" title="Copy turn, speaker, time, interrupted, and text as plain text">Copy transcript</button>'
             + '<button type="button" class="turns-export-btn secondary" id="exportTurnsTranscriptDownload" title="Download turn transcript as a .txt file">Download transcript</button>'
             + '</div></div>';
+          const hasThinkBadges = turnsList.some(function (r) { return r.thinkBadge; });
+          if (hasThinkBadges) {
+            html += '<p class="turn-think-legend"><strong>/think</strong> badges mark where an external <code>/think</code> API call was processed during that turn. The label is what the runtime <em>did</em> (ignore, interrupt, …) while the agent was in the shown state — not words anyone spoke. Timing is relative to the nearest transcript line. See <strong>Keypoints → External /think decisions</strong> for the full payload.</p>';
+          }
           html += '<table id="turnsTable" class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Turn','Speaker','Time','Source','Interrupted','Text','Final','STT conf','Start (ms)','Duration (ms)','Language']) + '</tr></thead><tbody>';
           for (const row of turnsList) {
             html += buildTurnRowHtml(row);
