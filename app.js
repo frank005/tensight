@@ -3707,7 +3707,8 @@
       }
 
       function downloadTextFile(fileName, content) {
-        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+        const type = /\.csv$/i.test(fileName) ? 'text/csv;charset=utf-8' : 'text/plain;charset=utf-8';
+        const blob = new Blob([content], { type: type });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -3717,6 +3718,117 @@
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
+      }
+
+      /** Shared column layout for the Performance table (render + CSV export). */
+      function buildPerfTableModel(perf) {
+        const rows = Array.isArray(perf) ? perf : [];
+        const hasRealE2e = rows.some(function (r) { return r.real_e2e_latency_ms != null; });
+        const hasNetE2e = rows.some(function (r) { return r.net_internal_e2e_latency_ms != null; });
+        const hasPlayback = rows.some(function (r) { return r.playback_duration_ms != null; });
+        const hasTransport = rows.some(function (r) { return r.transport_latency != null; });
+        const headers = [
+          'Turn ID',
+          'VAD (ms)',
+          'AIVAD Delay (ms)',
+          'BHVS Delay (ms)',
+          'ASR TTLW (ms)',
+          'LLM Connect (ms)',
+          'LLM TTFB (ms)',
+          'LLM TTFS (ms)',
+          'TTS TTFB (ms)',
+          'TTeRTC (ms)'
+        ];
+        if (hasTransport) headers.push('Transport (ms)');
+        if (hasRealE2e) headers.push('Real E2E (ms)');
+        if (hasNetE2e) headers.push('Net Internal E2E (ms)');
+        if (hasPlayback) headers.push('Playback (ms)');
+
+        function fmtMs(v, empty) {
+          return v != null ? v + ' ms' : empty;
+        }
+        function totalStrFor(row) {
+          const sumParts = (row.vad || 0) + (row.aivad_delay || 0) + (row.bhvs_delay || 0) + (row.asr_ttlw || 0) + (row.llm_ttfs || 0) + (row.tts_ttfb || 0);
+          if (row.end_to_end_reported_ms != null) return row.end_to_end_reported_ms + ' ms';
+          if (sumParts > 0) return (row.vad == null ? '~' : '') + sumParts + ' ms' + (row.vad == null ? ' †' : '');
+          return '—';
+        }
+        function cellsFor(row) {
+          const cells = [
+            String(row.turn_id),
+            fmtMs(row.vad, '—'),
+            fmtMs(row.aivad_delay, 'N/A'),
+            fmtMs(row.bhvs_delay, 'N/A'),
+            fmtMs(row.asr_ttlw, 'N/A'),
+            fmtMs(row.llm_connect, 'N/A'),
+            fmtMs(row.llm_ttfb, 'N/A'),
+            fmtMs(row.llm_ttfs, 'N/A'),
+            fmtMs(row.tts_ttfb, 'N/A'),
+            totalStrFor(row)
+          ];
+          if (hasTransport) cells.push(fmtMs(row.transport_latency, '—'));
+          if (hasRealE2e) cells.push(fmtMs(row.real_e2e_latency_ms, '—'));
+          if (hasNetE2e) cells.push(fmtMs(row.net_internal_e2e_latency_ms, '—'));
+          if (hasPlayback) cells.push(fmtMs(row.playback_duration_ms, '—'));
+          return cells;
+        }
+        function totalV(r) {
+          if (r.end_to_end_reported_ms != null) return r.end_to_end_reported_ms;
+          return (r.vad || 0) + (r.aivad_delay || 0) + (r.bhvs_delay || 0) + (r.asr_ttlw || 0) + (r.llm_ttfs || 0) + (r.tts_ttfb || 0);
+        }
+        const fmtMed = function (v) { return v != null ? Math.round(v) + ' ms' : '—'; };
+        const medianCells = [
+          'Median',
+          fmtMed(median(rows.map(function (r) { return r.vad; }))),
+          fmtMed(median(rows.map(function (r) { return r.aivad_delay; }))),
+          fmtMed(median(rows.map(function (r) { return r.bhvs_delay; }))),
+          fmtMed(median(rows.map(function (r) { return r.asr_ttlw; }))),
+          fmtMed(median(rows.map(function (r) { return r.llm_connect; }))),
+          fmtMed(median(rows.map(function (r) { return r.llm_ttfb; }))),
+          fmtMed(median(rows.map(function (r) { return r.llm_ttfs; }))),
+          fmtMed(median(rows.map(function (r) { return r.tts_ttfb; }))),
+          fmtMed(median(rows.map(totalV)))
+        ];
+        if (hasTransport) medianCells.push(fmtMed(median(rows.map(function (r) { return r.transport_latency; }))));
+        if (hasRealE2e) medianCells.push(fmtMed(median(rows.map(function (r) { return r.real_e2e_latency_ms; }))));
+        if (hasNetE2e) medianCells.push(fmtMed(median(rows.map(function (r) { return r.net_internal_e2e_latency_ms; }))));
+        if (hasPlayback) medianCells.push(fmtMed(median(rows.map(function (r) { return r.playback_duration_ms; }))));
+
+        return {
+          headers: headers,
+          hasTransport: hasTransport,
+          hasRealE2e: hasRealE2e,
+          hasNetE2e: hasNetE2e,
+          hasPlayback: hasPlayback,
+          bodyRows: rows.map(cellsFor),
+          medianCells: medianCells,
+          sourceRows: rows
+        };
+      }
+
+      function csvEscapeCell(value) {
+        const s = value == null ? '' : String(value);
+        if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+        return s;
+      }
+
+      function formatPerfTableCsv(model) {
+        if (!model || !model.headers || !model.headers.length) return '';
+        const lines = [];
+        lines.push(model.headers.map(csvEscapeCell).join(','));
+        (model.bodyRows || []).forEach(function (cells) {
+          lines.push(cells.map(csvEscapeCell).join(','));
+        });
+        if (model.medianCells && model.medianCells.length) {
+          lines.push(model.medianCells.map(csvEscapeCell).join(','));
+        }
+        return lines.join('\n') + '\n';
+      }
+
+      function perfTableFileName() {
+        const base = sanitizeLogDownloadFileName(state && state.sourceFileName ? state.sourceFileName : 'ten.err');
+        const stem = base.replace(/\.[^.]+$/, '') || base;
+        return stem + '-performance.csv';
       }
 
       function renderEntry(entry, index, isSelected, searchRaw) {
@@ -3995,7 +4107,10 @@
           const tip = typeof c === 'string' ? '' : (c.title || '');
           const tipEsc = tip.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
           const dataTip = tip ? ' data-tooltip="' + tipEsc + '"' : '';
-          return '<th class="insight-th-filter perf-th-tip" data-col-index="' + i + '"' + dataTip + '>' + escapeHtml(label) + '</th>';
+          const labelHtml = tip
+            ? '<span class="perf-th-tip"' + dataTip + '>' + escapeHtml(label) + '</span>'
+            : escapeHtml(label);
+          return '<th class="insight-th-filter" data-col-index="' + i + '">' + labelHtml + '</th>';
         }).join('');
       }
 
@@ -4407,74 +4522,44 @@
           // Only surface the three new ten-runtime columns when at least one perf row
           // actually has a value. Old logs (no [turn.finished.metric_details]) keep the
           // historical 10-column table layout unchanged.
-          const hasRealE2e = perf.some(function (r) { return r.real_e2e_latency_ms != null; });
-          const hasNetE2e = perf.some(function (r) { return r.net_internal_e2e_latency_ms != null; });
-          const hasPlayback = perf.some(function (r) { return r.playback_duration_ms != null; });
-          const hasTransport = perf.some(function (r) { return r.transport_latency != null; });
-          const perfHeaders = [
-            { label: 'Turn ID', title: 'Turn index for this user-speech segment (matches turn_detector / metrics in the log).' },
-            { label: 'VAD (ms)', title: 'Voice Activity Detection window: silence duration after speech ends plus fixed padding (from EOS / E2E report when logged). Not shown if that line is missing for the turn.' },
-            { label: 'AIVAD Delay (ms)', title: 'AIVAD (AI VAD) extra delay when that extension is enabled; N/A when disabled.' },
-            { label: 'BHVS Delay (ms)', title: 'BHVS: behavioral hold / barge-in window (ms) before ASR finalize, from bhvs_duration_ms in the report_controller E2E line (or a bhvs_delay metric_message). N/A when the turn did not log either.' },
-            { label: 'ASR TTLW (ms)', title: 'ASR Time To Last Word: from end-of-speech to last finalized transcript for the turn.' },
-            { label: 'LLM Connect (ms)', title: 'Time until the LLM HTTP streaming connection returns headers (before first token).' },
-            { label: 'LLM TTFB (ms)', title: 'LLM Time To First Byte: from request start to first assistant text token in the stream.' },
-            { label: 'LLM TTFS (ms)', title: 'LLM Time To First Sentence: until the first chunk sent to TTS (first speakable sentence).' },
-            { label: 'TTS TTFB (ms)', title: 'TTS Time To First Byte: from TTS request to first audio frame out of the synthesizer.' },
-            { label: 'TTeRTC (ms)', title: 'Total time excluding RTC: backend end-to-end when logged; else sum of VAD + AIVAD + BHVS + ASR TTLW + LLM TTFS + TTS TTFB. ~…† = partial when VAD missing.' }
-          ];
-          if (hasTransport) perfHeaders.push({ label: 'Transport (ms)', title: 'transport latency from [turn.finished.metric_details] segmented_latency_ms (name: transport).' });
-          if (hasRealE2e) perfHeaders.push({ label: 'Real E2E (ms)', title: 'real_e2e_latency_ms from [turn.finished.metric_details] — the ten runtime\'s authoritative end-to-end excluding any internal masking.' });
-          if (hasNetE2e) perfHeaders.push({ label: 'Net Internal E2E (ms)', title: 'net_internal_e2e_latency_ms from [turn.finished.metric_details] — pipeline-internal latency excluding transport.' });
-          if (hasPlayback) perfHeaders.push({ label: 'Playback (ms)', title: 'playback_duration_ms from the [turn.finished] end metadata — how long the rendered TTS audio actually played.' });
+          const perfModel = buildPerfTableModel(perf);
+          const tipByLabel = {
+            'Turn ID': 'Turn index for this user-speech segment (matches turn_detector / metrics in the log).',
+            'VAD (ms)': 'Voice Activity Detection window: silence duration after speech ends plus fixed padding (from EOS / E2E report when logged). Not shown if that line is missing for the turn.',
+            'AIVAD Delay (ms)': 'AIVAD (AI VAD) extra delay when that extension is enabled; N/A when disabled.',
+            'BHVS Delay (ms)': 'BHVS: behavioral hold / barge-in window (ms) before ASR finalize, from bhvs_duration_ms in the report_controller E2E line (or a bhvs_delay metric_message). N/A when the turn did not log either.',
+            'ASR TTLW (ms)': 'ASR Time To Last Word: from end-of-speech to last finalized transcript for the turn.',
+            'LLM Connect (ms)': 'Time until the LLM HTTP streaming connection returns headers (before first token).',
+            'LLM TTFB (ms)': 'LLM Time To First Byte: from request start to first assistant text token in the stream.',
+            'LLM TTFS (ms)': 'LLM Time To First Sentence: until the first chunk sent to TTS (first speakable sentence).',
+            'TTS TTFB (ms)': 'TTS Time To First Byte: from TTS request to first audio frame out of the synthesizer.',
+            'TTeRTC (ms)': 'Total time excluding RTC: backend end-to-end when logged; else sum of VAD + AIVAD + BHVS + ASR TTLW + LLM TTFS + TTS TTFB. ~…† = partial when VAD missing.',
+            'Transport (ms)': 'transport latency from [turn.finished.metric_details] segmented_latency_ms (name: transport).',
+            'Real E2E (ms)': 'real_e2e_latency_ms from [turn.finished.metric_details] — the ten runtime\'s authoritative end-to-end excluding any internal masking.',
+            'Net Internal E2E (ms)': 'net_internal_e2e_latency_ms from [turn.finished.metric_details] — pipeline-internal latency excluding transport.',
+            'Playback (ms)': 'playback_duration_ms from the [turn.finished] end metadata — how long the rendered TTS audio actually played.'
+          };
+          const perfHeaders = perfModel.headers.map(function (label) {
+            return { label: label, title: tipByLabel[label] || '' };
+          });
+          html += '<div class="turns-toolbar" style="justify-content:flex-end">'
+            + '<div class="turns-toolbar-actions">'
+            + '<button type="button" class="turns-export-btn secondary" id="exportPerfTableCopy" title="Copy the performance table (headers, rows, and median) as CSV">Copy CSV</button>'
+            + '<button type="button" class="turns-export-btn secondary" id="exportPerfTableDownload" title="Download the performance table (headers, rows, and median) as a .csv file">Download CSV</button>'
+            + '</div></div>';
           html += '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightPerfHeaderRow(perfHeaders) + '</tr></thead><tbody>';
-          for (const row of perf) {
-            const vad = row.vad != null ? row.vad + ' ms' : '—';
-            const aivad = row.aivad_delay != null ? row.aivad_delay + ' ms' : 'N/A';
-            const bhvs = row.bhvs_delay != null ? row.bhvs_delay + ' ms' : 'N/A';
-            const asrTtlw = row.asr_ttlw != null ? row.asr_ttlw + ' ms' : 'N/A';
-            const llmConn = row.llm_connect != null ? row.llm_connect + ' ms' : 'N/A';
-            const llmTtfb = row.llm_ttfb != null ? row.llm_ttfb + ' ms' : 'N/A';
-            const llmTtfs = row.llm_ttfs != null ? row.llm_ttfs + ' ms' : 'N/A';
-            const ttsTtfb = row.tts_ttfb != null ? row.tts_ttfb + ' ms' : 'N/A';
-            const sumParts = (row.vad || 0) + (row.aivad_delay || 0) + (row.bhvs_delay || 0) + (row.asr_ttlw || 0) + (row.llm_ttfs || 0) + (row.tts_ttfb || 0);
-            const totalExclRtc = row.end_to_end_reported_ms != null ? row.end_to_end_reported_ms : sumParts;
-            let totalStr = '—';
-            if (row.end_to_end_reported_ms != null) totalStr = totalExclRtc + ' ms';
-            else if (sumParts > 0) totalStr = (row.vad == null ? '~' : '') + sumParts + ' ms' + (row.vad == null ? ' †' : '');
-            let extraCells = '';
-            if (hasTransport) extraCells += '<td>' + (row.transport_latency != null ? row.transport_latency + ' ms' : '—') + '</td>';
-            if (hasRealE2e) extraCells += '<td>' + (row.real_e2e_latency_ms != null ? row.real_e2e_latency_ms + ' ms' : '—') + '</td>';
-            if (hasNetE2e) extraCells += '<td>' + (row.net_internal_e2e_latency_ms != null ? row.net_internal_e2e_latency_ms + ' ms' : '—') + '</td>';
-            if (hasPlayback) extraCells += '<td>' + (row.playback_duration_ms != null ? row.playback_duration_ms + ' ms' : '—') + '</td>';
+          for (let pi = 0; pi < perfModel.sourceRows.length; pi++) {
+            const row = perfModel.sourceRows[pi];
+            const cells = perfModel.bodyRows[pi];
             const jumpIdx = row.entry_index != null ? row.entry_index : (insights.perfJumpByTurn && insights.perfJumpByTurn[row.turn_id]);
             const idxAttr = jumpIdx != null ? ' data-index="' + jumpIdx + '"' : '';
-            html += `<tr class="perf-table-row" data-turn-id="${row.turn_id}"${idxAttr}><td>${row.turn_id}</td><td>${vad}</td><td>${aivad}</td><td>${bhvs}</td><td>${asrTtlw}</td><td>${llmConn}</td><td>${llmTtfb}</td><td>${llmTtfs}</td><td>${ttsTtfb}</td><td>${totalStr}</td>${extraCells}</tr>`;
+            html += '<tr class="perf-table-row" data-turn-id="' + row.turn_id + '"' + idxAttr + '>'
+              + cells.map(function (c) { return '<td>' + escapeHtml(c) + '</td>'; }).join('')
+              + '</tr>';
           }
-          const medVad = median(perf.map(function (r) { return r.vad; }));
-          const medAivad = median(perf.map(function (r) { return r.aivad_delay; }));
-          const medBhvs = median(perf.map(function (r) { return r.bhvs_delay; }));
-          const medAsr = median(perf.map(function (r) { return r.asr_ttlw; }));
-          const medLlmConn = median(perf.map(function (r) { return r.llm_connect; }));
-          const medLlmTtfb = median(perf.map(function (r) { return r.llm_ttfb; }));
-          const medLlmTtfs = median(perf.map(function (r) { return r.llm_ttfs; }));
-          const medTts = median(perf.map(function (r) { return r.tts_ttfb; }));
-          const medTransport = hasTransport ? median(perf.map(function (r) { return r.transport_latency; })) : null;
-          const totalV = function (r) {
-            if (r.end_to_end_reported_ms != null) return r.end_to_end_reported_ms;
-            return (r.vad || 0) + (r.aivad_delay || 0) + (r.bhvs_delay || 0) + (r.asr_ttlw || 0) + (r.llm_ttfs || 0) + (r.tts_ttfb || 0);
-          };
-          const medTotal = median(perf.map(totalV));
-          const medRealE2e = hasRealE2e ? median(perf.map(function (r) { return r.real_e2e_latency_ms; })) : null;
-          const medNetE2e = hasNetE2e ? median(perf.map(function (r) { return r.net_internal_e2e_latency_ms; })) : null;
-          const medPlayback = hasPlayback ? median(perf.map(function (r) { return r.playback_duration_ms; })) : null;
-          const fmt = function (v) { return v != null ? Math.round(v) + ' ms' : '—'; };
-          let extraMedians = '';
-          if (hasTransport) extraMedians += '<td>' + fmt(medTransport) + '</td>';
-          if (hasRealE2e) extraMedians += '<td>' + fmt(medRealE2e) + '</td>';
-          if (hasNetE2e) extraMedians += '<td>' + fmt(medNetE2e) + '</td>';
-          if (hasPlayback) extraMedians += '<td>' + fmt(medPlayback) + '</td>';
-          html += '</tbody><tfoot><tr class="perf-median-row"><td>Median</td><td>' + fmt(medVad) + '</td><td>' + fmt(medAivad) + '</td><td>' + fmt(medBhvs) + '</td><td>' + fmt(medAsr) + '</td><td>' + fmt(medLlmConn) + '</td><td>' + fmt(medLlmTtfb) + '</td><td>' + fmt(medLlmTtfs) + '</td><td>' + fmt(medTts) + '</td><td>' + fmt(medTotal) + '</td>' + extraMedians + '</tr></tfoot></table>';
+          html += '</tbody><tfoot><tr class="perf-median-row">'
+            + perfModel.medianCells.map(function (c) { return '<td>' + escapeHtml(c) + '</td>'; }).join('')
+            + '</tr></tfoot></table>';
           html += '<p class="perf-table-footnote"><strong>Note:</strong> TTeRTC = backend E2E when logged; else sum(VAD+AIVAD+BHVS+ASR+LLM_TTFS+TTS). <strong>~</strong> + <strong>†</strong> = partial total when VAD (ms) is — for that turn—same as adding only the row’s numeric ms columns (not —/N/A). Not a negative time. <strong>†</strong> = incomplete vs full pipeline; <strong>~</strong> = same idea (can look like “−” in some fonts).</p>';
         } else html += '<p class="insight-empty">No performance metrics found.</p>';
         html += '</div>';
@@ -8033,6 +8118,25 @@
           const rows = getVisibleTurnsList();
           if (!rows.length) return;
           downloadTextFile(turnsTranscriptFileName(), formatTurnsTranscript(rows));
+          return;
+        }
+        const exportPerfCopyBtn = ev.target.closest && ev.target.closest('#exportPerfTableCopy');
+        if (exportPerfCopyBtn) {
+          ev.stopPropagation();
+          const perf = state && state.insights && state.insights.performanceMetrics;
+          if (!perf || !perf.length) return;
+          copyText(formatPerfTableCsv(buildPerfTableModel(perf)));
+          const orig = exportPerfCopyBtn.textContent;
+          exportPerfCopyBtn.textContent = 'Copied!';
+          setTimeout(function () { exportPerfCopyBtn.textContent = orig; }, 1200);
+          return;
+        }
+        const exportPerfDlBtn = ev.target.closest && ev.target.closest('#exportPerfTableDownload');
+        if (exportPerfDlBtn) {
+          ev.stopPropagation();
+          const perf = state && state.insights && state.insights.performanceMetrics;
+          if (!perf || !perf.length) return;
+          downloadTextFile(perfTableFileName(), formatPerfTableCsv(buildPerfTableModel(perf)));
           return;
         }
         // Copy / jump controls inside the System prompt card. Intercept first

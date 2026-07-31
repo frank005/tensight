@@ -1343,21 +1343,25 @@
     .perf-chart-tooltip em { color: var(--accent); font-style: normal; margin-top: 4px; font-size: 11px; }
     .insight-table .perf-median-row { font-weight: 600; background: var(--accent-dim); }
     .perf-table-footnote { font-size: 12px; color: var(--text-muted); margin: 12px 0 0; max-width: 720px; line-height: 1.5; }
-    /* Perf headers: instant custom tooltip (no OS delay, no ? cursor) */
-    .insight-table thead th.perf-th-tip {
+    /* Perf headers: instant custom tooltip (no OS delay, no ? cursor).
+       The tooltip hangs off an inline-block span rather than the <th>: inside a
+       border-collapse table, Blink mis-sizes an absolutely positioned box whose
+       containing block is a cell and paints it under the body rows even with a
+       z-index, which made the tooltip text collide with the row values. */
+    .insight-table thead th .perf-th-tip {
       position: relative;
-      cursor: default;
+      display: inline-block;
       text-decoration: underline dotted var(--text-muted);
       text-underline-offset: 3px;
     }
-    .insight-table thead th.perf-th-tip::after {
+    .insight-table thead th .perf-th-tip:hover { z-index: 200; }
+    .insight-table thead th .perf-th-tip::after {
       content: attr(data-tooltip);
       position: absolute;
-      left: 50%;
-      bottom: calc(100% + 8px);
-      transform: translateX(-50%);
-      min-width: 180px;
-      max-width: min(340px, 85vw);
+      left: 0;
+      top: calc(100% + 8px);
+      width: max-content;
+      max-width: min(340px, 60vw);
       padding: 8px 10px;
       background: var(--surface);
       color: var(--text);
@@ -1365,6 +1369,8 @@
       border-radius: var(--radius);
       font-size: 12px;
       font-weight: 400;
+      letter-spacing: normal;
+      text-transform: none;
       line-height: 1.4;
       text-align: left;
       text-decoration: none;
@@ -1375,7 +1381,13 @@
       visibility: hidden;
       opacity: 0;
     }
-    .insight-table thead th.perf-th-tip:hover::after {
+    /* Anchor to the cell's right edge near the end of the row so tooltips on
+       the last columns don't run past the panel. */
+    .insight-table thead th:nth-last-child(-n+4) .perf-th-tip::after {
+      left: auto;
+      right: 0;
+    }
+    .insight-table thead th .perf-th-tip:hover::after {
       visibility: visible;
       opacity: 1;
     }
