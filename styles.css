@@ -929,10 +929,31 @@
       display: flex;
       gap: 12px;
       align-items: flex-start;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       white-space: normal;
       overflow-x: visible;
       min-width: 0;
+    }
+
+    /* Original 1-based file line number — stable when filters / search hide other rows. */
+    .log-entry .line-no {
+      flex: 0 0 auto;
+      min-width: 3.25em;
+      margin-top: 1px;
+      padding-right: 8px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      font-size: 11px;
+      line-height: 1.4;
+      color: var(--text-muted);
+      opacity: 0.85;
+      user-select: none;
+      border-right: 1px solid var(--border);
+    }
+    .log-entry:hover .line-no,
+    .log-entry.selected .line-no {
+      color: var(--text);
+      opacity: 1;
     }
 
     .log-entry .log-line .msg {
@@ -1398,6 +1419,20 @@
     .turn-row.turn-think td { background: rgba(163, 113, 247, 0.04); }
     .turn-row.turn-interrupted td { background: rgba(248, 81, 73, 0.08); }
     .turn-row.turn-interrupted td:nth-child(5) { color: var(--error); font-weight: 600; }
+    /* Session teardown (api_leave / user_left): still "interrupted" to the tracer, but not barge-in. */
+    .turn-row.turn-interrupted-session td { background: rgba(210, 153, 34, 0.08); }
+    .turn-row.turn-interrupted-session td:nth-child(5) { color: var(--warning, #d29922); font-weight: 600; }
+    .insight-note {
+      margin: 0 0 0.75rem;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.9em;
+      line-height: 1.45;
+      color: var(--muted, #8b949e);
+      background: rgba(56, 139, 253, 0.08);
+      border-left: 3px solid rgba(56, 139, 253, 0.55);
+      border-radius: 0 4px 4px 0;
+    }
+    .insight-note code { font-size: 0.92em; }
 
     /* Inline /think badge in Turns "Text" — orchestration, not transcript. */
     .turn-think-badge {

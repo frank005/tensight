@@ -596,7 +596,10 @@
 
         while (i < lines.length) {
           const line = lines[i];
+          // Preserve original 1-based file line numbers (used in the log UI even when filtered).
+          // Blank lines are still skipped from the entry list but do not shift later numbers.
           if (!line.trim()) { i++; continue; }
+          const lineStart = i + 1;
 
           let match = line.match(APP_VERSION_LINE);
           if (match) {
@@ -613,7 +616,9 @@
               ext: 'app',
               msg: appMsg,
               raw: redactInlineSecrets(line),
-              json: null
+              json: null,
+              lineStart: lineStart,
+              lineEnd: lineStart,
             });
             i++;
             continue;
@@ -631,7 +636,9 @@
               ext: extractExtension(match[3]) || 'go',
               msg: tabMsg,
               raw: redactInlineSecrets(line),
-              json: null
+              json: null,
+              lineStart: lineStart,
+              lineEnd: lineStart,
             });
             i++;
             continue;
@@ -668,6 +675,8 @@
               if (more !== null) json = more;
               i++;
             }
+            // After the loop, i is the index of the next unconsumed line; last content line is i (1-based) if we advanced.
+            const lineEnd = i; // 1-based exclusive would be i+1 after last continue's i++; after while, i is first non-continuation index, so last line is i (1-based = previous 0-based + 1 = i)
 
             if (continuation.length) {
               msg = msg + '\n' + continuation.join('\n');
@@ -685,7 +694,9 @@
               ext: ext || 'runtime',
               msg: redactInlineSecrets(msg),
               raw: redactInlineSecrets(line),
-              json: json != null ? redactSecrets(json) : null
+              json: json != null ? redactSecrets(json) : null,
+              lineStart: lineStart,
+              lineEnd: Math.max(lineStart, lineEnd),
             });
             continue;
           }
@@ -699,7 +710,9 @@
               ext: 'agora_sess_ctrl',
               msg: redactInlineSecrets(line),
               raw: redactInlineSecrets(line),
-              json: null
+              json: null,
+              lineStart: lineStart,
+              lineEnd: lineStart,
             });
             i++;
             continue;
@@ -713,7 +726,9 @@
             ext: 'raw',
             msg: redactInlineSecrets(line),
             raw: redactInlineSecrets(line),
-            json: null
+            json: null,
+            lineStart: lineStart,
+            lineEnd: lineStart,
           });
           i++;
         }
@@ -1306,6 +1321,141 @@
         return out;
       }
 
+      /**
+       * Parse turn streaming metadata from TTS / pre-tts log lines (2.10+).
+       * Old logs omit turn_seq_id / turn_status — fields stay null and behavior is unchanged.
+       */
+      function parseTtsTurnMeta(msg) {
+        if (!msg) return { turn_id: null, turn_seq_id: null, turn_status: null, source_meta: null, request_id: null };
+        const tidM = msg.match(/['"]turn_id['"]\s*:\s*(\d+)/) || msg.match(/turn_id=(\d+)/);
+        const seqM = msg.match(/['"]turn_seq_id['"]\s*:\s*(\d+)/);
+        const statusM = msg.match(/['"]turn_status['"]\s*:\s*(\d+)/);
+        // Prefer original_metadata.source (greeting / llm) over the often-empty top-level source.
+        let sourceMeta = null;
+        const omSource = msg.match(/original_metadata['"]?\s*[:=]\s*\{[^}]{0,400}?['"]source['"]\s*:\s*['"]([^'"]*)['"]/);
+        if (omSource && omSource[1]) sourceMeta = omSource[1];
+        else {
+          const topSrc = msg.match(/['"]source['"]\s*:\s*['"]([^'"]*)['"]/);
+          if (topSrc && topSrc[1]) sourceMeta = topSrc[1];
+        }
+        const rid = msg.match(/request_id=['"]([^'"]+)['"]/) || msg.match(/of request_id:\s*(\S+)/);
+        return {
+          turn_id: tidM ? Number(tidM[1]) : null,
+          turn_seq_id: seqM ? Number(seqM[1]) : null,
+          turn_status: statusM ? Number(statusM[1]) : null,
+          source_meta: sourceMeta || null,
+          request_id: rid ? rid[1] : null,
+        };
+      }
+
+      /** True when interrupt reason is session teardown, not mid-speech barge-in. */
+      function isSessionEndInterruptReason(reason) {
+        if (reason == null || reason === '') return false;
+        const r = String(reason).toLowerCase().replace(/[\s-]+/g, '_');
+        return /^(api_leave|user_left|leave|session_end|session_stop|force_stop|stop|killed|destroy)$/.test(r)
+          || r.indexOf('api_leave') !== -1
+          || r.indexOf('user_left') !== -1;
+      }
+
+      /**
+       * Coalesce agent TTS fragment rows for Turns.
+       * - 2.10+: same turn_id + turn_seq_id → stitch by seq (status can stay 0 while seq climbs).
+       * - Older logs (no seq): keep prior "longest fragment wins" behavior per turn_id.
+       */
+      function coalesceAgentTtsForTurns(ttsItems) {
+        const byTurn = new Map();
+        const noTurn = [];
+        (ttsItems || []).forEach(function (o) {
+          if (!o) return;
+          const text = o.text != null ? String(o.text) : '';
+          if (!text.trim()) return;
+          if (o.turn_id == null) {
+            noTurn.push(o);
+            return;
+          }
+          const k = String(o.turn_id);
+          if (!byTurn.has(k)) byTurn.set(k, []);
+          byTurn.get(k).push(o);
+        });
+        const out = [];
+        byTurn.forEach(function (items, turnKey) {
+          const hasSeq = items.some(function (it) { return it.turn_seq_id != null && !isNaN(Number(it.turn_seq_id)); });
+          if (hasSeq) {
+            const sorted = items.slice().sort(function (a, b) {
+              const sa = a.turn_seq_id != null ? Number(a.turn_seq_id) : 1e9;
+              const sb = b.turn_seq_id != null ? Number(b.turn_seq_id) : 1e9;
+              if (sa !== sb) return sa - sb;
+              const ia = a.entryIndex != null ? a.entryIndex : 0;
+              const ib = b.entryIndex != null ? b.entryIndex : 0;
+              return ia - ib;
+            });
+            const seenSeq = new Set();
+            let text = '';
+            let first = null;
+            let maxStatus = null;
+            let sourceMeta = null;
+            let requestId = null;
+            let durationMs = null;
+            let startMs = null;
+            let language = null;
+            for (let i = 0; i < sorted.length; i++) {
+              const it = sorted[i];
+              const seq = it.turn_seq_id != null ? Number(it.turn_seq_id) : null;
+              if (seq != null) {
+                if (seenSeq.has(seq)) continue;
+                seenSeq.add(seq);
+              }
+              if (!first) first = it;
+              text += String(it.text || '');
+              if (typeof it.turn_status === 'number') {
+                maxStatus = maxStatus == null ? it.turn_status : Math.max(maxStatus, it.turn_status);
+              }
+              if (!sourceMeta && it.source_meta) sourceMeta = it.source_meta;
+              if (requestId == null && it.request_id != null) requestId = it.request_id;
+              if (durationMs == null && it.duration_ms != null) durationMs = it.duration_ms;
+              if (startMs == null && it.start_ms != null) startMs = it.start_ms;
+              if (!language && it.language) language = it.language;
+            }
+            if (!first || !text.trim()) return;
+            const src = (sourceMeta && String(sourceMeta).toLowerCase() === 'greeting') ? 'greeting' : 'tts';
+            out.push({
+              ts: first.ts,
+              text: text,
+              duration_ms: durationMs != null ? durationMs : 0,
+              start_ms: startMs,
+              turn_id: Number(turnKey),
+              turn_seq_id: null,
+              turn_status: maxStatus,
+              request_id: requestId,
+              final: null,
+              source_meta: sourceMeta,
+              language: language,
+              entryIndex: first.entryIndex,
+              stitched: true,
+              fragment_count: seenSeq.size || sorted.length,
+              turn_source: src,
+            });
+          } else {
+            // Pre-2.10 / no seq: pick the longest non-empty text (legacy merge rule).
+            let best = items[0];
+            for (let i = 1; i < items.length; i++) {
+              if (String(items[i].text || '').trim().length > String(best.text || '').trim().length) best = items[i];
+            }
+            const sourceMeta = best.source_meta || null;
+            const src = (sourceMeta && String(sourceMeta).toLowerCase() === 'greeting') ? 'greeting' : 'tts';
+            out.push(Object.assign({}, best, { turn_source: src, stitched: false, fragment_count: 1 }));
+          }
+        });
+        noTurn.forEach(function (o) {
+          out.push(Object.assign({}, o, {
+            turn_source: (o.source_meta && String(o.source_meta).toLowerCase() === 'greeting') ? 'greeting' : 'tts',
+            stitched: false,
+            fragment_count: 1,
+          }));
+        });
+        return out;
+      }
+
       function extractTts(entries) {
         const out = [];
         for (let i = 0; i < entries.length; i++) {
@@ -1315,24 +1465,30 @@
             const j = tryParseJSON(e.msg) || (e.json && e.json.text ? e.json : null);
             if (!j) {
               const m = e.msg.match(/"text"\s*:\s*"([^"]*)"[^}]*"duration_ms"\s*:\s*(\d+)/);
-              if (m) out.push({ ts: e.ts, text: m[1].replace(/\\"/g, '"'), duration_ms: parseInt(m[2], 10), start_ms: null, turn_id: null, final: null, language: null, entryIndex: i });
-            } else if (j.text != null) {
+              if (m) out.push({ ts: e.ts, text: m[1].replace(/\\"/g, '"'), duration_ms: parseInt(m[2], 10), start_ms: null, turn_id: null, turn_seq_id: null, turn_status: null, final: null, language: null, entryIndex: i });
+            } else if (j.text != null && String(j.text).length > 0) {
               const turnId = j.metadata && j.metadata.turn_id != null ? j.metadata.turn_id : (j.turn_id != null ? j.turn_id : null);
+              const meta = j.metadata && typeof j.metadata === 'object' ? j.metadata : {};
               out.push({
                 ts: e.ts,
                 text: j.text,
                 duration_ms: j.duration_ms || j.duration || 0,
                 start_ms: j.start_ms != null ? j.start_ms : null,
                 turn_id: turnId,
+                turn_seq_id: j.turn_seq_id != null ? Number(j.turn_seq_id) : null,
+                turn_status: typeof j.turn_status === 'number' ? j.turn_status : null,
+                source_meta: meta.source || j.source || null,
                 final: null,
-                language: (j.metadata && j.metadata.language) || j.language || null,
+                language: meta.language || j.language || null,
                 entryIndex: i
               });
             }
           }
           if (e.msg.includes('assistant.transcription') && e.msg.includes('"source":"tts"')) {
             const j = tryParseJSON(e.msg);
-            if (j && j.text != null) {
+            // Skip empty text (2.10 often emits status=1 EOF with text ""). Empty rows
+            // polluted Turns / TTS tables and could win merges over real fragments.
+            if (j && j.text != null && String(j.text).length > 0) {
               // assistant.transcription payloads don't carry an `is_final` flag
               // — only `turn_status` (0 = streaming, 1 = stream complete). Those
               // are different concepts from transcript finality, so we leave
@@ -1341,20 +1497,37 @@
               let finalFlag = null;
               if (typeof j.is_final === 'boolean') finalFlag = j.is_final;
               else if (typeof j.final === 'boolean') finalFlag = j.final;
-              out.push({ ts: e.ts, text: j.text, duration_ms: j.duration_ms || 0, start_ms: j.start_ms || null, turn_id: j.turn_id != null ? j.turn_id : null, final: finalFlag, turn_status: typeof j.turn_status === 'number' ? j.turn_status : null, language: j.language || null, entryIndex: i });
+              const meta = j.metadata && typeof j.metadata === 'object' ? j.metadata : {};
+              out.push({
+                ts: e.ts,
+                text: j.text,
+                duration_ms: j.duration_ms || 0,
+                start_ms: j.start_ms || null,
+                turn_id: j.turn_id != null ? j.turn_id : null,
+                turn_seq_id: j.turn_seq_id != null ? Number(j.turn_seq_id) : null,
+                turn_status: typeof j.turn_status === 'number' ? j.turn_status : null,
+                source_meta: meta.source || j.source || null,
+                final: finalFlag,
+                language: j.language || null,
+                entryIndex: i
+              });
             }
           }
           // tts2_http.py shape: "[tts] Requesting TTS for text: <text>, text_input_end: ..., request ID: <id>"
           if (e.msg.includes('Requesting TTS for text:')) {
             const m = e.msg.match(/Requesting TTS for text:\s*([\s\S]*?),\s*text_input_end:\s*(True|False)\s*request ID:\s*(\d+)/);
             if (m) {
+              const meta = parseTtsTurnMeta(e.msg);
               out.push({
                 ts: e.ts,
                 text: m[1].trim(),
                 duration_ms: 0,
                 start_ms: null,
-                turn_id: null,
+                turn_id: meta.turn_id,
+                turn_seq_id: meta.turn_seq_id,
+                turn_status: meta.turn_status,
                 request_id: Number(m[3]),
+                source_meta: meta.source_meta,
                 // Keep `final: null` for TTS fragments; `text_input_end` is a streaming flag,
                 // not a transcript-finality signal. Using it here makes the turns-table
                 // "Final" column misreport agent output as interim.
@@ -1383,21 +1556,21 @@
                   duration_ms: 0,
                   start_ms: null,
                   turn_id: Number(mc[2]),
-                  final: mc[3] === 'True',
+                  turn_seq_id: null,
                   turn_status: ts,
+                  final: mc[3] === 'True',
                   language: null,
                   entryIndex: i,
                 });
               }
             }
           }
-          // ElevenLabs / v2 extension shape: "[tts] request_tts: request_id='1' text='...' text_input_end=False metadata={'turn_id': 1, ...}"
+          // ElevenLabs / v2 extension shape: "[tts] request_tts: request_id='1' text='...' text_input_end=False metadata={'turn_id': 1, 'turn_seq_id': 0, ...}"
           // Only record non-empty text so we don't count the trailing text_input_end flush.
           if (e.msg.includes('[tts]') && e.msg.includes(' request_tts: request_id=')) {
             const textMatch = e.msg.match(/text=(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")/);
-            const rid = e.msg.match(/request_id='([^']+)'/);
-            const tidM = e.msg.match(/'turn_id'\s*:\s*(\d+)/);
             const end = e.msg.match(/text_input_end=(True|False)/);
+            const meta = parseTtsTurnMeta(e.msg);
             const txt = textMatch ? (textMatch[1] != null ? textMatch[1] : textMatch[2]) : null;
             if (txt && txt.length > 0) {
               out.push({
@@ -1405,8 +1578,11 @@
                 text: txt,
                 duration_ms: 0,
                 start_ms: null,
-                turn_id: tidM ? Number(tidM[1]) : null,
-                request_id: rid ? rid[1] : null,
+                turn_id: meta.turn_id,
+                turn_seq_id: meta.turn_seq_id,
+                turn_status: meta.turn_status,
+                request_id: meta.request_id,
+                source_meta: meta.source_meta,
                 // Same reasoning: TTS streaming chunks are not "interim" transcripts.
                 final: null,
                 text_input_end: end ? end[1] === 'True' : null,
@@ -1415,6 +1591,52 @@
               });
             }
           }
+        }
+        return out;
+      }
+
+      /**
+       * Complete agent utterance seeds from pre_tts / llm_text_chunk (2.10+).
+       * Often has the full sentence before TTS splits it into turn_seq_id fragments.
+       * Old logs without these lines simply contribute nothing.
+       */
+      function extractAgentUtteranceSeeds(entries) {
+        const out = [];
+        const seen = new Set();
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i];
+          const msg = e.msg || '';
+          if (!msg || msg.indexOf('llm_text_chunk') === -1) continue;
+          if (msg.indexOf('turn_id=') === -1 || msg.indexOf('content=') === -1) continue;
+          const tidM = msg.match(/turn_id=(\d+)/);
+          // content='...' or content="..." (Python escapes limited)
+          const contentM = msg.match(/content=(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")/);
+          if (!tidM || !contentM) continue;
+          const text = (contentM[1] != null ? contentM[1] : contentM[2] || '')
+            .replace(/\\n/g, '\n').replace(/\\'/g, "'").replace(/\\"/g, '"');
+          if (!text.trim()) continue;
+          const finalM = msg.match(/is_final=(True|False)/);
+          const interruptedM = msg.match(/is_interrupted=(True|False)/);
+          const meta = parseTtsTurnMeta(msg);
+          const turnId = Number(tidM[1]);
+          const key = turnId + '|' + text;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const sourceMeta = meta.source_meta || null;
+          const source = (sourceMeta && String(sourceMeta).toLowerCase() === 'greeting') ? 'greeting' : 'llm';
+          out.push({
+            speaker: 'agent',
+            turn: turnId,
+            ts: e.ts,
+            text: text,
+            source: source,
+            final: finalM ? finalM[1] === 'True' : null,
+            interrupted: interruptedM ? interruptedM[1] === 'True' : false,
+            start_ms: null,
+            duration_ms: null,
+            language: null,
+            entryIndex: i,
+          });
         }
         return out;
       }
@@ -1493,6 +1715,78 @@
               detail: msg.replace(/\s+/g, ' ').trim().slice(0, 160),
               entryIndex: i
             });
+            continue;
+          }
+          // 2.10+ metrics: characters synthesised but no audio duration reported
+          // (vendor may still have played audio — metrics gap — or synthesis failed silently).
+          if (msg.includes('tts_metrics') || (msg.includes('[tts]') && msg.includes('recv_audio_duration'))) {
+            const charsM = msg.match(/['"]output_characters['"]\s*:\s*(\d+)/);
+            const durM = msg.match(/['"]recv_audio_duration['"]\s*:\s*([0-9.]+)/);
+            if (charsM && durM) {
+              const chars = parseInt(charsM[1], 10);
+              const dur = parseFloat(durM[1]);
+              if (chars > 0 && isFinite(dur) && dur === 0) {
+                const ridM = msg.match(/request_id['":\s]+['"]?([A-Za-z0-9_-]+)/) || msg.match(/of request_id:\s*(\S+)/);
+                const meta = parseTtsTurnMeta(msg);
+                const bits = ['output_characters=' + chars, 'recv_audio_duration=0'];
+                if (ridM) bits.push('request_id=' + ridM[1]);
+                if (meta.turn_id != null) bits.push('turn_id=' + meta.turn_id);
+                bits.push('Text was sent to TTS but metrics show 0s of audio — check vendor playback / metrics instrumentation.');
+                items.push({
+                  ts: e.ts,
+                  kind: 'warning',
+                  issue: 'zero_audio_duration',
+                  code: null,
+                  detail: bits.join(' · ').slice(0, 280),
+                  entryIndex: i
+                });
+                continue;
+              }
+            }
+          }
+          // tts_audio_end with zero duration after text was queued (same class of signal).
+          if (msg.includes('tts_audio_end') && msg.includes('request_total_audio_duration_ms')) {
+            const durM = msg.match(/['"]request_total_audio_duration_ms['"]\s*:\s*(\d+)/);
+            const reasonM = msg.match(/['"]reason['"]\s*:\s*(\d+)/);
+            if (durM && parseInt(durM[1], 10) === 0) {
+              const meta = parseTtsTurnMeta(msg);
+              // Only flag when we know this request had non-empty text metadata context
+              // (avoid pure EOF flushes with no prior content — still sometimes duration 0).
+              const hasTextMeta = /'turn_seq_id':\s*[01]|"turn_seq_id":\s*[01]/.test(msg) || meta.turn_id != null;
+              if (hasTextMeta) {
+                const ridM = msg.match(/['"]request_id['"]\s*:\s*['"]?([^'",\s}]+)/) || msg.match(/of request_id:\s*(\S+)/);
+                items.push({
+                  ts: e.ts,
+                  kind: 'warning',
+                  issue: 'zero_audio_end',
+                  code: reasonM ? reasonM[1] : null,
+                  detail: ('request_total_audio_duration_ms=0' + (ridM ? ' · request_id=' + ridM[1] : '') + (meta.turn_id != null ? ' · turn_id=' + meta.turn_id : '') + ' · TTS reported audio end with 0 ms total duration.').slice(0, 280),
+                  entryIndex: i
+                });
+                continue;
+              }
+            }
+          }
+          // Empty post-TTS transcription while stream marked complete (2.10 greeting path).
+          if (msg.includes('assistant.transcription') && msg.includes('"source":"tts"') && msg.includes('"turn_status":1')) {
+            const brace = msg.indexOf('{');
+            const j = brace >= 0 ? tryParseJSON(msg.slice(brace)) : tryParseJSON(msg);
+            if (j && (j.text == null || String(j.text) === '') && j.turn_status === 1) {
+              // One note per turn is enough (post_tts + context often log the same payload).
+              if (!items.some(function (x) {
+                return x.issue === 'empty_assistant_transcription'
+                  && (j.turn_id == null || (x.detail && x.detail.indexOf('turn_id=' + j.turn_id) !== -1));
+              })) {
+                items.push({
+                  ts: e.ts,
+                  kind: 'info',
+                  issue: 'empty_assistant_transcription',
+                  code: null,
+                  detail: ('assistant.transcription status=complete with empty text' + (j.turn_id != null ? ' · turn_id=' + j.turn_id : '') + ' · reassemble from pre_tts / TTS fragments if text is missing in context history.').slice(0, 280),
+                  entryIndex: i
+                });
+              }
+            }
           }
         }
         return items;
@@ -3265,7 +3559,33 @@
         for (let i = 0; i < entries.length; i++) {
           const e = entries[i];
           const msg = e.msg || '';
-          if (!msg || msg.indexOf('interrupted') === -1) continue;
+          if (!msg) continue;
+
+          // 2.10 turn.finished keypoint (JSON may trail log prefix):
+          // [turn.finished]{"turn_id": 1, "end": {"type": "interrupted", "metadata": {"caused_by": "api_leave"}}}
+          if (msg.indexOf('turn.finished') !== -1 && msg.indexOf('interrupted') !== -1) {
+            const brace = msg.indexOf('{');
+            if (brace >= 0) {
+              const j = tryParseJSON(msg.slice(brace));
+              if (j && typeof j === 'object') {
+                const endType = j.end && j.end.type != null ? String(j.end.type) : '';
+                const turnId = j.turn_id != null ? Number(j.turn_id) : null;
+                const reason = j.end && j.end.metadata && j.end.metadata.caused_by != null
+                  ? String(j.end.metadata.caused_by)
+                  : null;
+                if (turnId != null && /interrupted/i.test(endType)) add(turnId, e.ts, reason, i);
+              }
+            }
+          }
+
+          // turn_trace_end payload: {'turn_id': 1, 'span_attributes': {'turn.end_type': 'interrupted', ... caused_by: api_leave}}
+          if (msg.indexOf('turn_trace_end') !== -1 && msg.indexOf('interrupted') !== -1) {
+            const turnM = msg.match(/['"]turn_id['"]\s*:\s*(\d+)/);
+            const reasonM = msg.match(/caused_by['"]?\s*:\s*['"]([^'"]+)['"]/);
+            if (turnM) add(parseInt(turnM[1], 10), e.ts, reasonM ? reasonM[1] : null, i);
+          }
+
+          if (msg.indexOf('interrupted') === -1) continue;
 
           // Agent tracer view shape: one log line can contain many Python-repr
           // spans. For each `name: turn` span, look for its explicit turn_id and
@@ -3396,35 +3716,58 @@
           textCell = insightLongTextCell(row.text || '');
         }
         const finalStr = row.final === true ? 'yes' : row.final === false ? 'no' : '—';
-        const interruptedStr = row.interrupted ? 'yes' : '—';
-        const interruptedTitle = row.interruptReason ? ' title="' + escapeHtml('Interrupted: ' + row.interruptReason) + '"' : '';
+        // Interrupted column: surface caused_by when present (e.g. api_leave vs barge-in).
+        // Session-end reasons stay marked interrupted (tracer truth) but are labeled clearly.
+        let interruptedStr = '—';
+        let interruptedTitle = '';
+        let interruptedClass = '';
+        if (row.interrupted) {
+          const reason = row.interruptReason ? String(row.interruptReason) : '';
+          const sessionEnd = isSessionEndInterruptReason(reason);
+          if (reason) {
+            interruptedStr = escapeHtml(reason);
+            interruptedTitle = ' title="' + escapeHtml(sessionEnd
+              ? 'Turn closed as interrupted on session end (' + reason + ') — not mid-speech barge-in'
+              : 'Interrupted: ' + reason) + '"';
+          } else {
+            interruptedStr = 'yes';
+          }
+          interruptedClass = sessionEnd ? 'turn-interrupted turn-interrupted-session' : 'turn-interrupted';
+        }
         const tsAttr = escapeHtml(row.ts || '');
         const idxAttr = row.entryIndex != null ? ' data-index="' + row.entryIndex + '"' : '';
         const sourceLabel = row.source || '—';
         const sourceAttr = sourceLabel && sourceLabel !== '—' ? ' data-source="' + escapeHtml(String(sourceLabel)) + '"' : '';
         const confCell = row.speaker === 'user' ? (renderConfidencePill(row) || '—') : '—';
         const speakerLabel = row.isThinkRow ? '/think' : row.speaker;
-        const classes = ['turn-row', 'turn-' + (row.isThinkRow ? 'think' : row.speaker), row.interrupted ? 'turn-interrupted' : ''].filter(Boolean).join(' ');
+        const classes = ['turn-row', 'turn-' + (row.isThinkRow ? 'think' : row.speaker), interruptedClass].filter(Boolean).join(' ');
         return `<tr class="${classes}" data-ts="${tsAttr}"${idxAttr}${sourceAttr}><td>${row.turn != null ? row.turn : '—'}</td><td>${escapeHtml(speakerLabel)}</td><td>${escapeHtml(row.ts)}</td><td>${escapeHtml(sourceLabel)}</td><td${interruptedTitle}>${interruptedStr}</td><td>${textCell}</td><td>${finalStr}</td><td class="stt-conf-cell">${confCell}</td><td>${row.start_ms != null ? row.start_ms : '—'}</td><td>${row.duration_ms != null ? row.duration_ms : '—'}</td><td>${escapeHtml(row.language || '—')}</td></tr>`;
       }
 
       function buildTurnsList(insights) {
-        const agentFromTts = (insights.tts || []).map(o => ({
+        // Pre-stitch TTS fragments (turn_seq_id) before turn merge so 2.10 agent
+        // speech is not reduced to whichever fragment was longest.
+        const coalescedTts = coalesceAgentTtsForTurns(insights.tts || []);
+        const agentFromTts = coalescedTts.map(o => ({
           speaker: 'agent',
           turn: o.turn_id,
           ts: o.ts,
           text: o.text,
-          source: 'tts',
+          source: o.turn_source || (o.source_meta && String(o.source_meta).toLowerCase() === 'greeting' ? 'greeting' : 'tts'),
           final: o.final,
           start_ms: o.start_ms,
           duration_ms: o.duration_ms,
           language: o.language,
           entryIndex: o.entryIndex
         }));
+        // Full pre_tts / llm_text_chunk utterances (preferred text when available).
+        const agentFromPreTts = (insights.agentUtterances || []).map(o => Object.assign({}, o));
         const turnInterruptById = {};
         (insights.turnInterruptions || []).forEach(o => {
           if (!o || o.turn_id == null) return;
-          turnInterruptById[String(o.turn_id)] = o;
+          // Prefer an entry that has a non-empty reason when duplicates exist.
+          const prev = turnInterruptById[String(o.turn_id)];
+          if (!prev || (!prev.reason && o.reason)) turnInterruptById[String(o.turn_id)] = o;
         });
         const ncsTurnItems = [];
         ((insights.ncs && insights.ncs.memoryItems) || []).forEach(m => {
@@ -3439,7 +3782,9 @@
             source: m.source != null ? String(m.source) : null,
             ts: m.timestamp_ms != null ? formatEpochMsAsLogTs(m.timestamp_ms) : '',
             interrupted: !!m.interrupted,
-            reason: m.interrupt_mode || null,
+            // Don't use interrupt_mode policy ("interrupt") as interrupt reason —
+            // that is barge-in policy, not that the turn was interrupted.
+            reason: null,
             entryIndex: m.entryIndex
           });
         });
@@ -3468,6 +3813,10 @@
             row.interruptReason = intr.reason || row.interruptReason || null;
           } else {
             row.interrupted = !!row.interrupted;
+          }
+          // If already interrupted but missing reason, fill from tracer map.
+          if (row.interrupted && !row.interruptReason && row.turn != null && turnInterruptById[String(row.turn)]) {
+            row.interruptReason = turnInterruptById[String(row.turn)].reason || null;
           }
           return row;
         }
@@ -3627,6 +3976,7 @@
         }
         evalTurns.forEach(addOne);
         glueTurns.forEach(addOne);
+        agentFromPreTts.forEach(addOne);
         v2vTurns.forEach(addOne);
         userFromAsr.forEach(addOne);
         agentFromTts.forEach(addOne);
@@ -3685,7 +4035,9 @@
           const turn = row.turn != null ? row.turn : '—';
           const speaker = row.isThinkRow ? '/think' : (row.speaker || '—');
           const time = row.ts || '—';
-          const interrupted = row.interrupted ? 'yes' : 'no';
+          const interrupted = row.interrupted
+            ? (row.interruptReason ? String(row.interruptReason) : 'yes')
+            : 'no';
           let text = String(row.text || '').replace(/\r\n/g, '\n').trim();
           if (row.isThinkRow) {
             const parts = [];
@@ -3844,10 +4196,21 @@
 
         let jsonHtml = ''; // Log-line expansion is independent of JSON parsing.
 
+        // Prefer original file line numbers (stable under filters). Fall back to entry index + 1.
+        const lineStart = entry.lineStart != null ? entry.lineStart : (index + 1);
+        const lineEnd = entry.lineEnd != null ? entry.lineEnd : lineStart;
+        let lineLabel = String(lineStart);
+        let lineTitle = 'File line ' + lineStart;
+        if (lineEnd > lineStart) {
+          lineLabel = lineStart + '–' + lineEnd;
+          lineTitle = 'File lines ' + lineStart + '–' + lineEnd + ' (multi-line log entry)';
+        }
+
         const classes = ['log-entry', 'clickable', isRelevant ? 'relevant-error' : '', isSelected ? 'selected' : ''].filter(Boolean).join(' ');
         return `
-          <div class="${classes}" data-level="${entry.level || ''}" data-index="${index}" ${isRelevant ? 'data-relevant="true"' : ''}>
+          <div class="${classes}" data-level="${entry.level || ''}" data-index="${index}" data-line="${lineStart}" ${isRelevant ? 'data-relevant="true"' : ''}>
             <div class="log-line">
+              <span class="line-no" title="${escapeHtml(lineTitle)}">${escapeHtml(lineLabel)}</span>
               <div class="meta">
                 <button type="button" class="copy-entry-btn" data-copy-index="${index}" title="Copy full log line" aria-label="Copy full log line">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -4932,7 +5295,7 @@
             const tsAttr = escapeHtml(r.ts || '');
             const idxAttr = r.entryIndex != null ? ' data-index="' + r.entryIndex + '"' : '';
             const sev = r.kind === 'error' ? '<span style="color:var(--error)">error</span>' : r.kind === 'warning' ? 'warning' : 'info';
-            iBody += `<tr class="${r.kind === 'error' ? 'llm-row error' : ''}" data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(r.ts)}</td><td>${sev}</td><td>${escapeHtml(r.issue || '—')}</td><td>${escapeHtml(r.code || '—')}</td><td>${escapeHtml((r.detail || '').slice(0, 100))}</td></tr>`;
+            iBody += `<tr class="${r.kind === 'error' ? 'llm-row error' : (r.kind === 'warning' ? 'llm-row' : '')}" data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(r.ts)}</td><td>${sev}</td><td>${escapeHtml(r.issue || '—')}</td><td>${escapeHtml(r.code || '—')}</td><td>${escapeHtml((r.detail || '').slice(0, 180))}</td></tr>`;
           }
           iBody += '</tbody></table>';
           html += insightSection('tts:issues', 'TTS issues & hints', '', iBody);
@@ -4940,13 +5303,37 @@
           html += '<p class="insight-empty">No TTS errors or warnings detected.</p>';
         }
         const ttsOut = insights.tts || [];
+        const hasSeq = ttsOut.some(function (t) { return t && t.turn_seq_id != null; });
+        if (hasSeq) {
+          const byTurn = {};
+          ttsOut.forEach(function (t) {
+            if (!t || t.turn_id == null) return;
+            if (!byTurn[t.turn_id]) byTurn[t.turn_id] = [];
+            byTurn[t.turn_id].push(t);
+          });
+          const multi = Object.keys(byTurn).filter(function (k) { return byTurn[k].length > 1; });
+          if (multi.length) {
+            let note = '<p class="insight-note">Streaming fragments detected (<code>turn_seq_id</code>). '
+              + 'Same <code>turn_id</code> can have multiple chunks while <code>turn_status</code> stays 0 (in progress) until the EOF chunk (status 1). '
+              + 'Turns tab stitches these by sequence; this table lists raw fragments.</p>';
+            html += insightSection('tts:seq-note', '2.10 streaming notes', '', note);
+          }
+        }
         if (ttsOut.length) {
-          let oBody = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(['Time','Turn','Text','Duration (ms)']) + '</tr></thead><tbody>';
+          const headers = hasSeq
+            ? ['Time', 'Turn', 'Seq', 'Status', 'Text', 'Duration (ms)']
+            : ['Time', 'Turn', 'Text', 'Duration (ms)'];
+          let oBody = '<table class="insight-table insight-filterable insight-rows-clickable"><thead><tr>' + insightHeaderRow(headers) + '</tr></thead><tbody>';
           for (const t of ttsOut) {
             const tsAttr = escapeHtml(t.ts || '');
             const idxAttr = t.entryIndex != null ? ' data-index="' + t.entryIndex + '"' : '';
             const textCell = insightLongTextCell((t.text || '') || '—');
-            oBody += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(t.ts)}</td><td>${t.turn_id != null ? escapeHtml(String(t.turn_id)) : '—'}</td><td>${textCell}</td><td>${t.duration_ms != null ? t.duration_ms : '—'}</td></tr>`;
+            if (hasSeq) {
+              const st = t.turn_status == null ? '—' : (t.turn_status === 1 ? '1 (end)' : String(t.turn_status));
+              oBody += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(t.ts)}</td><td>${t.turn_id != null ? escapeHtml(String(t.turn_id)) : '—'}</td><td>${t.turn_seq_id != null ? escapeHtml(String(t.turn_seq_id)) : '—'}</td><td>${escapeHtml(st)}</td><td>${textCell}</td><td>${t.duration_ms != null ? t.duration_ms : '—'}</td></tr>`;
+            } else {
+              oBody += `<tr data-ts="${tsAttr}"${idxAttr}><td>${escapeHtml(t.ts)}</td><td>${t.turn_id != null ? escapeHtml(String(t.turn_id)) : '—'}</td><td>${textCell}</td><td>${t.duration_ms != null ? t.duration_ms : '—'}</td></tr>`;
+            }
           }
           oBody += '</tbody></table>';
           html += insightSection('tts:output', 'TTS output (transcripts / text results)', '', oBody);
@@ -5643,10 +6030,16 @@
         ctxBar.classList.toggle('visible', selectedIndex != null);
         const ctxLbl = document.getElementById('ctxBarLabel');
         if (ctxLbl && selectedIndex != null) {
+          const sel = state.entries[selectedIndex];
+          const fileLine = sel && sel.lineStart != null ? sel.lineStart : (selectedIndex + 1);
+          const fileLineSpan =
+            sel && sel.lineEnd != null && sel.lineEnd > sel.lineStart
+              ? ('file lines ' + sel.lineStart + '–' + sel.lineEnd)
+              : ('file line ' + fileLine);
           ctxLbl.textContent =
             contextRadius != null
-              ? 'Showing ±' + contextRadius + ' lines around the selected message (rest of file is hidden). Use Full log or Clear filters to see everything.'
-              : 'Full log is visible; selected line is highlighted. Use Done to hide this bar.';
+              ? 'Jumped to ' + fileLineSpan + ' — showing ±' + contextRadius + ' entries around it (rest of file is hidden). Use Full log or Clear filters to see everything.'
+              : 'Full log is visible; selected ' + fileLineSpan + ' is highlighted. Use Done to hide this bar.';
         }
 
         const searchWrap = (document.getElementById('searchInput').value || '').trim();
@@ -7231,6 +7624,7 @@
             perfJumpByTurn: perfJumpByTurn,
             tts: extractTts(entries),
             ttsIssues: extractTtsIssues(entries),
+            agentUtterances: extractAgentUtteranceSeeds(entries),
             userAsr: extractUserAsrTranscripts(entries),
             evalIdTurns: extractEvalIdMessages(entries),
             llmGlueTurns: extractLlmGlueMessages(entries),
